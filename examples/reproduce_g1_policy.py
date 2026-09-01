@@ -146,6 +146,15 @@ def array_digest(array: np.ndarray) -> str:
     return hashlib.sha256(canonical.tobytes()).hexdigest()
 
 
+def root_yaw(data: mujoco.MjData) -> float:
+    """Return root yaw in radians from MuJoCo's wxyz free-joint quaternion."""
+    w, x, y, z = data.qpos[3:7]
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
 def run_reproduction(config: Config) -> dict[str, Any]:
     if config.duration <= 0.0:
         raise ValueError("--duration must be greater than zero")
@@ -201,6 +210,9 @@ def run_reproduction(config: Config) -> dict[str, Any]:
     )
 
     initial_position = data.qpos[:3].copy()
+    initial_yaw = root_yaw(data)
+    previous_yaw = initial_yaw
+    accumulated_yaw = 0.0
     minimum_root_height = float(data.qpos[2])
     maximum_contacts = int(data.ncon)
     state_is_finite = True
@@ -210,6 +222,11 @@ def run_reproduction(config: Config) -> dict[str, Any]:
     for _ in range(simulation_steps):
         controller.update(model, data)
         mujoco.mj_step(model, data)
+
+        current_yaw = root_yaw(data)
+        yaw_delta = (current_yaw - previous_yaw + math.pi) % (2.0 * math.pi) - math.pi
+        accumulated_yaw += yaw_delta
+        previous_yaw = current_yaw
 
         minimum_root_height = min(
             minimum_root_height,
@@ -227,11 +244,21 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         )
 
     final_position = data.qpos[:3].copy()
+    final_yaw = root_yaw(data)
     displacement = final_position - initial_position
+
+    if abs(config.command_yaw) > 1.0e-6:
+        command_progress = accumulated_yaw * config.command_yaw > 0.1
+    elif abs(config.command_x) > 1.0e-6:
+        command_progress = float(displacement[0]) * config.command_x > 0.05
+    elif abs(config.command_y) > 1.0e-6:
+        command_progress = float(displacement[1]) * config.command_y > 0.05
+    else:
+        command_progress = True
 
     checks = {
         "controller_updated": controller.control_updates > 0,
-        "forward_progress": (config.command_x <= 0.0 or float(displacement[0]) > 0.1),
+        "command_progress": command_progress,
         "no_fall": minimum_root_height > 0.35,
         "state_finite": state_is_finite,
         "simulation_time": math.isclose(
@@ -251,9 +278,11 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         "duration": config.duration,
         "experiment": "mujoco_playground_g1_onnx_policy",
         "final_position": final_position.tolist(),
+        "final_yaw": final_yaw,
         "final_qpos_sha256": array_digest(data.qpos),
         "final_qvel_sha256": array_digest(data.qvel),
         "initial_position": initial_position.tolist(),
+        "initial_yaw": initial_yaw,
         "maximum_contacts": maximum_contacts,
         "minimum_root_height": minimum_root_height,
         "mujoco_version": mujoco.__version__,
@@ -267,6 +296,8 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         "simulation_steps": simulation_steps,
         "simulation_time": float(data.time),
         "simulation_timestep": simulation_timestep,
+        "yaw_rotation": accumulated_yaw,
+        "mean_yaw_rate": accumulated_yaw / config.duration,
     }
 
 
