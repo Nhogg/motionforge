@@ -33,6 +33,12 @@ class Config:
 
     command_yaw: float = 0.0
 
+    stop_at: float | None = None
+
+    freeze_phase_at_zero: bool = False
+
+    hold_pose_at_zero: bool = False
+
     output: Path | None = None
 
 
@@ -47,6 +53,8 @@ class FixedCommandController:
         control_timestep: float,
         simulation_timestep: float,
         action_scale: float = 0.5,
+        freeze_phase_at_zero: bool = False,
+        hold_pose_at_zero: bool = False,
     ) -> None:
         self._policy = ort.InferenceSession(
             policy_path.as_posix(),
@@ -57,6 +65,8 @@ class FixedCommandController:
         self._default_angles = default_angles
         self._command = command.astype(np.float32)
         self._action_scale = action_scale
+        self._freeze_phase_at_zero = freeze_phase_at_zero
+        self._hold_pose_at_zero = hold_pose_at_zero
 
         self._last_action = np.zeros_like(
             default_angles,
@@ -70,6 +80,9 @@ class FixedCommandController:
         self._substeps = int(round(control_timestep / simulation_timestep))
         self._counter = 0
         self.control_updates = 0
+
+    def set_command(self, command: np.ndarray) -> None:
+        self._command = command.astype(np.float32)
 
     def observation(
         self,
@@ -118,6 +131,12 @@ class FixedCommandController:
         if self._counter % self._substeps != 0:
             return
 
+        if self._hold_pose_at_zero and np.linalg.norm(self._command) < 0.01:
+            self._last_action.fill(0.0)
+            data.ctrl[:] = self._default_angles
+            self.control_updates += 1
+            return
+
         observation = self.observation(model, data)
         policy_input = {"obs": observation.reshape(1, -1)}
 
@@ -130,13 +149,16 @@ class FixedCommandController:
 
         data.ctrl[:] = prediction * self._action_scale + self._default_angles
 
-        self._phase = (
-            np.fmod(
-                self._phase + self._phase_delta + np.pi,
-                2.0 * np.pi,
+        if self._freeze_phase_at_zero and np.linalg.norm(self._command) < 0.01:
+            self._phase = np.full(2, np.pi)
+        else:
+            self._phase = (
+                np.fmod(
+                    self._phase + self._phase_delta + np.pi,
+                    2.0 * np.pi,
+                )
+                - np.pi
             )
-            - np.pi
-        )
 
         self.control_updates += 1
 
@@ -158,6 +180,8 @@ def root_yaw(data: mujoco.MjData) -> float:
 def run_reproduction(config: Config) -> dict[str, Any]:
     if config.duration <= 0.0:
         raise ValueError("--duration must be greater than zero")
+    if config.stop_at is not None and not 0.0 < config.stop_at < config.duration:
+        raise ValueError("--stop-at must be between zero and --duration")
 
     simulation_timestep = 0.002
     control_timestep = 0.02
@@ -207,6 +231,8 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         command=command,
         control_timestep=control_timestep,
         simulation_timestep=simulation_timestep,
+        freeze_phase_at_zero=config.freeze_phase_at_zero,
+        hold_pose_at_zero=config.hold_pose_at_zero,
     )
 
     initial_position = data.qpos[:3].copy()
@@ -216,10 +242,29 @@ def run_reproduction(config: Config) -> dict[str, Any]:
     minimum_root_height = float(data.qpos[2])
     maximum_contacts = int(data.ncon)
     state_is_finite = True
+    local_velocity_samples: list[np.ndarray] = []
+    yaw_rate_samples: list[float] = []
+    command_samples: list[np.ndarray] = []
+    active_command = command.copy()
+    horizontal_path_length = 0.0
+    previous_position = initial_position.copy()
+    stop_applied_at: float | None = None
+    stop_position: np.ndarray | None = None
+    post_stop_path_length = 0.0
 
     simulation_steps = int(round(config.duration / simulation_timestep))
 
     for _ in range(simulation_steps):
+        if (
+            config.stop_at is not None
+            and stop_applied_at is None
+            and data.time >= config.stop_at
+        ):
+            active_command = np.zeros(3, dtype=np.float32)
+            controller.set_command(active_command)
+            stop_applied_at = float(data.time)
+            stop_position = data.qpos[:3].copy()
+
         controller.update(model, data)
         mujoco.mj_step(model, data)
 
@@ -227,6 +272,22 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         yaw_delta = (current_yaw - previous_yaw + math.pi) % (2.0 * math.pi) - math.pi
         accumulated_yaw += yaw_delta
         previous_yaw = current_yaw
+
+        current_position = data.qpos[:3].copy()
+        horizontal_path_length += float(
+            np.linalg.norm(current_position[:2] - previous_position[:2])
+        )
+        if stop_applied_at is not None:
+            post_stop_path_length += float(
+                np.linalg.norm(current_position[:2] - previous_position[:2])
+            )
+        previous_position = current_position
+
+        local_velocity_samples.append(
+            data.sensor("local_linvel_pelvis").data[:2].copy()
+        )
+        yaw_rate_samples.append(float(data.sensor("gyro_pelvis").data[2]))
+        command_samples.append(active_command.copy())
 
         minimum_root_height = min(
             minimum_root_height,
@@ -246,6 +307,19 @@ def run_reproduction(config: Config) -> dict[str, Any]:
     final_position = data.qpos[:3].copy()
     final_yaw = root_yaw(data)
     displacement = final_position - initial_position
+
+    local_velocities = np.asarray(local_velocity_samples)
+    yaw_rates = np.asarray(yaw_rate_samples)
+    commands = np.asarray(command_samples)
+    quarter_steps = max(1, simulation_steps // 4)
+    linear_velocity_errors = local_velocities - commands[:, :2]
+    yaw_rate_errors = yaw_rates - commands[:, 2]
+    final_local_linear_velocity = local_velocities[-1]
+    final_window_steps = min(
+        simulation_steps,
+        max(1, int(round(1.0 / simulation_timestep))),
+    )
+    final_window_local_velocities = local_velocities[-final_window_steps:]
 
     if abs(config.command_yaw) > 1.0e-6:
         command_progress = accumulated_yaw * config.command_yaw > 0.1
@@ -279,10 +353,38 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         "experiment": "mujoco_playground_g1_onnx_policy",
         "final_position": final_position.tolist(),
         "final_yaw": final_yaw,
+        "final_local_linear_velocity": final_local_linear_velocity.tolist(),
+        "final_local_linear_speed": float(
+            np.linalg.norm(final_local_linear_velocity)
+        ),
+        "final_window_seconds": final_window_steps * simulation_timestep,
+        "final_window_mean_local_linear_velocity": np.mean(
+            final_window_local_velocities, axis=0
+        ).tolist(),
+        "final_window_rms_local_linear_speed": float(
+            np.sqrt(
+                np.mean(
+                    np.sum(np.square(final_window_local_velocities), axis=1)
+                )
+            )
+        ),
         "final_qpos_sha256": array_digest(data.qpos),
         "final_qvel_sha256": array_digest(data.qvel),
+        "freeze_phase_at_zero": config.freeze_phase_at_zero,
         "initial_position": initial_position.tolist(),
         "initial_yaw": initial_yaw,
+        "horizontal_path_length": horizontal_path_length,
+        "hold_pose_at_zero": config.hold_pose_at_zero,
+        "mean_local_linear_velocity": np.mean(local_velocities, axis=0).tolist(),
+        "mean_local_linear_velocity_first_quarter": np.mean(
+            local_velocities[:quarter_steps], axis=0
+        ).tolist(),
+        "mean_local_linear_velocity_last_quarter": np.mean(
+            local_velocities[-quarter_steps:], axis=0
+        ).tolist(),
+        "linear_velocity_tracking_rmse": float(
+            np.sqrt(np.mean(np.square(linear_velocity_errors)))
+        ),
         "maximum_contacts": maximum_contacts,
         "minimum_root_height": minimum_root_height,
         "mujoco_version": mujoco.__version__,
@@ -296,8 +398,20 @@ def run_reproduction(config: Config) -> dict[str, Any]:
         "simulation_steps": simulation_steps,
         "simulation_time": float(data.time),
         "simulation_timestep": simulation_timestep,
+        "stop_at": config.stop_at,
+        "stop_applied_at": stop_applied_at,
+        "post_stop_path_length": post_stop_path_length,
+        "post_stop_displacement": (
+            (final_position - stop_position).tolist()
+            if stop_position is not None
+            else None
+        ),
         "yaw_rotation": accumulated_yaw,
         "mean_yaw_rate": accumulated_yaw / config.duration,
+        "mean_yaw_rate_sensor": float(np.mean(yaw_rates)),
+        "yaw_rate_tracking_rmse": float(
+            np.sqrt(np.mean(np.square(yaw_rate_errors)))
+        ),
     }
 
 
