@@ -31,6 +31,7 @@ from brax.training.agents.ppo import train as ppo
 from mujoco_playground import wrapper
 from mujoco_playground.config import locomotion_params
 
+from motionforge.compat.brax_jax import install_device_put_replicated_adapter
 from motionforge.envs.g1_standing import (
     G1StandingJoystick,
     default_config,
@@ -111,6 +112,8 @@ def validate_config(config: Config) -> None:
 def main(config: Config) -> None:
     validate_config(config)
 
+    compatability_adapter_installed = install_device_put_replicated_adapter()
+
     motionforge_root = Path(__file__).resolve().parents[2]
     playground_root = config.playground_root.resolve()
 
@@ -168,6 +171,9 @@ def main(config: Config) -> None:
             "warp": version("warp-lang"),
         },
         "devices": [str(device) for device in jax.devices()],
+        "compatibility": {
+            "jax_device_put_replicated_adapter": (compatability_adapter_installed),
+        },
         "environment_config": environment_config.to_dict(),
         "experiment": "g1_standing_ppo_training_smoke",
         "motionforge_revision": git_output(
