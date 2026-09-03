@@ -21,7 +21,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import numpy as np
@@ -43,6 +43,8 @@ class Config:
     seed: int = 0
     standing_probability: float = 0.30
 
+    impl: Literal["jax", "warp"] = "warp"
+
     num_timesteps: int = 100_000
     num_envs: int = 128
     num_eval_envs: int = 16
@@ -53,6 +55,11 @@ class Config:
     batch_size: int = 32
     num_minibatches: int = 4
     num_updates_per_batch: int = 2
+
+    naconmax_per_env: int = 8
+    njmax: int = 128
+
+    run_kind: Literal["test", "learning", "full"] = "test"
 
     output_dir: Path = Path("logs/p2/training/g1_standing_smoke_a")
     playground_root: Path = Path("../mujoco_playground")
@@ -85,6 +92,17 @@ def serialize_metrics(
     return {key: json_value(value) for key, value in sorted(metrics.items())}
 
 
+def metrics_are_finite(
+    metrics: Mapping[str, Any],
+) -> bool:
+    for value in metrics.values():
+        array = np.asarray(value)
+        if np.issubdtype(array.dtype, np.number) and not np.isfinite(array).all():
+            return False
+
+    return True
+
+
 def validate_config(config: Config) -> None:
 
     positive_fields = {
@@ -97,7 +115,19 @@ def validate_config(config: Config) -> None:
         "batch_size": config.batch_size,
         "num_minibatches": config.num_minibatches,
         "num_updates_per_batch": config.num_updates_per_batch,
+        "naconmax_per_env": config.naconmax_per_env,
+        "njmax": config.njmax,
     }
+
+    rollout_batch_size = config.batch_size * config.num_minibatches
+    if rollout_batch_size % config.num_envs != 0:
+        raise ValueError(
+            "Brax PPO requires batch_size * num_minibatches "
+            "to be divisible by num_envs; "
+            f"got {config.batch_size} * "
+            f"{config.num_minibatches} for "
+            f"{config.num_envs} environments"
+        )
 
     for name, value in positive_fields.items():
         if value <= 0:
@@ -111,6 +141,8 @@ def validate_config(config: Config) -> None:
 
 def main(config: Config) -> None:
     validate_config(config)
+
+    experiment = f"g1_standing_ppo_{config.run_kind}"
 
     compatability_adapter_installed = install_device_put_replicated_adapter()
 
@@ -127,7 +159,13 @@ def main(config: Config) -> None:
 
     environment_config = default_config()
     environment_config.standing_probability = config.standing_probability
-    environment_config.impl = "warp"
+    environment_config.impl = config.impl
+
+    if config.impl == "warp":
+        environment_config.naconmax = config.naconmax_per_env * max(
+            config.num_envs, config.num_eval_envs
+        )
+        environment_config.njmax = config.njmax
 
     # Warp allocates contact capacity across the batched worlds.
     environment_config.naconmax = 8 * max(config.num_envs, config.num_eval_envs)
@@ -137,7 +175,7 @@ def main(config: Config) -> None:
 
     ppo_config = locomotion_params.brax_ppo_config(
         "G1JoystickFlatTerrain",
-        "warp",
+        config.impl,
     )
     ppo_config.num_timesteps = config.num_timesteps
     ppo_config.num_envs = config.num_envs
@@ -175,7 +213,7 @@ def main(config: Config) -> None:
             "jax_device_put_replicated_adapter": (compatability_adapter_installed),
         },
         "environment_config": environment_config.to_dict(),
-        "experiment": "g1_standing_ppo_training_smoke",
+        "experiment": experiment,
         "motionforge_revision": git_output(
             motionforge_root,
             "rev-parse",
@@ -215,6 +253,7 @@ def main(config: Config) -> None:
         record = {
             "elapsed_seconds": time.monotonic() - start_time,
             "metrics": serialize_metrics(metrics),
+            "metrics_finite": metrics_are_finite(metrics),
             "step": int(step),
         }
         progress_records.append(record)
@@ -255,13 +294,9 @@ def main(config: Config) -> None:
 
     checkpoint_entries = sorted(path.name for path in checkpoint_dir.iterdir())
 
-    metric_values = []
-    for record in progress_records:
-        metric_values.extend(record["metrics"].values())
-
     finite_metrics = all(
-        not isinstance(value, float) or np.isfinite(value) for value in metric_values
-    )
+        record["metrics_finite"] for record in progress_records
+    ) and metrics_are_finite(final_metrics)
 
     checks = {
         "checkpoint_created": bool(checkpoint_entries),
@@ -278,7 +313,7 @@ def main(config: Config) -> None:
         "checks": checks,
         "checkpoint_entries": checkpoint_entries,
         "elapsed_seconds": elapsed_seconds,
-        "experiment": "g1_standing_ppo_training_smoke",
+        "experiment": experiment,
         "final_metrics": serialized_final_metrics,
         "metrics_records": len(progress_records),
         "output_dir": str(output_dir),
