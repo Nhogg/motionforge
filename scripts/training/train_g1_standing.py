@@ -31,6 +31,7 @@ from brax.training.agents.ppo import train as ppo
 from mujoco_playground import wrapper
 from mujoco_playground.config import locomotion_params
 
+from motionforge.callbacks.g1_video import G1VideoCallback
 from motionforge.compat.brax_jax import install_device_put_replicated_adapter
 from motionforge.envs.g1_standing import (
     G1StandingJoystick,
@@ -73,6 +74,16 @@ class Config:
     wandb_entity: str | None = None
     wandb_name: str | None = None
     wandb_group: str | None = None
+    wandb_video: bool = False
+    wandb_video_interval_steps: int = 20_000_000
+    wandb_video_duration: float = 5.0
+    wandb_video_fps: int = 15
+    wandb_video_width: int = 640
+    wandb_video_height: int = 480
+    wandb_video_seed: int = 0
+    wandb_video_command_x: float = 0.0
+    wandb_video_command_y: float = 0.0
+    wandb_video_command_yaw: float = -0.5
 
     naconmax_per_env: int = 8
     njmax: int = 128
@@ -293,6 +304,33 @@ def main(config: Config) -> None:
     )
     manifest["wandb"] = wandb_logger.metadata
 
+    policy_params_callback = lambda *_: None
+    if config.wandb_video:
+        video_environment_config = default_config()
+        video_environment_config.impl = config.impl
+        video_environment_config.naconmax = 16
+        video_environment_config.njmax = config.njmax
+        video_environment_config.push_config.enable = False
+
+        video_environment = G1StandingJoystick(config=video_environment_config)
+
+        policy_params_callback = G1VideoCallback(
+            environment=video_environment,
+            logger=wandb_logger,
+            output_dir=output_dir,
+            interval_steps=(config.wandb_video_interval_steps),
+            duration=config.wandb_video_duration,
+            fps=config.wandb_video_fps,
+            width=config.wandb_video_width,
+            height=config.wandb_video_height,
+            seed=config.wandb_video_seed,
+            command=(
+                config.wandb_video_command_x,
+                config.wandb_video_command_y,
+                config.wandb_video_command_yaw,
+            ),
+        )
+
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -342,7 +380,7 @@ def main(config: Config) -> None:
         wrap_env_fn=wrapper.wrap_for_brax_training,
         num_eval_envs=config.num_eval_envs,
         progress_fn=progress,
-        policy_params_fn=lambda *_: None,
+        policy_params_fn=policy_params_callback,
         vision=False,
         restore_checkpoint_path=restore_checkpoint_path,
         **training_parameters,
