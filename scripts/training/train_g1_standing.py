@@ -36,6 +36,10 @@ from motionforge.envs.g1_standing import (
     G1StandingJoystick,
     default_config,
 )
+from motionforge.logging.wandb import (
+    WandbMetricsLogger,
+    WandbMode,
+)
 
 
 @dataclass(frozen=True)
@@ -56,10 +60,24 @@ class Config:
     num_minibatches: int = 4
     num_updates_per_batch: int = 2
 
+    pure_x_probability: float = 0.15
+    pure_y_probability: float = 0.10
+    pure_yaw_probability: float = 0.20
+    mixed_probability: float = 0.25
+
+    learning_rate: float | None = None
+    restore_checkpoint: Path | None = None
+
+    wandb_mode: WandbMode = "online"
+    wandb_project: str = "motionforge"
+    wandb_entity: str | None = None
+    wandb_name: str | None = None
+    wandb_group: str | None = None
+
     naconmax_per_env: int = 8
     njmax: int = 128
 
-    run_kind: Literal["test", "learning", "full"] = "test"
+    run_kind: Literal["test", "learning", "full", "finetune"] = "test"
 
     output_dir: Path = Path("logs/p2/training/g1_standing_smoke_a")
     playground_root: Path = Path("../mujoco_playground")
@@ -119,6 +137,19 @@ def validate_config(config: Config) -> None:
         "njmax": config.njmax,
     }
 
+    command_probabilities = {
+        "standing_probability": config.standing_probability,
+        "pure_x_probability": config.pure_x_probability,
+        "pure_y_probability": config.pure_y_probability,
+        "pure_yaw_probability": config.pure_yaw_probability,
+        "mixed_probability": config.mixed_probability,
+    }
+
+    if any(probability < 0.0 for probability in command_probabilities.values()):
+        raise ValueError(
+            f"Command-mode probabilities must sum to one; got {probability_sum}"
+        )
+
     rollout_batch_size = config.batch_size * config.num_minibatches
     if rollout_batch_size % config.num_envs != 0:
         raise ValueError(
@@ -150,6 +181,11 @@ def main(config: Config) -> None:
     playground_root = config.playground_root.resolve()
 
     output_dir = config.output_dir.resolve()
+    restore_checkpoint_path = (
+        config.restore_checkpoint.resolve().as_posix()
+        if config.restore_checkpoint is not None
+        else None
+    )
     checkpoint_dir = output_dir / "checkpoints"
     metrics_path = output_dir / "metrics.jsonl"
     summary_path = output_dir / "summary.json"
@@ -159,6 +195,10 @@ def main(config: Config) -> None:
 
     environment_config = default_config()
     environment_config.standing_probability = config.standing_probability
+    environment_config.pure_x_probability = config.pure_x_probability
+    environment_config.pure_y_probability = config.pure_y_probability
+    environment_config.pure_yaw_probability = config.pure_yaw_probability
+    environment_config.mixed_probability = config.mixed_probability
     environment_config.impl = config.impl
 
     if config.impl == "warp":
@@ -185,6 +225,8 @@ def main(config: Config) -> None:
     ppo_config.batch_size = config.batch_size
     ppo_config.num_minibatches = config.num_minibatches
     ppo_config.num_updates_per_batch = config.num_updates_per_batch
+    if config.learning_rate is not None:
+        ppo_config.learning_rate = config.learning_rate
 
     network_config = ppo_config.network_factory
     training_parameters = dict(ppo_config)
@@ -208,6 +250,7 @@ def main(config: Config) -> None:
             "python": platform.python_version(),
             "warp": version("warp-lang"),
         },
+        "restore_checkpoint": restore_checkpoint_path,
         "devices": [str(device) for device in jax.devices()],
         "compatibility": {
             "jax_device_put_replicated_adapter": (compatability_adapter_installed),
@@ -238,6 +281,18 @@ def main(config: Config) -> None:
             key: json_value(value) for key, value in training_parameters.items()
         },
     }
+
+    wandb_logger = WandbMetricsLogger(
+        mode=config.wandb_mode,
+        project=config.wandb_project,
+        entity=config.wandb_entity,
+        name=config.wandb_name or output_dir.name,
+        group=config.wandb_group,
+        output_dir=output_dir,
+        configuration=manifest,
+    )
+    manifest["wandb"] = wandb_logger.metadata
+
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -260,6 +315,11 @@ def main(config: Config) -> None:
 
         with metrics_path.open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, sort_keys=True) + "\n")
+
+        wandb_logger.log(
+            environment_steps=record["step"],
+            metrics=record["metrics"],
+        )
 
         episode_reward = record["metrics"].get("eval/episode_reward")
         print(
@@ -284,6 +344,7 @@ def main(config: Config) -> None:
         progress_fn=progress,
         policy_params_fn=lambda *_: None,
         vision=False,
+        restore_checkpoint_path=restore_checkpoint_path,
         **training_parameters,
     )
 
@@ -327,6 +388,17 @@ def main(config: Config) -> None:
         encoding="utf-8",
     )
     print(json.dumps(summary, sort_keys=True))
+
+    wandb_logger.finish(
+        {
+            "elapsed_seconds": elapsed_seconds,
+            "final_environment_steps": (
+                progress_records[-1]["step"] if progress_records else 0
+            ),
+            "final_episode_reward": serialized_final_metrics.get("eval/episode_reward"),
+            "passed": summary["passed"],
+        }
+    )
 
     if not summary["passed"]:
         raise SystemExit(1)

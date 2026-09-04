@@ -60,6 +60,16 @@ SCENARIOS = (
     Scenario("turn_left", (0.0, 0.0, 0.5), (0.0, 0.0, 0.5)),
     Scenario("turn_right", (0.0, 0.0, -0.5), (0.0, 0.0, -0.5)),
     Scenario(
+        "curve_left",
+        (0.3, 0.0, 0.5),
+        (0.3, 0.0, 0.5),
+    ),
+    Scenario(
+        "curve_right",
+        (0.3, 0.0, -0.5),
+        (0.3, 0.0, -0.5),
+    ),
+    Scenario(
         "stop",
         (0.5, 0.0, 0.0),
         (0.0, 0.0, 0.0),
@@ -172,6 +182,14 @@ def main(config: Config) -> None:
             post_switch_velocity_sum = jp.zeros(2)
             post_switch_steps = jp.array(0)
 
+            maximum_foot_height = jp.full((2,), -jp.inf)
+            minimum_foot_height = jp.full((2,), jp.inf)
+            foot_contact_steps = jp.zeros(2, dtype=jp.int32)
+            foot_contact_transitions = jp.zeros(2, dtype=jp.int32)
+            double_support_steps = jp.array(0, dtype=jp.int32)
+            flight_steps = jp.array(0, dtype=jp.int32)
+            previous_contact = jp.asarray(state.info["last_contact"], dtype=bool)
+
             for step in range(rollout_steps):
                 use_final_command = (
                     scenario_switch_step is not None and step >= scenario_switch_step
@@ -192,6 +210,38 @@ def main(config: Config) -> None:
 
                 valid = ~terminated
                 valid_float = valid.astype(jp.float32)
+
+                contact = jp.asarray(
+                    state.info["last_contact"],
+                    dtype=bool,
+                )
+                foot_height = state.data.site_xpos[
+                    environment._feet_site_id,
+                    2,
+                ]
+
+                maximum_foot_height = jp.maximum(
+                    maximum_foot_height,
+                    jp.where(valid, foot_height, -jp.inf),
+                )
+                minimum_foot_height = jp.minimum(
+                    minimum_foot_height,
+                    jp.where(valid, foot_height, jp.inf),
+                )
+
+                foot_contact_steps += (contact & valid).astype(jp.int32)
+                foot_contact_transitions += (
+                    (contact != previous_contact) & valid
+                ).astype(jp.int32)
+
+                double_support_steps += (valid & jp.all(contact)).astype(jp.int32)
+                flight_steps += (valid & ~jp.any(contact)).astype(jp.int32)
+
+                previous_contact = jp.where(
+                    valid,
+                    contact,
+                    previous_contact,
+                )
 
                 linear_error = local_velocity[:2] - command[:2]
                 yaw_error = angular_velocity[2] - command[2]
@@ -237,6 +287,9 @@ def main(config: Config) -> None:
                 and np.isfinite(np.asarray(total_reward))
             )
 
+            maximum_foot_height_array = np.asarray(maximum_foot_height)
+            minimum_foot_height_array = np.asarray(minimum_foot_height)
+
             seed_result: dict[str, object] = {
                 "linear_velocity_tracking_rmse": float(
                     np.sqrt(np.asarray(sum_linear_squared_error / denominator))
@@ -252,6 +305,19 @@ def main(config: Config) -> None:
                 "yaw_rate_tracking_rmse": float(
                     np.sqrt(np.asarray(sum_yaw_squared_error / denominator))
                 ),
+                "double_support_fraction": float(np.asarray(double_support_steps))
+                / denominator,
+                "flight_fraction": float(np.asarray(flight_steps)) / denominator,
+                "foot_contact_duty_factor": (
+                    np.asarray(foot_contact_steps) / denominator
+                ).tolist(),
+                "foot_contact_transitions": np.asarray(
+                    foot_contact_transitions
+                ).tolist(),
+                "foot_height_range": (
+                    maximum_foot_height_array - minimum_foot_height_array
+                ).tolist(),
+                "maximum_foot_height": (maximum_foot_height_array.tolist()),
             }
 
             if scenario_switch_step is not None:
