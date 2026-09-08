@@ -40,6 +40,10 @@ class Config:
     command_y: float = 0.0
     command_yaw: float = 0.0
     stop_at: float | None = 5.0
+    push_at: float | None = None
+    push_velocity_x: float = 0.0
+    push_velocity_y: float = 0.0
+    ignore_prohibited_contact_termination: bool = False
 
     duration: float = 10.0
     fps: int = 30
@@ -50,6 +54,17 @@ class Config:
     njmax: int = 128
 
     output: Path = Path("logs/p2/videos/g1_checkpoint_best_forward_stop.mp4")
+
+
+class ContactTolerantG1StandingJoystick(G1StandingJoystick):
+    """Rendering-only environment that terminates on physical failure."""
+
+    def _get_termination(self, data):
+        return (
+            (self.get_gravity(data, "torso")[-1] < 0.0)
+            | jp.isnan(data.qpos).any()
+            | jp.isnan(data.qvel).any()
+        )
 
 
 def force_command(state, command: jax.Array):
@@ -80,6 +95,11 @@ def validate_config(config: Config) -> None:
     if config.stop_at is not None:
         if not 0.0 < config.stop_at < config.duration:
             raise ValueError("--stop-at must lie within the rollout duration")
+    if config.push_at is not None:
+        if not 0.0 < config.push_at < config.duration:
+            raise ValueError("--push-at must lie within the rollout duration")
+        if config.push_velocity_x == 0.0 and config.push_velocity_y == 0.0:
+            raise ValueError("A configured push must have nonzero planar velocity")
 
 
 def main(config: Config) -> None:
@@ -104,10 +124,24 @@ def main(config: Config) -> None:
     environment_config.njmax = config.njmax
     environment_config.push_config.enable = False
 
-    environment = G1StandingJoystick(config=environment_config)
+    environment_type = (
+        ContactTolerantG1StandingJoystick
+        if config.ignore_prohibited_contact_termination
+        else G1StandingJoystick
+    )
+    environment = environment_type(config=environment_config)
 
     control_timestep = float(environment.dt)
     rollout_steps = round(config.duration / control_timestep)
+    push_step = (
+        round(config.push_at / control_timestep)
+        if config.push_at is not None
+        else None
+    )
+    push_velocity = jp.asarray(
+        [config.push_velocity_x, config.push_velocity_y],
+        dtype=jp.float32,
+    )
 
     moving_command = jp.array(
         [
@@ -155,7 +189,15 @@ def main(config: Config) -> None:
     frames: list[np.ndarray] = []
     next_frame_time = 0.0
     terminated_at: float | None = None
+    first_prohibited_contact_at: float | None = None
     minimum_root_height = float("inf")
+    prohibited_contact_sensor_addresses = np.asarray(
+        [
+            model.sensor_adr[environment._right_foot_left_foot_found_sensor],
+            model.sensor_adr[environment._left_foot_right_shin_found_sensor],
+            model.sensor_adr[environment._right_foot_left_shin_found_sensor],
+        ]
+    )
 
     try:
         for step in range(rollout_steps):
@@ -163,6 +205,10 @@ def main(config: Config) -> None:
 
             stopped = config.stop_at is not None and simulation_time >= config.stop_at
             command = stopped_command if stopped else moving_command
+
+            if push_step is not None and step == push_step:
+                qvel = state.data.qvel.at[:2].add(push_velocity)
+                state = state.replace(data=state.data.replace(qvel=qvel))
 
             rng, action_rng = jax.random.split(rng)
             state = controlled_step(state, command, action_rng)
@@ -175,6 +221,13 @@ def main(config: Config) -> None:
 
             if terminated_at is None and bool(np.asarray(state.done)):
                 terminated_at = simulation_time + control_timestep
+
+            if first_prohibited_contact_at is None:
+                prohibited_contacts = np.asarray(state.data.sensordata)[
+                    prohibited_contact_sensor_addresses
+                ] > 0
+                if bool(np.any(prohibited_contacts)):
+                    first_prohibited_contact_at = simulation_time + control_timestep
 
             frame_time = simulation_time + control_timestep
             if frame_time >= next_frame_time:
@@ -213,6 +266,7 @@ def main(config: Config) -> None:
         "python_version": platform.python_version(),
         "simulation_steps": rollout_steps,
         "terminated_at": terminated_at,
+        "first_prohibited_contact_at": first_prohibited_contact_at,
         "video_duration": len(frames) / config.fps,
     }
 
