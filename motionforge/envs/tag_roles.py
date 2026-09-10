@@ -33,7 +33,19 @@ class TagRoleAssignment:
     agents: tuple[TagAgent, TagAgent]
 
     def __post_init__(self) -> None:
+        if len(self.agents) != 2:
+            raise ValueError("Tag requires exactly two agents")
+
+        indices = {agent.index for agent in self.agents}
+        prefixes = {agent.model_prefix for agent in self.agents}
         roles = {agent.role for agent in self.agents}
+
+        if indices != {0, 1}:
+            raise ValueError(f"Agent indices must be 0 and 1; got {indices}")
+        if len(prefixes) != 2:
+            raise ValueError("Agent model prefixes must be distinct")
+        if roles != {TagRole.PURSUER, TagRole.EVADER}:
+            raise ValueError("Exactly one pursuer and one evader are required")
 
     def by_role(self, role: TagRole) -> TagAgent:
         """Return the uniquely assigned agent for a role."""
