@@ -15,6 +15,17 @@ from pathlib import Path
 import mujoco
 from mujoco_playground._src.locomotion.g1 import base, g1_constants
 
+G1_COLLISION_GEOM_NAMES = (
+    "left_thigh",
+    "left_shin",
+    "left_foot",
+    "right_thigh",
+    "right_shin",
+    "right_foot",
+    "left_hand_collision",
+    "right_hand_collision",
+)
+
 
 @dataclass(frozen=True)
 class G1ModelLayout:
@@ -30,7 +41,9 @@ class TwoG1Model:
     agents: tuple[G1ModelLayout, G1ModelLayout]
 
 
-def build_two_g1_model(timestep: float = 0.002) -> TwoG1Model:
+def build_two_g1_model(
+    timestep: float = 0.002, enable_inter_agent_collision: bool = False
+) -> TwoG1Model:
     """Compile two prefixed G1 models and one shared flat floor."""
     if timestep <= 0.0:
         raise ValueError("timestep must be positive")
@@ -55,6 +68,23 @@ def build_two_g1_model(timestep: float = 0.002) -> TwoG1Model:
         attachment = arena.worldbody.add_frame(name=f"agent{index}_attachment")
         robot = mujoco.MjSpec.from_file(robot_path, assets=assets)
         arena.attach(robot, prefix=prefix, frame=attachment)
+
+    if enable_inter_agent_collision:
+        for agent0_geom in G1_COLLISION_GEOM_NAMES:
+            for agent1_geom in G1_COLLISION_GEOM_NAMES:
+                arena.add_pair(
+                    name=(f"inter_agent/{agent0_geom}/{agent1_geom}"),
+                    geomname1=f"agent0/{agent0_geom}",
+                    geomname2=f"agent1/{agent1_geom}",
+                    condim=3,
+                    friction=[
+                        0.6,
+                        0.6,
+                        0.005,
+                        0.0001,
+                        0.0001,
+                    ],
+                )
 
     model = arena.compile()
 
