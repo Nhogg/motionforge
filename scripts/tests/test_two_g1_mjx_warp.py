@@ -1,8 +1,6 @@
 """test_two_g1_mjx_warp.py.
 
 Author: Nathan Hogg <nathanhogg1223@gmail.com>
-Description:
-    TODO: Describe this module.
 """
 
 from __future__ import annotations
