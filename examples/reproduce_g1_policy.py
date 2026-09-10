@@ -12,14 +12,15 @@ from typing import Any
 import mujoco
 import numpy as np
 import onnxruntime as ort
-import tyro
 from mujoco_playground._src.locomotion.g1 import g1_constants
 from mujoco_playground._src.locomotion.g1.base import get_assets
+
+from motionforge.cli import run_hydra
 
 PLAYGROUND_REVISION = "8a4b4642d8eba8a80ac99ed125cb62c16e1457ad"
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     """Reproduce the bundled MuJoCo Playground G1 policy."""
 
@@ -430,4 +431,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

@@ -6,11 +6,12 @@ from pathlib import Path
 import mediapy
 import mujoco
 import numpy as np
-import tyro
 from dm_control.locomotion import soccer
 
+from motionforge.cli import run_hydra
 
-@dataclass(frozen=True)
+
+@dataclass
 class Config:
     seed: int = 0
     duration: float = 0.75
@@ -111,4 +112,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

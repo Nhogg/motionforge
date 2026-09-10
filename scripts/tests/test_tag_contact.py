@@ -12,8 +12,8 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
-import tyro
 
+from motionforge.cli import run_hydra
 from motionforge.envs.tag_contact import (
     build_tag_contact_layout,
     detect_tag_contact,
@@ -24,7 +24,7 @@ from motionforge.envs.two_g1 import (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     separated_distance: float = 2.0
@@ -123,4 +123,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

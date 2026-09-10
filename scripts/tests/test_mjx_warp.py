@@ -11,9 +11,10 @@ from typing import Any
 
 import jax
 import mujoco
-import tyro
 from mujoco import mjx
 from mujoco.mjx.third_party import mujoco_warp
+
+from motionforge.cli import run_hydra
 
 MJCF = """
 <mujoco model="falling_sphere">
@@ -40,7 +41,7 @@ MJCF = """
 """
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     """Configuration for the MJX-Warp GPU smoke test."""
 
@@ -189,4 +190,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

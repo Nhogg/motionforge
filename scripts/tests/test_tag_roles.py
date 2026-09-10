@@ -10,8 +10,7 @@ import platform
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import tyro
-
+from motionforge.cli import run_hydra
 from motionforge.envs.tag_roles import (
     TagRole,
     assign_tag_roles,
@@ -19,7 +18,7 @@ from motionforge.envs.tag_roles import (
 from motionforge.envs.two_g1 import build_two_g1_model
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     pursuer_index: int = 0
@@ -81,4 +80,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

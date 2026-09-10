@@ -21,15 +21,15 @@ from pathlib import Path
 
 import jax
 import numpy as np
-import tyro
 from brax.training import checkpoint
 from brax.training.agents.ppo import networks as ppo_networks
 
+from motionforge.cli import run_hydra
 from motionforge.compat.brax_checkpoint import load_ppo_network
 from motionforge.envs.g1_standing import G1StandingJoystick, default_config
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     checkpoint: Path = Path(
         "logs/p2/training/g1_standing_full_seed0/checkpoints/000191692800"
@@ -165,4 +165,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

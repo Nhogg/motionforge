@@ -20,17 +20,17 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jp
 import numpy as np
-import tyro
 from brax.training import checkpoint
 from brax.training.agents.ppo import networks as ppo_networks
 
+from motionforge.cli import run_hydra
 from motionforge.compat.brax_checkpoint import load_ppo_network
 from motionforge.envs.g1_standing import G1StandingJoystick, default_config
 
 COMMAND_OBSERVATION_SLICE = slice(9, 12)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/"
@@ -378,4 +378,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

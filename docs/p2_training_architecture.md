@@ -14,7 +14,7 @@ provides the simulator environment and PPO implementation.
 
 ### MotionForge owns
 
-- the Tyro command-line interface and complete training configuration;
+- the Hydra structured command-line configuration and complete training configuration;
 - the G1 environment subclass used for project-specific command sampling;
 - experiment seeds, identifiers, manifests, and dependency revisions;
 - training and evaluation output locations under `logs/p2/`;
@@ -62,7 +62,7 @@ bundled policy.
 ## Training flow
 
 ```text
-Tyro training configuration
+Hydra structured training configuration
           |
           v
 MotionForge G1 environment registration
@@ -226,7 +226,7 @@ a checkpoint, but emitted repeated `nefc overflow` warnings. Its inherited
 `njmax=90` capacity was below the observed requirement of 93 constraints per
 world, meaning constraints could be dropped. The run is rejected as a scaling
 result despite its nominal pass summary. Subsequent Warp runs expose contact
-and constraint capacities in their Tyro configuration and use `njmax=128` to
+and constraint capacities in their Hydra configuration and use `njmax=128` to
 provide margin above the observed requirement.
 
 Repeating the 1024-world run with `njmax=128` completed without contact or

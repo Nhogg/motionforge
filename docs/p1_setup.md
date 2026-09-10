@@ -2,7 +2,7 @@
 
 ## Reproducibility conventions
 
-- Python command-line interfaces use Tyro.
+- Python command-line interfaces use Hydra structured configs.
 - Each automated check exposes a seed and configuration.
 - Machine-readable results are stored under `logs/p1/`.
 - Duplicate seeded runs are compared byte-for-byte where applicable.
@@ -117,7 +117,8 @@ results were byte-identical:
 This completes the P1 MuJoCo stack checks. Humanoid selection and controller
 evaluation remain scoped to P2.
 
-The heightfield fixture also supports visual inspection with its Tyro `--view`
-flag. This renders an MP4 using MuJoCo's offscreen renderer; `--video-output`
+The heightfield fixture also supports visual inspection with its Hydra
+`view=true` override. This renders an MP4 using MuJoCo's offscreen renderer;
+`video_output=<path>`
 sets its destination. Rendering does not change the default headless
 experiment path.

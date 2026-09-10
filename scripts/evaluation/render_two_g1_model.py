@@ -16,15 +16,15 @@ from pathlib import Path
 import mediapy
 import mujoco
 import numpy as np
-import tyro
 
+from motionforge.cli import run_hydra
 from motionforge.envs.two_g1 import (
     build_two_g1_model,
     make_two_g1_data,
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     separation: float = 2.0
     duration: float = 5.0
@@ -135,4 +135,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

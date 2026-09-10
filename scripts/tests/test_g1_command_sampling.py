@@ -19,12 +19,12 @@ from typing import Any
 
 import jax
 import numpy as np
-import tyro
 
+from motionforge.cli import run_hydra
 from motionforge.envs.g1_standing import G1StandingJoystick
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     samples: int = 16_384
@@ -214,4 +214,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

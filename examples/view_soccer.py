@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-import tyro
 from dm_control import viewer
 from dm_control.locomotion import soccer
 
+from motionforge.cli import run_hydra
 
-@dataclass(frozen=True)
+
+@dataclass
 class Config:
     """View the dm_control multi-agent soccer environment."""
 
@@ -52,4 +53,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

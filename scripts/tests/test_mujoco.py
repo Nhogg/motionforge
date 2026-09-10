@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import mujoco
-import tyro
+
+from motionforge.cli import run_hydra
 
 # MuJoCo model descriptor
 MJCF = """
@@ -37,7 +38,7 @@ MJCF = """
 """
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     """Config for standard MuJoCo test"""
 
@@ -128,4 +129,4 @@ def main(config: Config) -> int:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

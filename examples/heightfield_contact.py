@@ -9,10 +9,11 @@ from pathlib import Path
 import mediapy
 import mujoco
 import numpy as np
-import tyro
+
+from motionforge.cli import run_hydra
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     steps: int = 2000
@@ -297,4 +298,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

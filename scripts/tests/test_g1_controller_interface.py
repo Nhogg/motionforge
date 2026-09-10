@@ -8,8 +8,8 @@ from pathlib import Path
 
 import jax
 import numpy as np
-import tyro
 
+from motionforge.cli import run_hydra
 from motionforge.controllers.g1 import (
     G1LocomotionController,
     G1VelocityCommand,
@@ -18,7 +18,7 @@ from motionforge.controllers.g1 import (
 from motionforge.envs.g1_standing import G1StandingJoystick, default_config
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/"
@@ -130,4 +130,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

@@ -93,7 +93,7 @@ quarter. This rules out braking momentum as the sole explanation.
 The upstream G1 environment advances its gait phase at zero command and
 contains a disabled, explicitly documented option to freeze the phase to make
 the policy stand still. The reproduction exposes this behavior as the opt-in
-`--freeze-phase-at-zero` diagnostic while preserving the upstream default for
+`freeze_phase_at_zero=true` diagnostic while preserving the upstream default for
 controlled comparison.
 
 The phase-freeze diagnostic did not produce a viable stance. From the initial

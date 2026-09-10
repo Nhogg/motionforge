@@ -15,16 +15,16 @@ from pathlib import Path
 
 import jax
 import numpy as np
-import tyro
 from mujoco import mjx
 
+from motionforge.cli import run_hydra
 from motionforge.envs.two_g1 import (
     build_two_g1_model,
     make_two_g1_data,
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     steps: int = 10
@@ -165,4 +165,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

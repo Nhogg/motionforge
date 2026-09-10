@@ -112,7 +112,10 @@ distance of approximately -0.16 m.
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through
-Tyro and write machine-readable JSON beneath `logs/p3`. Model layout, role
+Hydra structured configs and write machine-readable JSON beneath `logs/p3`.
+Hydra's timestamped output tree and duplicate job log are disabled by default
+because each MotionForge experiment owns its explicit output path. CLI values
+use Hydra's `field=value` override syntax. Model layout, role
 assignment, observation extraction, contact rules, rendering, and tests remain
 separate modules so later changes can be evaluated without replacing working
 infrastructure.

@@ -11,11 +11,12 @@ from typing import Any
 
 import mujoco
 import numpy as np
-import tyro
 from dm_control.locomotion.examples import basic_cmu_2019
 
+from motionforge.cli import run_hydra
 
-@dataclass(frozen=True)
+
+@dataclass
 class Config:
     """Reproduce the official dm_control CMU humanoid example."""
 
@@ -132,4 +133,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

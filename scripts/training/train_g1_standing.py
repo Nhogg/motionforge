@@ -21,17 +21,17 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import jax
 import numpy as np
-import tyro
 from brax.training.agents.ppo import networks as ppo_networks
 from brax.training.agents.ppo import train as ppo
 from mujoco_playground import wrapper
 from mujoco_playground.config import locomotion_params
 
 from motionforge.callbacks.g1_video import G1VideoCallback
+from motionforge.cli import run_hydra
 from motionforge.compat.brax_jax import install_device_put_replicated_adapter
 from motionforge.envs.g1_standing import (
     G1StandingJoystick,
@@ -39,16 +39,15 @@ from motionforge.envs.g1_standing import (
 )
 from motionforge.logging.wandb import (
     WandbMetricsLogger,
-    WandbMode,
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     standing_probability: float = 0.30
 
-    impl: Literal["jax", "warp"] = "warp"
+    impl: str = "warp"
 
     num_timesteps: int = 100_000
     num_envs: int = 128
@@ -69,7 +68,7 @@ class Config:
     learning_rate: float | None = None
     restore_checkpoint: Path | None = None
 
-    wandb_mode: WandbMode = "online"
+    wandb_mode: str = "online"
     wandb_project: str = "motionforge"
     wandb_entity: str | None = None
     wandb_name: str | None = None
@@ -88,7 +87,7 @@ class Config:
     naconmax_per_env: int = 8
     njmax: int = 128
 
-    run_kind: Literal["test", "learning", "full", "finetune"] = "test"
+    run_kind: str = "test"
 
     output_dir: Path = Path("logs/p2/training/g1_standing_smoke_a")
     playground_root: Path = Path("../mujoco_playground")
@@ -133,6 +132,15 @@ def metrics_are_finite(
 
 
 def validate_config(config: Config) -> None:
+
+    if config.impl not in {"jax", "warp"}:
+        raise ValueError("impl must be 'jax' or 'warp'")
+    if config.run_kind not in {"test", "learning", "full", "finetune"}:
+        raise ValueError(
+            "run_kind must be 'test', 'learning', 'full', or 'finetune'"
+        )
+    if config.wandb_mode not in {"disabled", "online", "offline"}:
+        raise ValueError("wandb_mode must be 'disabled', 'online', or 'offline'")
 
     positive_fields = {
         "num_timesteps": config.num_timesteps,
@@ -443,4 +451,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

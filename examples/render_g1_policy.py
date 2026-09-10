@@ -6,13 +6,14 @@ from pathlib import Path
 import mediapy
 import mujoco
 import numpy as np
-import tyro
 from mujoco_playground._src.locomotion.g1 import g1_constants
 from mujoco_playground._src.locomotion.g1.base import get_assets
 from reproduce_g1_policy import FixedCommandController
 
+from motionforge.cli import run_hydra
 
-@dataclass(frozen=True)
+
+@dataclass
 class Config:
     duration: float = 10.0
     command_x: float = 0.5
@@ -111,4 +112,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)

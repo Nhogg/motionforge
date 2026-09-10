@@ -12,8 +12,8 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
-import tyro
 
+from motionforge.cli import run_hydra
 from motionforge.envs.tag_observations import (
     build_tag_observation_layout,
     relative_planar_observation,
@@ -24,7 +24,7 @@ from motionforge.envs.two_g1 import (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class Config:
     seed: int = 0
     separation: float = 2.0
@@ -169,4 +169,4 @@ def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    main(tyro.cli(Config))
+    run_hydra(Config, main)
