@@ -28,7 +28,7 @@
 - [x] Add pursuer and evader roles
 - [x] Implement relative position and velocity observations
 - [x] Implement tag / contact detection
-- [ ] Implement fall detection
+- [x] Implement fall detection
 - [ ] Implement OOB detection
 - [ ] Implement deterministic reset logic
 - [ ] Add episode timeout

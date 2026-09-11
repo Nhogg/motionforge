@@ -109,6 +109,34 @@ Evidence: `logs/p3/tag_contact_b.json`. The test produced 74 total model pairs:
 tag contacts; in the overlapping fixture it found 28, with a minimum signed
 distance of approximately -0.16 m.
 
+## Fall detection
+
+`motionforge/envs/tag_fall.py` classifies each agent independently using its
+floating-base height and orientation. `FallDetectionLayout` resolves the two
+root generalized-position addresses once, while `detect_falls` performs only
+array operations suitable for the MJX-Warp runtime.
+
+The initial thresholds are:
+
+- minimum root height: 0.45 m;
+- minimum torso-up alignment with world Z: 0.50, equivalent to a maximum tilt
+  of 60 degrees for a normalized root quaternion.
+
+An agent is classified as fallen when its root is below the height threshold,
+its up alignment is below the orientation threshold, or its required root state
+is non-finite. Diagnostics expose the per-agent fall flag, root height, up
+alignment, and finite-state flag.
+
+This classifier is deliberately stateless. It identifies an invalid posture at
+one instant but does not yet terminate an episode. Temporal persistence belongs
+in the later integrated environment, where a short consecutive-step counter can
+avoid ending an episode because of a recoverable transient posture.
+
+Evidence: `logs/p3/tag_fall_a.json`. Both initialized agents were upright at a
+root height of approximately 0.755 m and an up alignment of 1.0. Lowering agent
+0 to 0.44 m classified only agent 0 as fallen. Rotating agent 1 sideways to an
+up alignment of 0.0 classified only agent 1 as fallen.
+
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through
