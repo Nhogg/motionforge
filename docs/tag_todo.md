@@ -29,7 +29,7 @@
 - [x] Implement relative position and velocity observations
 - [x] Implement tag / contact detection
 - [x] Implement fall detection
-- [ ] Implement OOB detection
+- [x] Implement OOB detection
 - [ ] Implement deterministic reset logic
 - [ ] Add episode timeout
 - [ ] Add flat terrain FIRST

@@ -137,6 +137,24 @@ root height of approximately 0.755 m and an up alignment of 1.0. Lowering agent
 0 to 0.44 m classified only agent 0 as fallen. Rotating agent 1 sideways to an
 up alignment of 0.0 classified only agent 1 as fallen.
 
+## Out-of-bounds detection
+
+`motionforge/envs/tag_bounds.py` defines a logical square playing area centered
+on the world origin. The initial arena half-extent is 4.0 m, so legal root
+positions satisfy `abs(x) <= 4.0` and `abs(y) <= 4.0`. The flat physical floor
+remains larger than the logical game boundary; leaving the playable area is an
+episode rule rather than a collision with a wall.
+
+`BoundsDetectionLayout` resolves both floating-base position addresses once.
+The array-only runtime detector reports each agent's planar position, signed
+maximum-axis boundary excess, finite-state validity, and OOB flag. A root
+exactly on the boundary remains in bounds. Crossing either axis or producing a
+non-finite planar position is OOB.
+
+Evidence: `logs/p3/tag_bounds_a.json`. The deterministic fixtures cover both
+agents and both planar axes, the inclusive boundary, isolation between agents,
+and non-finite state handling.
+
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through

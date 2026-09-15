@@ -5,6 +5,14 @@ Author: Nathan Hogg <nathanhogg1223@gmail.com>
 
 from __future__ import annotations
 
+from motionforge.envs.tag_bounds import (
+    AgentBoundsLayout,
+    BoundsDetectionConfig,
+    BoundsDetectionLayout,
+    BoundsObservation,
+    build_bounds_detection_layout,
+    detect_out_of_bounds,
+)
 from motionforge.envs.tag_contact import (
     TagContactLayout,
     TagContactObservation,
@@ -42,8 +50,12 @@ from motionforge.envs.two_g1 import (
 
 __all__ = [
     "G1_COLLISION_GEOM_NAMES",
+    "AgentBoundsLayout",
     "AgentFallLayout",
     "AgentObservationLayout",
+    "BoundsDetectionConfig",
+    "BoundsDetectionLayout",
+    "BoundsObservation",
     "FallDetectionConfig",
     "FallDetectionLayout",
     "FallObservation",
@@ -57,11 +69,13 @@ __all__ = [
     "TagRoleAssignment",
     "TwoG1Model",
     "assign_tag_roles",
+    "build_bounds_detection_layout",
     "build_fall_detection_layout",
     "build_tag_contact_layout",
     "build_tag_observation_layout",
     "build_two_g1_model",
     "detect_falls",
+    "detect_out_of_bounds",
     "detect_tag_contact",
     "make_two_g1_data",
     "relative_planar_observation",
