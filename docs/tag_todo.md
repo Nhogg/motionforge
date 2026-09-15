@@ -33,6 +33,7 @@
 - [x] Implement deterministic reset logic
 - [x] Add episode timeout
 - [x] Add flat terrain FIRST
+- [x] Integrate and smoke-test the complete P3 MJX-Warp environment
 
 # P4 - Scripted tag
 
