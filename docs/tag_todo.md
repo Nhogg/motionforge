@@ -32,7 +32,7 @@
 - [x] Implement OOB detection
 - [x] Implement deterministic reset logic
 - [x] Add episode timeout
-- [ ] Add flat terrain FIRST
+- [x] Add flat terrain FIRST
 
 # P4 - Scripted tag
 

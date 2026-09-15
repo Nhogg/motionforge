@@ -196,6 +196,24 @@ MJX-Warp environment to define its update order explicitly.
 Evidence: `logs/p3/tag_timeout_a.json`. The test covers initial, penultimate,
 exact-boundary, post-boundary, and advance-to-boundary states under JIT.
 
+## Flat terrain
+
+P3 intentionally uses the simplest terrain required for tag: one infinite,
+level MuJoCo plane named `floor`, centered at world Z = 0 with identity
+orientation. Both G1 instances share this geom. There are no heightfield assets
+or physical arena walls; the separate logical bounds detector defines the
+playable square without changing contact dynamics near its edge.
+
+This terrain was present from the first two-agent model composition. The final
+P3 check makes that design constraint explicit and guards against accidentally
+introducing terrain complexity before the flat-ground MVP is validated.
+
+Evidence: `logs/p3/tag_flat_terrain_a.json`. The structural test verifies one
+shared plane, no heightfields, level placement at world zero, equal initialized
+root heights above the floor, and preservation of the configured simulator
+timestep. Dynamic MJX-Warp stepping and floor contacts were previously verified
+by `logs/p3/two_g1_mjx_warp_a.json`.
+
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through
