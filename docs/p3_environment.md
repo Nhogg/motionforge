@@ -179,6 +179,23 @@ separation, origin-centered positions, normalized root quaternions, mutually
 facing headings, preserved joint poses, zero velocities, finite state, and
 positions inside the current arena bounds.
 
+## Episode timeout
+
+`motionforge/envs/tag_timeout.py` defines episode duration in control steps from
+an explicit duration and control timestep. The initial configuration is 20.0 s
+at 0.02 s per control update, giving exactly 1,000 steps. Configuration rejects
+durations that are not integer multiples of the control timestep so timeout
+rounding cannot silently vary between experiments.
+
+The timeout is false through step 999 and becomes true at step 1,000. Advancing
+from step 999 therefore produces the terminal timeout state. Remaining steps
+are clamped at zero after the boundary. Pure JAX functions separately support
+observing the current counter and advancing it, allowing the integrated
+MJX-Warp environment to define its update order explicitly.
+
+Evidence: `logs/p3/tag_timeout_a.json`. The test covers initial, penultimate,
+exact-boundary, post-boundary, and advance-to-boundary states under JIT.
+
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through
