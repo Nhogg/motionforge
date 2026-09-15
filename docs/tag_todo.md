@@ -30,7 +30,7 @@
 - [x] Implement tag / contact detection
 - [x] Implement fall detection
 - [x] Implement OOB detection
-- [ ] Implement deterministic reset logic
+- [x] Implement deterministic reset logic
 - [ ] Add episode timeout
 - [ ] Add flat terrain FIRST
 

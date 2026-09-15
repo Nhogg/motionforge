@@ -155,6 +155,30 @@ Evidence: `logs/p3/tag_bounds_a.json`. The deterministic fixtures cover both
 agents and both planar axes, the inclusive boundary, isolation between agents,
 and non-finite state handling.
 
+## Deterministic reset sampling
+
+`motionforge/envs/tag_reset.py` defines the array-level reset sampler used by
+the future integrated MJX-Warp environment. It accepts explicit template qpos
+and qvel arrays plus a JAX PRNG key, avoiding hidden global random state.
+
+Each reset preserves the accepted knees-bent joint configuration, zeros all
+generalized velocities, and places the agents symmetrically around the world
+origin at a configurable separation. A seeded angle rotates the complete spawn
+about world Z. Agent 0 faces along that angle toward agent 1; agent 1 faces in
+the opposite direction toward agent 0. This samples rotationally distinct but
+geometrically equivalent encounters without introducing a positional advantage
+for either role.
+
+`TagResetLayout` resolves root and joint position addresses once. The sampler
+returns qpos, qvel, the sampled angle, planar positions, and headings, and uses
+only JAX array operations so it can be compiled into the MJX-Warp reset path.
+
+Evidence: `logs/p3/tag_reset_a.json`. The test requires exact equality for
+repeated use of one seed, a changed spawn for a different seed, exact requested
+separation, origin-centered positions, normalized root quaternions, mutually
+facing headings, preserved joint poses, zero velocities, finite state, and
+positions inside the current arena bounds.
+
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through
