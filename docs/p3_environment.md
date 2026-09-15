@@ -214,6 +214,33 @@ root heights above the floor, and preservation of the configured simulator
 timestep. Dynamic MJX-Warp stepping and floor contacts were previously verified
 by `logs/p3/two_g1_mjx_warp_a.json`.
 
+## Integrated MJX-Warp environment
+
+`motionforge/envs/tag_environment.py` composes the independently tested P3
+components into one JIT-compatible MJX-Warp runtime. `TwoG1TagEnvironment`
+owns the shared physics model, deterministic reset, control-rate stepping, and
+episode bookkeeping. Its external action is a `(2, 29)` array of joint-position
+targets; locomotion controllers and policies remain separate from the
+environment.
+
+Each reset stores per-agent relative planar position and velocity observations
+in the observer's heading frame. Each control update applies both agents'
+targets, advances ten 0.002 s physics substeps, and refreshes observations and
+rule diagnostics at the resulting state.
+
+Diagnostics report inter-agent contact, instantaneous fall classification,
+root posture, planar bounds, and timeout state. Episode termination is kept
+separate and accumulates sticky causes for tag contact, per-agent falls,
+per-agent out-of-bounds events, and timeout. Falls must be detected for five
+consecutive control updates before becoming terminal; this prevents one
+recoverable posture excursion from ending the episode. The environment's
+single `done` flag is the union of those accumulated terminal causes.
+
+The initial integrated smoke fixture verifies GPU/JIT reset and stepping,
+relative observation geometry, control application, and isolated tag, fall,
+out-of-bounds, and timeout outcomes. A permanent machine-readable experiment
+script will replace the temporary root-level `test.py` probe before P4 work.
+
 ## Reproducibility conventions
 
 P3 experiment scripts expose seeds and relevant physical configuration through
