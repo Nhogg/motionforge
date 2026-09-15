@@ -30,3 +30,20 @@ Evidence: `logs/p4/tag_scripted_pursuer_a.json`. The deterministic command test
 passed all ten checks on the GPU backend, covering target direction, close-range
 translation stopping, output shape and finiteness, JIT execution, and command
 limits.
+
+## Scripted evader
+
+The evader uses the same local relative-position input and emits a command in
+the opposite direction. Its translational command is proportional to the
+negative relative displacement, and its yaw command turns toward that escape
+direction. Independent gains and limits allow later rollout diagnostics to tune
+the evader without changing pursuit behavior.
+
+This first evader is deliberately unaware of arena boundaries. Adding boundary
+avoidance before observing an actual failure would obscure whether problems
+come from the game policy, locomotion controller, or environment integration.
+
+Evidence: `logs/p4/tag_scripted_evader_a.json`. All 11 deterministic checks
+passed on the GPU backend, including directional signs, JIT execution,
+finiteness, output shape, and saturation at each configured command limit. The
+scripted pursuer regression test also remained green.

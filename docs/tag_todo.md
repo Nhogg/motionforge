@@ -38,7 +38,7 @@
 # P4 - Scripted tag
 
 - [x] Write trivial scripted pursuer that moves toward the opponent
-- [ ] Write trivial scripted evader that moves away
+- [x] Write trivial scripted evader that moves away
 - [ ] Validate that low-level controller can survive rapid direciton changes
 - [ ] Record complete rollouts
 - [ ] Fix observation-frame, contact, reset, and controller problems before training
