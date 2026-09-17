@@ -22,6 +22,20 @@ version, episode seed, integer timestep, simulation time, and both root poses.
 The initial state is timestep zero, followed by one row per completed control
 update.
 
+## Root linear and angular velocity
+
+Schema version 2 adds root linear and angular velocity through a separate
+setup-time sensor layout and JAX-compatible extractor. Linear velocity comes
+from each model's `global_linvel_pelvis` sensor and is therefore recorded in
+the world frame. Angular velocity comes from `gyro_pelvis` and is recorded in
+the pelvis frame. The frame names are part of the JSONL field names rather
+than implicit metadata: `world_linear_velocity` and
+`pelvis_angular_velocity`, each with shape `(2, 3)`.
+
+The logging smoke experiment validates both velocity arrays at every recorded
+timestep for shape and finite values. Schema version 1 remains interpretable
+as pose-only; version 2 is its additive root-state extension.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

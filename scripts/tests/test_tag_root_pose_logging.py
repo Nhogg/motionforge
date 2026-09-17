@@ -21,7 +21,9 @@ from motionforge.envs import TagEnvironmentConfig, TwoG1TagEnvironment
 from motionforge.logging import (
     TAG_TRAJECTORY_SCHEMA_VERSION,
     build_tag_root_pose_layout,
+    build_tag_root_velocity_layout,
     extract_tag_root_pose,
+    extract_tag_root_velocity,
 )
 
 
@@ -32,8 +34,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_root_pose_a.jsonl")
-    summary: Path = Path("logs/p5/tag_root_pose_a_summary.json")
+    output: Path = Path("logs/p5/tag_root_state_b.jsonl")
+    summary: Path = Path("logs/p5/tag_root_state_b_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -54,26 +56,36 @@ def main(config: Config) -> None:
             njmax=config.njmax,
         )
     )
-    layout = build_tag_root_pose_layout(environment.model_bundle)
+    pose_layout = build_tag_root_pose_layout(environment.model_bundle)
+    velocity_layout = build_tag_root_velocity_layout(environment.model_bundle)
     reset = jax.jit(environment.reset)
     step = jax.jit(environment.step)
-    extract = jax.jit(lambda state: extract_tag_root_pose(state.data, layout))
+    extract = jax.jit(
+        lambda state: (
+            extract_tag_root_pose(state.data, pose_layout),
+            extract_tag_root_velocity(state.data, velocity_layout),
+        )
+    )
 
     state = reset(jax.random.PRNGKey(config.seed))
     records = []
     for timestep in range(config.steps + 1):
-        root_pose = extract(state)
+        root_pose, root_velocity = extract(state)
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
+        world_linear_velocity = np.asarray(root_velocity.world_linear)
+        pelvis_angular_velocity = np.asarray(root_velocity.pelvis_angular)
         records.append(
             {
                 "episode_seed": config.seed,
                 "orientation_wxyz": orientation.tolist(),
+                "pelvis_angular_velocity": pelvis_angular_velocity.tolist(),
                 "position": position.tolist(),
                 "schema_version": TAG_TRAJECTORY_SCHEMA_VERSION,
                 "simulation_time": float(np.asarray(state.diagnostics.elapsed_seconds)),
                 "timestep": timestep,
+                "world_linear_velocity": world_linear_velocity.tolist(),
             }
         )
         if timestep < config.steps:
@@ -87,12 +99,25 @@ def main(config: Config) -> None:
 
     positions = np.asarray([record["position"] for record in records])
     orientations = np.asarray([record["orientation_wxyz"] for record in records])
+    world_linear_velocities = np.asarray(
+        [record["world_linear_velocity"] for record in records]
+    )
+    pelvis_angular_velocities = np.asarray(
+        [record["pelvis_angular_velocity"] for record in records]
+    )
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
         "finite_values": bool(
-            np.isfinite(positions).all() and np.isfinite(orientations).all()
+            np.isfinite(positions).all()
+            and np.isfinite(orientations).all()
+            and np.isfinite(world_linear_velocities).all()
+            and np.isfinite(pelvis_angular_velocities).all()
         ),
+        "angular_velocity_shape": pelvis_angular_velocities.shape
+        == (config.steps + 1, 2, 3),
+        "linear_velocity_shape": world_linear_velocities.shape
+        == (config.steps + 1, 2, 3),
         "orientation_shape": orientations.shape == (config.steps + 1, 2, 4),
         "positions_distinct": bool(
             np.linalg.norm(positions[0, 1] - positions[0, 0]) > 0.0
@@ -117,7 +142,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_root_pose_logging",
+        "experiment": "tag_root_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),
