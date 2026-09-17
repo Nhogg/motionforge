@@ -41,6 +41,7 @@ from motionforge.envs.tag_observations import (
     TagObservationLayout,
     build_tag_observation_layout,
     relative_planar_observation,
+    world_planar_to_heading,
 )
 from motionforge.envs.tag_reset import (
     AgentResetLayout,
@@ -117,4 +118,5 @@ __all__ = [
     "observe_episode_timeout",
     "relative_planar_observation",
     "sample_tag_reset",
+    "world_planar_to_heading",
 ]

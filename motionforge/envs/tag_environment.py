@@ -35,6 +35,7 @@ from motionforge.envs.tag_fall import (
 from motionforge.envs.tag_observations import (
     build_tag_observation_layout,
     relative_planar_observation,
+    world_planar_to_heading,
 )
 from motionforge.envs.tag_reset import (
     TagResetConfig,
@@ -110,6 +111,7 @@ class TagEnvironmentObservation:
 
     relative_position: jax.Array
     relative_velocity: jax.Array
+    arena_center_position: jax.Array
 
 
 @struct.dataclass
@@ -238,6 +240,17 @@ class TwoG1TagEnvironment:
             relative_velocity=jp.stack(
                 [observation.velocity for observation in observations]
             ),
+            arena_center_position=jp.stack(
+                [
+                    world_planar_to_heading(
+                        -data.xpos[agent.root_body_id, :2],
+                        data.qpos[
+                            agent.root_qpos_start + 3 : agent.root_qpos_start + 7
+                        ],
+                    )
+                    for agent in self.observation_layout.agents
+                ]
+            ),
         )
 
     def _get_diagnostics(
@@ -338,9 +351,7 @@ class TwoG1TagEnvironment:
         termination = TagEnvironmentTermination(
             tagged=state.termination.tagged | diagnostics.tag_contact,
             fallen=state.termination.fallen | persistent_falls,
-            out_of_bounds=(
-                state.termination.out_of_bounds | diagnostics.out_of_bounds
-            ),
+            out_of_bounds=(state.termination.out_of_bounds | diagnostics.out_of_bounds),
             timed_out=state.termination.timed_out | diagnostics.timed_out,
         )
         done = (

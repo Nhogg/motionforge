@@ -20,9 +20,12 @@ class Config:
     seed: int = 0
     linear_gain: float = 0.8
     yaw_gain: float = 1.5
-    maximum_forward_speed: float = 0.8
-    maximum_lateral_speed: float = 0.4
-    maximum_yaw_rate: float = 1.0
+    maximum_forward_speed: float = 0.5
+    maximum_lateral_speed: float = 0.25
+    maximum_yaw_rate: float = 0.6
+    arena_radius: float = 4.0
+    boundary_margin: float = 1.5
+    boundary_gain: float = 0.5
     output: Path = Path("logs/p4/tag_scripted_evader_a.json")
 
 
@@ -33,10 +36,14 @@ def main(config: Config) -> None:
         maximum_forward_speed=config.maximum_forward_speed,
         maximum_lateral_speed=config.maximum_lateral_speed,
         maximum_yaw_rate=config.maximum_yaw_rate,
+        arena_radius=config.arena_radius,
+        boundary_margin=config.boundary_margin,
+        boundary_gain=config.boundary_gain,
     )
     policy = jax.jit(
         lambda relative_position: scripted_evader_command(
             relative_position,
+            jp.zeros(2),
             policy_config,
         )
     )
@@ -53,6 +60,13 @@ def main(config: Config) -> None:
         for name, position in fixture_positions.items()
     }
     command_stack = np.stack(tuple(commands.values()))
+    boundary_command = np.asarray(
+        scripted_evader_command(
+            jp.asarray([-1.0, 0.0]),
+            jp.asarray([-3.8, 0.0]),
+            policy_config,
+        )
+    )
 
     checks = {
         "ahead_moves_backward": bool(commands["ahead"][0] < 0.0),
@@ -63,12 +77,11 @@ def main(config: Config) -> None:
             )
         ),
         "behind_moves_forward": bool(commands["behind"][0] > 0.0),
+        "boundary_correction_points_inward": bool(boundary_command[0] < 0.0),
         "commands_finite": bool(np.isfinite(command_stack).all()),
         "commands_within_limits": bool(
             np.all(np.abs(command_stack[:, 0]) <= config.maximum_forward_speed)
-            and np.all(
-                np.abs(command_stack[:, 1]) <= config.maximum_lateral_speed
-            )
+            and np.all(np.abs(command_stack[:, 1]) <= config.maximum_lateral_speed)
             and np.all(np.abs(command_stack[:, 2]) <= config.maximum_yaw_rate)
         ),
         "distant_command_clipped": bool(
@@ -91,9 +104,8 @@ def main(config: Config) -> None:
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
-        "commands": {
-            name: command.tolist() for name, command in commands.items()
-        },
+        "commands": {name: command.tolist() for name, command in commands.items()},
+        "boundary_command": boundary_command.tolist(),
         "config": {
             **asdict(config),
             "output": str(config.output),

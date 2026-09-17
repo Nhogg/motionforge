@@ -72,7 +72,7 @@ def build_tag_observation_layout(
     return TagObservationLayout(agents=tuple(layouts))
 
 
-def _world_to_heading(
+def world_planar_to_heading(
     vector: jax.Array,
     root_quaternion: jax.Array,
 ) -> jax.Array:
@@ -117,11 +117,11 @@ def relative_planar_observation(
     observer_quaternion = data.qpos[quaternion_start : quaternion_start + 4]
 
     return RelativePlanarObservation(
-        position=_world_to_heading(
+        position=world_planar_to_heading(
             other_position - observer_position,
             observer_quaternion,
         ),
-        velocity=_world_to_heading(
+        velocity=world_planar_to_heading(
             other_velocity - observer_velocity,
             observer_quaternion,
         ),

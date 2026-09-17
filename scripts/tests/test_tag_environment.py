@@ -61,9 +61,9 @@ def main(config: Config) -> None:
     timed_out = step(timeout_start, targets)
 
     agent0_root = environment.fall_layout.agents[0].root_qpos_start
-    fallen_qpos = initial.data.qpos.at[
-        agent0_root + 3 : agent0_root + 7
-    ].set(jp.asarray([0.0, 1.0, 0.0, 0.0]))
+    fallen_qpos = initial.data.qpos.at[agent0_root + 3 : agent0_root + 7].set(
+        jp.asarray([0.0, 1.0, 0.0, 0.0])
+    )
     fallen = initial.replace(
         data=mjx.forward(
             environment.model,
@@ -77,9 +77,7 @@ def main(config: Config) -> None:
     fallen = step(fallen, targets)
 
     agent1_root = environment.bounds_layout.agents[1].root_qpos_start
-    oob_qpos = initial.data.qpos.at[agent1_root].set(
-        config.arena_half_extent + 0.5
-    )
+    oob_qpos = initial.data.qpos.at[agent1_root].set(config.arena_half_extent + 0.5)
     oob = initial.replace(
         data=mjx.forward(
             environment.model,
@@ -90,9 +88,9 @@ def main(config: Config) -> None:
 
     agent0_start = environment.reset_layout.agents[0].root_qpos_start
     agent1_start = environment.reset_layout.agents[1].root_qpos_start
-    overlap_qpos = initial.data.qpos.at[
-        agent1_start : agent1_start + 3
-    ].set(initial.data.qpos[agent0_start : agent0_start + 3])
+    overlap_qpos = initial.data.qpos.at[agent1_start : agent1_start + 3].set(
+        initial.data.qpos[agent0_start : agent0_start + 3]
+    )
     overlap = initial.replace(
         data=mjx.forward(
             environment.model,
@@ -104,12 +102,9 @@ def main(config: Config) -> None:
     for state in (normal, timed_out, fallen, oob, overlap):
         state.data.qpos.block_until_ready()
 
-    initial_relative_position = np.asarray(
-        initial.observation.relative_position
-    )
-    initial_relative_velocity = np.asarray(
-        initial.observation.relative_velocity
-    )
+    initial_relative_position = np.asarray(initial.observation.relative_position)
+    initial_relative_velocity = np.asarray(initial.observation.relative_velocity)
+    initial_center_position = np.asarray(initial.observation.arena_center_position)
     normal_relative_position = np.asarray(normal.observation.relative_position)
     normal_relative_velocity = np.asarray(normal.observation.relative_velocity)
 
@@ -120,8 +115,7 @@ def main(config: Config) -> None:
         ),
         "fall_done": bool(np.asarray(fallen.done)),
         "fall_persistence": (
-            int(np.asarray(fallen.fall_counts[0]))
-            >= config.fall_persistence_steps
+            int(np.asarray(fallen.fall_counts[0])) >= config.fall_persistence_steps
         ),
         "initial_relative_positions": bool(
             np.allclose(
@@ -134,6 +128,10 @@ def main(config: Config) -> None:
             np.allclose(initial_relative_velocity, 0.0, atol=1e-6)
         ),
         "normal_not_done": not bool(np.asarray(normal.done)),
+        "arena_center_observation_shape": initial_center_position.shape == (2, 2),
+        "arena_center_observations_finite": bool(
+            np.isfinite(initial_center_position).all()
+        ),
         "observation_shape": (
             initial_relative_position.shape == (2, 2)
             and initial_relative_velocity.shape == (2, 2)
@@ -145,8 +143,7 @@ def main(config: Config) -> None:
             and np.isfinite(normal_relative_velocity).all()
         ),
         "oob_cause_isolated": (
-            np.asarray(oob.termination.out_of_bounds).tolist()
-            == [False, True]
+            np.asarray(oob.termination.out_of_bounds).tolist() == [False, True]
         ),
         "oob_done": bool(np.asarray(oob.done)),
         "reset_causes_clear": bool(
@@ -180,9 +177,7 @@ def main(config: Config) -> None:
         "passed": bool(all(checks.values())),
         "python_version": platform.python_version(),
         "seed": config.seed,
-        "tag_contact_count": int(
-            np.asarray(overlap.diagnostics.tag_contact_count)
-        ),
+        "tag_contact_count": int(np.asarray(overlap.diagnostics.tag_contact_count)),
         "timeout_step": int(np.asarray(timed_out.step_count)),
     }
 

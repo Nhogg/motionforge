@@ -39,11 +39,42 @@ negative relative displacement, and its yaw command turns toward that escape
 direction. Independent gains and limits allow later rollout diagnostics to tune
 the evader without changing pursuit behavior.
 
-This first evader is deliberately unaware of arena boundaries. Adding boundary
-avoidance before observing an actual failure would obscure whether problems
-come from the game policy, locomotion controller, or environment integration.
+The initial evader was deliberately unaware of arena boundaries. Its first
+rendered rollout remained upright but exited the arena at 7.22 s. The accepted
+revision consumes the environment's local-frame vector toward arena center. At
+a conservative radial safety margin it temporarily overrides escape behavior
+and commands inward motion, keeping arena rules out of the locomotion adapter.
 
-Evidence: `logs/p4/tag_scripted_evader_a.json`. All 11 deterministic checks
-passed on the GPU backend, including directional signs, JIT execution,
-finiteness, output shape, and saturation at each configured command limit. The
-scripted pursuer regression test also remained green.
+Evidence: `logs/p4/tag_scripted_evader_e.json`. All 12 deterministic checks
+passed on the GPU backend, including directional signs, inward boundary
+correction, JIT execution, finiteness, output shape, and saturation at each
+configured command limit. The scripted pursuer regression test also remained
+green.
+
+## Two-agent locomotion bridge and evader render
+
+`motionforge/controllers/g1_tag.py` reconstructs the accepted P2 actor's
+103-element observation independently for each robot from the combined P3
+physics state. It includes local pelvis velocity, gyro, projected gravity,
+high-level command, joint position and velocity, previous action, and gait
+phase. The adapter returns actor state only; privileged training observations
+are not required for deterministic checkpoint inference. Policy restoration,
+joint-target conversion, and physics stepping remain in their existing
+controller and environment modules.
+
+`scripts/evaluation/render_tag_scripted_evader.py` exercises this bridge with
+the accepted structured-command checkpoint. Agent 0 receives a zero locomotion
+command while agent 1 recomputes its scripted escape command from the live
+relative observation every control update. The renderer follows the midpoint
+of both agents and writes an MP4 plus a JSON sidecar containing configuration
+and the terminal cause.
+
+The first hard boundary override prevented OOB but issued an aggressive
+full-speed reversal and caused a fall at 8.28 s. Reducing the evader limits to
+0.5 m/s forward, 0.25 m/s lateral, and 0.6 rad/s yaw produced a stable result.
+This failed intermediate rollout is retained as evidence of the low-level
+controller's sensitivity to rapid command changes.
+
+Evidence: `logs/p4/videos/tag_scripted_evader_boundary_d.mp4` and its JSON
+sidecar. The seed-0 boundary-aware rollout completed 10 seconds with both agents
+upright and in bounds, no tag contact, and timeout as its only terminal cause.

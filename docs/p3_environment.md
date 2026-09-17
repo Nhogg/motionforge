@@ -224,9 +224,10 @@ targets; locomotion controllers and policies remain separate from the
 environment.
 
 Each reset stores per-agent relative planar position and velocity observations
-in the observer's heading frame. Each control update applies both agents'
-targets, advances ten 0.002 s physics substeps, and refreshes observations and
-rule diagnostics at the resulting state.
+in the observer's heading frame. It also exposes the local-frame vector from
+each agent to arena center for boundary-aware P4 behavior. Each control update
+applies both agents' targets, advances ten 0.002 s physics substeps, and
+refreshes observations and rule diagnostics at the resulting state.
 
 Diagnostics report inter-agent contact, instantaneous fall classification,
 root posture, planar bounds, and timeout state. Episode termination is kept
