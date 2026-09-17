@@ -50,7 +50,7 @@ For each timestep record:
 - [x] root pose and orientation
 - [x] root linear / angular velocity
 - [x] joint positions and velocities
-- [ ] controller commands
+- [x] controller commands
 - [ ] foot contacts / contact forces
 - [ ] opponent-relative state
 - [ ] terrain info

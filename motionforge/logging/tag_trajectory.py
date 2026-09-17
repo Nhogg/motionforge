@@ -15,7 +15,7 @@ import jax.numpy as jp
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 3
+TAG_TRAJECTORY_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,13 @@ class TagJointState(NamedTuple):
 
     position: jax.Array
     velocity: jax.Array
+
+
+class TagControllerCommand(NamedTuple):
+    """High-level velocity commands and applied low-level joint targets."""
+
+    velocity: jax.Array
+    joint_position_target: jax.Array
 
 
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
@@ -162,4 +169,22 @@ def extract_tag_joint_state(data, layout: TagJointStateLayout) -> TagJointState:
         velocity=jp.stack(
             [data.qvel[joint_slice] for joint_slice in layout.joint_qvel_slices]
         ),
+    )
+
+
+def tag_controller_command(
+    velocity: jax.Array,
+    joint_position_target: jax.Array,
+) -> TagControllerCommand:
+    """Validate externally supplied controller inputs for trajectory logging."""
+    if velocity.shape != (2, 3):
+        raise ValueError(f"velocity must have shape (2, 3); got {velocity.shape}")
+    if joint_position_target.shape != (2, 29):
+        raise ValueError(
+            "joint_position_target must have shape (2, 29); "
+            f"got {joint_position_target.shape}"
+        )
+    return TagControllerCommand(
+        velocity=jp.asarray(velocity),
+        joint_position_target=jp.asarray(joint_position_target),
     )

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import jax
+import jax.numpy as jp
 import mujoco
 import numpy as np
 
@@ -26,6 +27,7 @@ from motionforge.logging import (
     extract_tag_joint_state,
     extract_tag_root_pose,
     extract_tag_root_velocity,
+    tag_controller_command,
 )
 
 
@@ -36,8 +38,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_kinematic_state_c.jsonl")
-    summary: Path = Path("logs/p5/tag_kinematic_state_c_summary.json")
+    output: Path = Path("logs/p5/tag_controller_state_d.jsonl")
+    summary: Path = Path("logs/p5/tag_controller_state_d_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -72,9 +74,15 @@ def main(config: Config) -> None:
     )
 
     state = reset(jax.random.PRNGKey(config.seed))
+    velocity_command = jp.zeros((2, 3))
+    joint_position_target = environment.default_joint_targets
     records = []
     for timestep in range(config.steps + 1):
         root_pose, root_velocity, joint_state = extract(state)
+        controller_command = tag_controller_command(
+            velocity_command,
+            joint_position_target,
+        )
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
@@ -82,8 +90,16 @@ def main(config: Config) -> None:
         pelvis_angular_velocity = np.asarray(root_velocity.pelvis_angular)
         joint_position = np.asarray(joint_state.position)
         joint_velocity = np.asarray(joint_state.velocity)
+        command_velocity = np.asarray(controller_command.velocity)
+        command_joint_position_target = np.asarray(
+            controller_command.joint_position_target
+        )
         records.append(
             {
+                "command_joint_position_target": (
+                    command_joint_position_target.tolist()
+                ),
+                "command_velocity": command_velocity.tolist(),
                 "episode_seed": config.seed,
                 "joint_position": joint_position.tolist(),
                 "joint_velocity": joint_velocity.tolist(),
@@ -97,7 +113,7 @@ def main(config: Config) -> None:
             }
         )
         if timestep < config.steps:
-            state = step(state, environment.default_joint_targets)
+            state = step(state, joint_position_target)
 
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(
@@ -115,6 +131,10 @@ def main(config: Config) -> None:
     )
     joint_positions = np.asarray([record["joint_position"] for record in records])
     joint_velocities = np.asarray([record["joint_velocity"] for record in records])
+    command_velocities = np.asarray([record["command_velocity"] for record in records])
+    command_joint_position_targets = np.asarray(
+        [record["command_joint_position_target"] for record in records]
+    )
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -125,6 +145,17 @@ def main(config: Config) -> None:
             and np.isfinite(pelvis_angular_velocities).all()
             and np.isfinite(joint_positions).all()
             and np.isfinite(joint_velocities).all()
+            and np.isfinite(command_velocities).all()
+            and np.isfinite(command_joint_position_targets).all()
+        ),
+        "command_joint_target_shape": command_joint_position_targets.shape
+        == (config.steps + 1, 2, 29),
+        "command_velocity_shape": command_velocities.shape == (config.steps + 1, 2, 3),
+        "commands_match_applied_controls": bool(
+            np.allclose(
+                command_joint_position_targets[-1],
+                np.asarray(state.data.ctrl)[np.asarray(environment.actuator_ids)],
+            )
         ),
         "joint_position_shape": joint_positions.shape == (config.steps + 1, 2, 29),
         "joint_velocity_shape": joint_velocities.shape == (config.steps + 1, 2, 29),
@@ -156,7 +187,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_kinematic_state_logging",
+        "experiment": "tag_controller_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

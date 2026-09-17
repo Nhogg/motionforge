@@ -50,6 +50,21 @@ The smoke experiment checks every joint sample for finite values and verifies
 the complete `(timesteps, 2, 29)` shapes. Schema version 3 is an additive
 extension of the pose and root-velocity records.
 
+## Controller commands
+
+Controller commands are exogenous inputs and cannot be recovered reliably from
+the resulting physics state. Schema version 4 therefore adds a validated input
+boundary that the rollout loop calls when it records each timestep. It stores
+the high-level `command_velocity` with shape `(2, 3)` in `[vx, vy, yaw_rate]`
+order and the applied `command_joint_position_target` with shape `(2, 29)`.
+
+The logging smoke uses zero high-level velocity commands and the environment's
+default joint targets, keeping this schema test independent of checkpoint
+inference. It verifies finite command values, exact shapes, and equality
+between the last logged joint targets and the controls present in simulator
+state. Scripted and learned rollout generators will pass their live commands
+through the same boundary.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data
