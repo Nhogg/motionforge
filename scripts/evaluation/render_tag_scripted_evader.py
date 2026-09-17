@@ -1,9 +1,10 @@
-"""Render a two-G1 rollout driven by the scripted evader.
+"""Render a two-G1 rollout driven by scripted tag policies.
 
-Agent 0 uses the accepted locomotion checkpoint with a zero command. Agent 1
-uses the same checkpoint while the scripted evader updates its velocity command
-from the live opponent-relative observation. The script writes MP4 video and a
-JSON sidecar and requires MJX-Warp, a GPU backend, and an OpenGL context.
+Agent 1 always runs the boundary-aware scripted evader. Agent 0 can either
+stand still for isolated evader diagnostics or run the scripted pursuer for a
+complete tag rollout. Both agents use the same accepted locomotion checkpoint.
+The script writes MP4 video and a JSON sidecar and requires MJX-Warp, a GPU
+backend, and an OpenGL context.
 """
 
 from __future__ import annotations
@@ -28,7 +29,12 @@ from motionforge.controllers import (
 )
 from motionforge.envs import TagEnvironmentConfig, TwoG1TagEnvironment
 from motionforge.envs.g1_standing import G1StandingJoystick, default_config
-from motionforge.policies import ScriptedEvaderConfig, scripted_evader_command
+from motionforge.policies import (
+    ScriptedEvaderConfig,
+    ScriptedPursuerConfig,
+    scripted_evader_command,
+    scripted_pursuer_command,
+)
 
 
 @dataclass
@@ -38,6 +44,7 @@ class Config:
     )
     seed: int = 0
     separation: float = 2.0
+    pursuer_active: bool = False
     duration: float = 10.0
     fps: int = 30
     width: int = 960
@@ -88,6 +95,7 @@ def main(config: Config) -> None:
         environment.model_bundle
     )
     evader_config = ScriptedEvaderConfig()
+    pursuer_config = ScriptedPursuerConfig()
     default_pose = jp.asarray(source_environment._default_pose)
     action_scale = float(source_environment._config.action_scale)
     phase_dt = 2.0 * jp.pi * environment.config.control_timestep * 1.375
@@ -99,7 +107,16 @@ def main(config: Config) -> None:
             state.observation.arena_center_position[1],
             evader_config,
         )
-        commands = jp.stack([jp.zeros(3), evader_command])
+        pursuer_command = scripted_pursuer_command(
+            state.observation.relative_position[0],
+            pursuer_config,
+        )
+        pursuer_command = jp.where(
+            config.pursuer_active,
+            pursuer_command,
+            jp.zeros(3),
+        )
+        commands = jp.stack([pursuer_command, evader_command])
         rng, agent0_rng, agent1_rng = jax.random.split(rng, 3)
         observation0 = g1_tag_policy_observation(
             state.data,
@@ -153,6 +170,7 @@ def main(config: Config) -> None:
     rollout_steps = round(config.duration / environment.config.control_timestep)
     commands = jp.zeros((2, 3))
     terminated_at = None
+    minimum_agent_distance = float("inf")
 
     try:
         for step_index in range(rollout_steps):
@@ -174,6 +192,10 @@ def main(config: Config) -> None:
                     )
                     for agent in environment.model_bundle.agents
                 ]
+            )
+            minimum_agent_distance = min(
+                minimum_agent_distance,
+                float(np.linalg.norm(roots[1, :2] - roots[0, :2])),
             )
             if frame_time >= next_frame_time:
                 camera.lookat[:] = roots.mean(axis=0)
@@ -202,12 +224,17 @@ def main(config: Config) -> None:
             "checkpoint": str(config.checkpoint),
             "output": str(config.output),
         },
-        "experiment": "tag_scripted_evader_video",
+        "experiment": (
+            "tag_scripted_complete_video"
+            if config.pursuer_active
+            else "tag_scripted_evader_video"
+        ),
         "final_commands": np.asarray(commands).tolist(),
         "frames": len(frames),
         "minimum_root_height": float(
             min(np.asarray(state.diagnostics.root_height).tolist())
         ),
+        "minimum_agent_distance": minimum_agent_distance,
         "mujoco_version": mujoco.__version__,
         "output": str(config.output.resolve()),
         "python_version": platform.python_version(),

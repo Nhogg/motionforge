@@ -65,6 +65,12 @@ class Config:
     pure_yaw_probability: float = 0.20
     mixed_probability: float = 0.25
 
+    rapid_command_transitions: bool = False
+    rapid_command_episode_probability: float = 0.25
+    command_transition_interval_min: float = 1.0
+    command_transition_interval_max: float = 3.0
+    command_reversal_probability: float = 0.50
+
     learning_rate: float | None = None
     restore_checkpoint: Path | None = None
 
@@ -132,19 +138,27 @@ def metrics_are_finite(
 
 
 def validate_config(config: Config) -> None:
-
     if config.impl not in {"jax", "warp"}:
         raise ValueError("impl must be 'jax' or 'warp'")
     if config.run_kind not in {"test", "learning", "full", "finetune"}:
-        raise ValueError(
-            "run_kind must be 'test', 'learning', 'full', or 'finetune'"
-        )
+        raise ValueError("run_kind must be 'test', 'learning', 'full', or 'finetune'")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
         raise ValueError("wandb_mode must be 'disabled', 'online', or 'offline'")
+    if config.command_transition_interval_min <= 0.0:
+        raise ValueError("command_transition_interval_min must be positive")
+    if config.command_transition_interval_max < config.command_transition_interval_min:
+        raise ValueError(
+            "command_transition_interval_max must be greater than or equal to "
+            "command_transition_interval_min"
+        )
+    if not 0.0 <= config.command_reversal_probability <= 1.0:
+        raise ValueError("command_reversal_probability must be in [0, 1]")
+    if not 0.0 <= config.rapid_command_episode_probability <= 1.0:
+        raise ValueError("rapid_command_episode_probability must be in [0, 1]")
 
     positive_fields = {
         "num_timesteps": config.num_timesteps,
-        "num_envs": config.num_eval_envs,
+        "num_envs": config.num_envs,
         "num_eval_envs": config.num_eval_envs,
         "episode_length": config.episode_length,
         "num_evals": config.num_evals,
@@ -163,8 +177,11 @@ def validate_config(config: Config) -> None:
         "pure_yaw_probability": config.pure_yaw_probability,
         "mixed_probability": config.mixed_probability,
     }
+    probability_sum = sum(command_probabilities.values())
 
     if any(probability < 0.0 for probability in command_probabilities.values()):
+        raise ValueError("Command-mode probabilities must be non-negative")
+    if abs(probability_sum - 1.0) > 1e-9:
         raise ValueError(
             f"Command-mode probabilities must sum to one; got {probability_sum}"
         )
@@ -183,10 +200,8 @@ def validate_config(config: Config) -> None:
         if value <= 0:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
 
-        if config.output_dir.exists():
-            raise FileExistsError(
-                f"Output directory already exists: {config.output_dir}"
-            )
+    if config.output_dir.exists():
+        raise FileExistsError(f"Output directory already exists: {config.output_dir}")
 
 
 def main(config: Config) -> None:
@@ -218,6 +233,19 @@ def main(config: Config) -> None:
     environment_config.pure_y_probability = config.pure_y_probability
     environment_config.pure_yaw_probability = config.pure_yaw_probability
     environment_config.mixed_probability = config.mixed_probability
+    environment_config.rapid_command_transitions = config.rapid_command_transitions
+    environment_config.rapid_command_episode_probability = (
+        config.rapid_command_episode_probability
+    )
+    environment_config.command_transition_interval_min = (
+        config.command_transition_interval_min
+    )
+    environment_config.command_transition_interval_max = (
+        config.command_transition_interval_max
+    )
+    environment_config.command_reversal_probability = (
+        config.command_reversal_probability
+    )
     environment_config.impl = config.impl
 
     if config.impl == "warp":

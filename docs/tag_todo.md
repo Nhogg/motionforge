@@ -39,9 +39,9 @@
 
 - [x] Write trivial scripted pursuer that moves toward the opponent
 - [x] Write trivial scripted evader that moves away
-- [ ] Validate that low-level controller can survive rapid direciton changes
-- [ ] Record complete rollouts
-- [ ] Fix observation-frame, contact, reset, and controller problems before training
+- [x] Validate that low-level controller can survive rapid direction changes
+- [x] Record complete rollouts
+- [x] Fix observation-frame, contact, reset, and controller problems before training
 
 # P5 - Logging / dataset infra
 

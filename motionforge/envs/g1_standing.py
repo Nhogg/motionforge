@@ -17,6 +17,8 @@ import jax.numpy as jp
 from ml_collections import config_dict
 from mujoco_playground._src.locomotion.g1 import joystick
 
+COMMAND_OBSERVATION_SLICE = slice(9, 12)
+
 
 def default_config() -> config_dict.ConfigDict:
     """Return MotionForge's structured-command G1 configuration."""
@@ -27,6 +29,12 @@ def default_config() -> config_dict.ConfigDict:
     config.pure_y_probability = 0.10
     config.pure_yaw_probability = 0.20
     config.mixed_probability = 0.25
+
+    config.rapid_command_transitions = False
+    config.rapid_command_episode_probability = 0.25
+    config.command_transition_interval_min = 1.0
+    config.command_transition_interval_max = 3.0
+    config.command_reversal_probability = 0.50
 
     return config
 
@@ -62,6 +70,21 @@ class G1StandingJoystick(joystick.Joystick):
             )
 
         self._command_mode_probabilities = jp.asarray(probabilities)
+
+        if self._config.command_transition_interval_min <= 0.0:
+            raise ValueError("command_transition_interval_min must be positive")
+        if (
+            self._config.command_transition_interval_max
+            < self._config.command_transition_interval_min
+        ):
+            raise ValueError(
+                "command_transition_interval_max must be greater than or equal "
+                "to command_transition_interval_min"
+            )
+        if not 0.0 <= self._config.command_reversal_probability <= 1.0:
+            raise ValueError("command_reversal_probability must be in [0, 1]")
+        if not 0.0 <= self._config.rapid_command_episode_probability <= 1.0:
+            raise ValueError("rapid_command_episode_probability must be in [0, 1]")
 
     def sample_command(self, rng: jax.Array) -> jax.Array:
         """Sample standing, axial, pure-yaw, or mixed commands."""
@@ -101,3 +124,84 @@ class G1StandingJoystick(joystick.Joystick):
             p=self._command_mode_probabilities,
         )
         return candidates[mode]
+
+    def _sample_transition_interval(self, rng: jax.Array) -> jax.Array:
+        """Sample a command hold duration expressed in control steps."""
+        duration = jax.random.uniform(
+            rng,
+            minval=self._config.command_transition_interval_min,
+            maxval=self._config.command_transition_interval_max,
+        )
+        return jp.maximum(jp.round(duration / self.dt).astype(jp.int32), 1)
+
+    def reset(self, rng: jax.Array):
+        """Initialize optional rapid-command curriculum bookkeeping."""
+        state = super().reset(rng)
+        if not self._config.rapid_command_transitions:
+            return state
+
+        info = dict(state.info)
+        info["rng"], active_rng, interval_rng = jax.random.split(info["rng"], 3)
+        info["rapid_command_episode"] = (
+            jax.random.uniform(active_rng)
+            < self._config.rapid_command_episode_probability
+        )
+        info["command_transition_step"] = jp.zeros((), dtype=jp.int32)
+        info["command_transition_interval"] = self._sample_transition_interval(
+            interval_rng
+        )
+        return state.replace(info=info)
+
+    def step(self, state, action: jax.Array):
+        """Advance physics and optionally resample or reverse commands."""
+        state = super().step(state, action)
+        if not self._config.rapid_command_transitions:
+            return state
+
+        info = dict(state.info)
+        transition_step = info["command_transition_step"] + 1
+        should_transition = info["rapid_command_episode"] & (
+            transition_step >= info["command_transition_interval"]
+        )
+
+        info["rng"], sample_rng, reverse_rng, interval_rng = jax.random.split(
+            info["rng"],
+            4,
+        )
+        sampled_command = self.sample_command(sample_rng)
+        reversed_command = -info["command"]
+        reversal_available = jp.linalg.norm(info["command"]) > 1e-6
+        choose_reversal = reversal_available & (
+            jax.random.uniform(reverse_rng) < self._config.command_reversal_probability
+        )
+        transition_command = jp.where(
+            choose_reversal,
+            reversed_command,
+            sampled_command,
+        )
+        command = jp.where(
+            should_transition,
+            transition_command,
+            info["command"],
+        )
+
+        info["command"] = command
+        info["command_transition_step"] = jp.where(
+            should_transition,
+            0,
+            transition_step,
+        )
+        info["command_transition_interval"] = jp.where(
+            should_transition,
+            self._sample_transition_interval(interval_rng),
+            info["command_transition_interval"],
+        )
+        info["step"] = jp.where(should_transition, 0, info["step"])
+
+        observation = dict(state.obs)
+        for name in ("state", "privileged_state"):
+            observation[name] = (
+                observation[name].at[COMMAND_OBSERVATION_SLICE].set(command)
+            )
+
+        return state.replace(info=info, obs=observation)

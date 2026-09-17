@@ -721,3 +721,43 @@ used for its parent before deciding whether more fine-tuning is warranted.
 - `logs/p2/training/g1_structured_finetune_10m_seed0_retry/metrics.jsonl`
 - `logs/p2/training/g1_structured_finetune_10m_seed0_retry/summary.json`
 - `logs/p2/training/g1_structured_finetune_10m_seed0_retry/checkpoints/000010485760/`
+
+## P4 rapid-transition continuation
+
+P4 adds an optional command-transition curriculum to the existing standing
+environment rather than creating a second locomotion environment. The policy
+interface, 103-element actor observation, 216-element privileged observation,
+29-element action, reward implementation, and checkpoint format are unchanged.
+Only command scheduling changes: structured commands are held for a sampled
+duration and may then be reversed exactly. This permits continuation from the
+accepted structured-command checkpoint without an architecture migration.
+
+The training launcher records the following curriculum controls in its normal
+manifest and W&B configuration:
+
+- `rapid_command_transitions`
+- `rapid_command_episode_probability`
+- `command_transition_interval_min`
+- `command_transition_interval_max`
+- `command_reversal_probability`
+
+The feature defaults off, preserving reproduction of all P2 results. A
+deterministic environment test and a restored PPO smoke must pass before a long
+continuation is launched. Policy selection remains evaluation-driven: the
+fixed rapid-command suite, not aggregate PPO reward, determines whether the
+continuation replaces the current controller for P4.
+
+The first continuation applied rapid transitions to all environments and was
+rejected after checkpoint evaluation exposed progressive loss of tracking
+recovery. The revised continuation uses a 25% rapid / 75% steady episode mix
+and a `1e-5` learning rate. Candidate checkpoints are evaluated after 5M steps
+before authorizing any longer run. This rehearsal mix is intended to add
+transition exposure without replacing the command distribution on which the
+accepted controller was learned.
+
+Held-out seeds 4--19 showed that the mixed 5M candidate did not generalize its
+small development-suite gain. The accepted parent recovered 292/320 rapid
+transitions, compared with 289/320 for the candidate; both survived all 80
+rollouts. Consequently, none of the P4 rapid-transition continuations replaces
+the accepted P2 checkpoint. The parent remains the controller baseline, with
+perfect measured physical survival but imperfect two-second tracking recovery.
