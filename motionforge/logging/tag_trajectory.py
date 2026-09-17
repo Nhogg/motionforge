@@ -15,7 +15,7 @@ import jax.numpy as jp
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 2
+TAG_TRAJECTORY_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,21 @@ class TagRootVelocity(NamedTuple):
 
     world_linear: jax.Array
     pelvis_angular: jax.Array
+
+
+@dataclass(frozen=True)
+class TagJointStateLayout:
+    """Generalized-coordinate slices for both agents' actuated joints."""
+
+    joint_qpos_slices: tuple[slice, slice]
+    joint_qvel_slices: tuple[slice, slice]
+
+
+class TagJointState(NamedTuple):
+    """Raw joint positions and velocities for both agents."""
+
+    position: jax.Array
+    velocity: jax.Array
 
 
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
@@ -89,6 +104,20 @@ def build_tag_root_velocity_layout(
     )
 
 
+def build_tag_joint_state_layout(model_bundle: TwoG1Model) -> TagJointStateLayout:
+    """Resolve the 29 actuated joint coordinates for each agent."""
+    return TagJointStateLayout(
+        joint_qpos_slices=tuple(
+            slice(agent.qpos_slice.start + 7, agent.qpos_slice.stop)
+            for agent in model_bundle.agents
+        ),
+        joint_qvel_slices=tuple(
+            slice(agent.qvel_slice.start + 6, agent.qvel_slice.stop)
+            for agent in model_bundle.agents
+        ),
+    )
+
+
 def extract_tag_root_pose(data, layout: TagRootPoseLayout) -> TagRootPose:
     """Extract both root poses without transferring state off device."""
     positions = []
@@ -120,5 +149,17 @@ def extract_tag_root_velocity(
                 data.sensordata[sensor_slice]
                 for sensor_slice in layout.pelvis_angular_velocity_slices
             ]
+        ),
+    )
+
+
+def extract_tag_joint_state(data, layout: TagJointStateLayout) -> TagJointState:
+    """Extract both agents' actuated joint state without a host transfer."""
+    return TagJointState(
+        position=jp.stack(
+            [data.qpos[joint_slice] for joint_slice in layout.joint_qpos_slices]
+        ),
+        velocity=jp.stack(
+            [data.qvel[joint_slice] for joint_slice in layout.joint_qvel_slices]
         ),
     )

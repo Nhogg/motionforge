@@ -36,6 +36,20 @@ The logging smoke experiment validates both velocity arrays at every recorded
 timestep for shape and finite values. Schema version 1 remains interpretable
 as pose-only; version 2 is its additive root-state extension.
 
+## Joint positions and velocities
+
+Schema version 3 adds the raw actuated joint state for both robots. A dedicated
+layout removes the seven floating-base qpos coordinates and six floating-base
+qvel coordinates from each agent's namespaced model slices. The extractor
+therefore produces `joint_position` and `joint_velocity` arrays with shape
+`(2, 29)` in compiled actuator order. Values are recorded without subtracting
+the controller's reference pose so downstream analyses retain the physical
+simulator state.
+
+The smoke experiment checks every joint sample for finite values and verifies
+the complete `(timesteps, 2, 29)` shapes. Schema version 3 is an additive
+extension of the pose and root-velocity records.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

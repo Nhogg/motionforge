@@ -20,8 +20,10 @@ from motionforge.cli import run_hydra
 from motionforge.envs import TagEnvironmentConfig, TwoG1TagEnvironment
 from motionforge.logging import (
     TAG_TRAJECTORY_SCHEMA_VERSION,
+    build_tag_joint_state_layout,
     build_tag_root_pose_layout,
     build_tag_root_velocity_layout,
+    extract_tag_joint_state,
     extract_tag_root_pose,
     extract_tag_root_velocity,
 )
@@ -34,8 +36,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_root_state_b.jsonl")
-    summary: Path = Path("logs/p5/tag_root_state_b_summary.json")
+    output: Path = Path("logs/p5/tag_kinematic_state_c.jsonl")
+    summary: Path = Path("logs/p5/tag_kinematic_state_c_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -58,27 +60,33 @@ def main(config: Config) -> None:
     )
     pose_layout = build_tag_root_pose_layout(environment.model_bundle)
     velocity_layout = build_tag_root_velocity_layout(environment.model_bundle)
+    joint_layout = build_tag_joint_state_layout(environment.model_bundle)
     reset = jax.jit(environment.reset)
     step = jax.jit(environment.step)
     extract = jax.jit(
         lambda state: (
             extract_tag_root_pose(state.data, pose_layout),
             extract_tag_root_velocity(state.data, velocity_layout),
+            extract_tag_joint_state(state.data, joint_layout),
         )
     )
 
     state = reset(jax.random.PRNGKey(config.seed))
     records = []
     for timestep in range(config.steps + 1):
-        root_pose, root_velocity = extract(state)
+        root_pose, root_velocity, joint_state = extract(state)
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
         world_linear_velocity = np.asarray(root_velocity.world_linear)
         pelvis_angular_velocity = np.asarray(root_velocity.pelvis_angular)
+        joint_position = np.asarray(joint_state.position)
+        joint_velocity = np.asarray(joint_state.velocity)
         records.append(
             {
                 "episode_seed": config.seed,
+                "joint_position": joint_position.tolist(),
+                "joint_velocity": joint_velocity.tolist(),
                 "orientation_wxyz": orientation.tolist(),
                 "pelvis_angular_velocity": pelvis_angular_velocity.tolist(),
                 "position": position.tolist(),
@@ -105,6 +113,8 @@ def main(config: Config) -> None:
     pelvis_angular_velocities = np.asarray(
         [record["pelvis_angular_velocity"] for record in records]
     )
+    joint_positions = np.asarray([record["joint_position"] for record in records])
+    joint_velocities = np.asarray([record["joint_velocity"] for record in records])
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -113,7 +123,11 @@ def main(config: Config) -> None:
             and np.isfinite(orientations).all()
             and np.isfinite(world_linear_velocities).all()
             and np.isfinite(pelvis_angular_velocities).all()
+            and np.isfinite(joint_positions).all()
+            and np.isfinite(joint_velocities).all()
         ),
+        "joint_position_shape": joint_positions.shape == (config.steps + 1, 2, 29),
+        "joint_velocity_shape": joint_velocities.shape == (config.steps + 1, 2, 29),
         "angular_velocity_shape": pelvis_angular_velocities.shape
         == (config.steps + 1, 2, 3),
         "linear_velocity_shape": world_linear_velocities.shape
@@ -142,7 +156,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_root_state_logging",
+        "experiment": "tag_kinematic_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

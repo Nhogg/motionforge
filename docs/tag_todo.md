@@ -49,7 +49,7 @@ For each timestep record:
 
 - [x] root pose and orientation
 - [x] root linear / angular velocity
-- [ ] joint positions and velocities
+- [x] joint positions and velocities
 - [ ] controller commands
 - [ ] foot contacts / contact forces
 - [ ] opponent-relative state
