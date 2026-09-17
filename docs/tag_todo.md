@@ -47,7 +47,7 @@
 
 For each timestep record:
 
-- [ ] root pose and orientation
+- [x] root pose and orientation
 - [ ] root linear / angular velocity
 - [ ] joint positions and velocities
 - [ ] controller commands
