@@ -12,6 +12,7 @@ from motionforge.logging.tag_trajectory import (
     TagRootPoseLayout,
     TagRootVelocity,
     TagRootVelocityLayout,
+    TagStabilityState,
     TagTerrainState,
     TagTrackingError,
     TagTrackingLayout,
@@ -30,6 +31,7 @@ from motionforge.logging.tag_trajectory import (
     tag_controller_command,
     tag_opponent_relative_state,
     tag_reward_outcome,
+    tag_stability_state,
 )
 
 __all__ = [
@@ -46,6 +48,7 @@ __all__ = [
     "TagRootPoseLayout",
     "TagRootVelocity",
     "TagRootVelocityLayout",
+    "TagStabilityState",
     "TagTerrainState",
     "TagTrackingError",
     "TagTrackingLayout",
@@ -64,4 +67,5 @@ __all__ = [
     "tag_controller_command",
     "tag_opponent_relative_state",
     "tag_reward_outcome",
+    "tag_stability_state",
 ]

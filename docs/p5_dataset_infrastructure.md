@@ -138,6 +138,20 @@ The smoke experiment validates finite values and the full trajectory shape.
 The vector form is retained instead of reducing immediately to a norm so later
 analysis can distinguish forward, lateral, and yaw tracking failures.
 
+## Fall and near-fall indicators
+
+Schema version 10 records the canonical instantaneous environment fall flag,
+root height, and torso up alignment for both agents. It also records a
+configurable `stability_near_fall` flag. A state is near-fall when it has not
+already been classified as fallen and either root height is below 0.60 m or up
+alignment is below 0.80 by default. Both thresholds are exposed in experiment
+configuration and written into the summary.
+
+Keeping fall and near-fall mutually exclusive distinguishes warning states
+from failures while retaining the continuous diagnostics needed to retune the
+threshold later. The smoke experiment validates shapes, finite diagnostics,
+exclusivity, and a fixture containing one near-fall and one true fall.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

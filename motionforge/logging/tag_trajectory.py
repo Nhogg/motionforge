@@ -17,7 +17,7 @@ import numpy as np
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 9
+TAG_TRAJECTORY_SCHEMA_VERSION = 10
 
 
 @dataclass(frozen=True)
@@ -132,6 +132,15 @@ class TagTrackingError(NamedTuple):
     """Command-minus-measurement planar velocity and yaw-rate error."""
 
     velocity: jax.Array
+
+
+class TagStabilityState(NamedTuple):
+    """Canonical fall state and thresholded pre-fall warning state."""
+
+    fallen: jax.Array
+    near_fall: jax.Array
+    root_height: jax.Array
+    up_alignment: jax.Array
 
 
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
@@ -438,4 +447,38 @@ def extract_tag_tracking_error(
 
     return TagTrackingError(
         velocity=jp.asarray(command_velocity) - jp.stack(measured),
+    )
+
+
+def tag_stability_state(
+    fallen: jax.Array,
+    root_height: jax.Array,
+    up_alignment: jax.Array,
+    near_fall_minimum_root_height: float,
+    near_fall_minimum_up_alignment: float,
+) -> TagStabilityState:
+    """Classify near falls while preserving the environment's fall flag."""
+    if fallen.shape != (2,):
+        raise ValueError(f"fallen must have shape (2,); got {fallen.shape}")
+    if root_height.shape != (2,):
+        raise ValueError(f"root_height must have shape (2,); got {root_height.shape}")
+    if up_alignment.shape != (2,):
+        raise ValueError(f"up_alignment must have shape (2,); got {up_alignment.shape}")
+    if near_fall_minimum_root_height <= 0.0:
+        raise ValueError("near_fall_minimum_root_height must be positive")
+    if not 0.0 <= near_fall_minimum_up_alignment <= 1.0:
+        raise ValueError("near_fall_minimum_up_alignment must be in [0, 1]")
+
+    fallen = jp.asarray(fallen)
+    root_height = jp.asarray(root_height)
+    up_alignment = jp.asarray(up_alignment)
+    near_fall = (~fallen) & (
+        (root_height < near_fall_minimum_root_height)
+        | (up_alignment < near_fall_minimum_up_alignment)
+    )
+    return TagStabilityState(
+        fallen=fallen,
+        near_fall=near_fall,
+        root_height=root_height,
+        up_alignment=up_alignment,
     )

@@ -36,6 +36,7 @@ from motionforge.logging import (
     tag_controller_command,
     tag_opponent_relative_state,
     tag_reward_outcome,
+    tag_stability_state,
 )
 
 
@@ -46,8 +47,10 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_tracking_error_i.jsonl")
-    summary: Path = Path("logs/p5/tag_tracking_error_i_summary.json")
+    near_fall_minimum_root_height: float = 0.60
+    near_fall_minimum_up_alignment: float = 0.80
+    output: Path = Path("logs/p5/tag_stability_state_j.jsonl")
+    summary: Path = Path("logs/p5/tag_stability_state_j_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -57,6 +60,10 @@ def _validate_config(config: Config) -> None:
         raise ValueError("separation must be positive")
     if config.naconmax <= 0 or config.njmax <= 0:
         raise ValueError("contact capacities must be positive")
+    if config.near_fall_minimum_root_height <= 0.0:
+        raise ValueError("near_fall_minimum_root_height must be positive")
+    if not 0.0 <= config.near_fall_minimum_up_alignment <= 1.0:
+        raise ValueError("near_fall_minimum_up_alignment must be in [0, 1]")
 
 
 def main(config: Config) -> None:
@@ -118,6 +125,13 @@ def main(config: Config) -> None:
             tracking_layout,
             velocity_command,
         )
+        stability_state = tag_stability_state(
+            state.diagnostics.fall_detected,
+            state.diagnostics.root_height,
+            state.diagnostics.up_alignment,
+            config.near_fall_minimum_root_height,
+            config.near_fall_minimum_up_alignment,
+        )
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
@@ -137,6 +151,10 @@ def main(config: Config) -> None:
         terrain_normal_world = np.asarray(terrain_state.normal_world)
         game_reward = np.asarray(reward_outcome.reward)
         command_tracking_error = np.asarray(tracking_error.velocity)
+        stability_fallen = np.asarray(stability_state.fallen)
+        stability_near_fall = np.asarray(stability_state.near_fall)
+        stability_root_height = np.asarray(stability_state.root_height)
+        stability_up_alignment = np.asarray(stability_state.up_alignment)
         measured_controller_velocity = np.stack(
             [
                 np.asarray(
@@ -184,6 +202,10 @@ def main(config: Config) -> None:
                 "position": position.tolist(),
                 "schema_version": TAG_TRAJECTORY_SCHEMA_VERSION,
                 "simulation_time": float(np.asarray(state.diagnostics.elapsed_seconds)),
+                "stability_fallen": stability_fallen.tolist(),
+                "stability_near_fall": stability_near_fall.tolist(),
+                "stability_root_height": stability_root_height.tolist(),
+                "stability_up_alignment": stability_up_alignment.tolist(),
                 "terrain_height": terrain_height.tolist(),
                 "terrain_kind": "flat_plane",
                 "terrain_normal_world": terrain_normal_world.tolist(),
@@ -231,6 +253,16 @@ def main(config: Config) -> None:
         [record["command_velocity_tracking_error"] for record in records]
     )
     expected_tracking_errors = np.asarray(expected_tracking_errors)
+    stability_falls = np.asarray([record["stability_fallen"] for record in records])
+    stability_near_falls = np.asarray(
+        [record["stability_near_fall"] for record in records]
+    )
+    stability_root_heights = np.asarray(
+        [record["stability_root_height"] for record in records]
+    )
+    stability_up_alignments = np.asarray(
+        [record["stability_up_alignment"] for record in records]
+    )
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -250,6 +282,8 @@ def main(config: Config) -> None:
             and np.isfinite(terrain_normals).all()
             and np.isfinite(game_rewards).all()
             and np.isfinite(command_tracking_errors).all()
+            and np.isfinite(stability_root_heights).all()
+            and np.isfinite(stability_up_alignments).all()
         ),
         "foot_contact_force_nonnegative": bool(
             np.all(foot_contact_normal_forces >= -1e-5)
@@ -307,6 +341,14 @@ def main(config: Config) -> None:
                 config.steps * environment.config.control_timestep,
             )
         ),
+        "stability_exclusive": bool(not np.any(stability_falls & stability_near_falls)),
+        "stability_shape": (
+            stability_falls.shape
+            == stability_near_falls.shape
+            == stability_root_heights.shape
+            == stability_up_alignments.shape
+            == (config.steps + 1, 2)
+        ),
         "terrain_height_matches_floor": bool(
             np.allclose(terrain_heights, terrain_layout.height)
         ),
@@ -343,6 +385,16 @@ def main(config: Config) -> None:
     checks["timeout_winner_is_evader"] = (
         int(np.asarray(timeout_fixture.winner_index)) == 1 - pursuer_index
     )
+    stability_fixture = tag_stability_state(
+        jp.asarray([False, True]),
+        jp.asarray([config.near_fall_minimum_root_height - 0.01, 0.1]),
+        jp.asarray([1.0, 0.0]),
+        config.near_fall_minimum_root_height,
+        config.near_fall_minimum_up_alignment,
+    )
+    checks["near_fall_fixture"] = bool(
+        np.array_equal(np.asarray(stability_fixture.near_fall), [True, False])
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -351,7 +403,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_tracking_error_logging",
+        "experiment": "tag_stability_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),
