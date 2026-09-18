@@ -15,7 +15,7 @@ import jax.numpy as jp
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 5
+TAG_TRAJECTORY_SCHEMA_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -82,6 +82,13 @@ class TagFootContact(NamedTuple):
 
     active: jax.Array
     normal_force: jax.Array
+
+
+class TagOpponentRelativeState(NamedTuple):
+    """Opponent planar position and velocity in each agent's heading frame."""
+
+    position: jax.Array
+    velocity: jax.Array
 
 
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
@@ -256,4 +263,19 @@ def extract_tag_foot_contact(data, layout: TagFootContactLayout) -> TagFootConta
     return TagFootContact(
         active=jp.stack(active_rows),
         normal_force=jp.stack(force_rows),
+    )
+
+
+def tag_opponent_relative_state(
+    position: jax.Array,
+    velocity: jax.Array,
+) -> TagOpponentRelativeState:
+    """Validate canonical relative observations for trajectory logging."""
+    if position.shape != (2, 2):
+        raise ValueError(f"position must have shape (2, 2); got {position.shape}")
+    if velocity.shape != (2, 2):
+        raise ValueError(f"velocity must have shape (2, 2); got {velocity.shape}")
+    return TagOpponentRelativeState(
+        position=jp.asarray(position),
+        velocity=jp.asarray(velocity),
     )

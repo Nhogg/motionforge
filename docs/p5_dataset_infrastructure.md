@@ -81,6 +81,20 @@ contact mask with foot kinematics explicitly. The smoke experiment verifies
 shapes, finite nonnegative forces, and the presence of at least one foot-floor
 contact during the rollout.
 
+## Opponent-relative state
+
+Schema version 6 records the canonical relative observation already computed
+by `TwoG1TagEnvironment`. `opponent_relative_position_heading` and
+`opponent_relative_velocity_heading` each have shape `(2, 2)`: one planar
+vector per observer, rotated into that observer's yaw-aligned heading frame.
+The logger validates these exogenous observation arrays instead of introducing
+a second coordinate transform that could drift from policy inputs.
+
+The smoke experiment checks finite values and full trajectory shapes. It also
+verifies that both agents initially observe the configured separation, while
+allowing their vector components to differ because each observation uses its
+own heading frame.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

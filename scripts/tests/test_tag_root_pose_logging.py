@@ -30,6 +30,7 @@ from motionforge.logging import (
     extract_tag_root_pose,
     extract_tag_root_velocity,
     tag_controller_command,
+    tag_opponent_relative_state,
 )
 
 
@@ -40,8 +41,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_contact_state_e.jsonl")
-    summary: Path = Path("logs/p5/tag_contact_state_e_summary.json")
+    output: Path = Path("logs/p5/tag_relative_state_f.jsonl")
+    summary: Path = Path("logs/p5/tag_relative_state_f_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -87,6 +88,10 @@ def main(config: Config) -> None:
             velocity_command,
             joint_position_target,
         )
+        relative_state = tag_opponent_relative_state(
+            state.observation.relative_position,
+            state.observation.relative_velocity,
+        )
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
@@ -100,6 +105,8 @@ def main(config: Config) -> None:
         )
         foot_contact_active = np.asarray(foot_contact.active)
         foot_contact_normal_force = np.asarray(foot_contact.normal_force)
+        opponent_relative_position = np.asarray(relative_state.position)
+        opponent_relative_velocity = np.asarray(relative_state.velocity)
         records.append(
             {
                 "command_joint_position_target": (
@@ -112,6 +119,12 @@ def main(config: Config) -> None:
                 "joint_position": joint_position.tolist(),
                 "joint_velocity": joint_velocity.tolist(),
                 "orientation_wxyz": orientation.tolist(),
+                "opponent_relative_position_heading": (
+                    opponent_relative_position.tolist()
+                ),
+                "opponent_relative_velocity_heading": (
+                    opponent_relative_velocity.tolist()
+                ),
                 "pelvis_angular_velocity": pelvis_angular_velocity.tolist(),
                 "position": position.tolist(),
                 "schema_version": TAG_TRAJECTORY_SCHEMA_VERSION,
@@ -147,6 +160,12 @@ def main(config: Config) -> None:
     foot_contact_normal_forces = np.asarray(
         [record["foot_contact_normal_force"] for record in records]
     )
+    opponent_relative_positions = np.asarray(
+        [record["opponent_relative_position_heading"] for record in records]
+    )
+    opponent_relative_velocities = np.asarray(
+        [record["opponent_relative_velocity_heading"] for record in records]
+    )
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -160,6 +179,8 @@ def main(config: Config) -> None:
             and np.isfinite(command_velocities).all()
             and np.isfinite(command_joint_position_targets).all()
             and np.isfinite(foot_contact_normal_forces).all()
+            and np.isfinite(opponent_relative_positions).all()
+            and np.isfinite(opponent_relative_velocities).all()
         ),
         "foot_contact_force_nonnegative": bool(
             np.all(foot_contact_normal_forces >= -1e-5)
@@ -168,6 +189,13 @@ def main(config: Config) -> None:
         == (config.steps + 1, 2, 2),
         "foot_contact_observed": bool(np.any(foot_contacts)),
         "foot_contact_shape": foot_contacts.shape == (config.steps + 1, 2, 2),
+        "initial_relative_distance": bool(
+            np.allclose(
+                np.linalg.norm(opponent_relative_positions[0], axis=1),
+                config.separation,
+                atol=1e-5,
+            )
+        ),
         "command_joint_target_shape": command_joint_position_targets.shape
         == (config.steps + 1, 2, 29),
         "command_velocity_shape": command_velocities.shape == (config.steps + 1, 2, 3),
@@ -184,6 +212,10 @@ def main(config: Config) -> None:
         "linear_velocity_shape": world_linear_velocities.shape
         == (config.steps + 1, 2, 3),
         "orientation_shape": orientations.shape == (config.steps + 1, 2, 4),
+        "relative_position_shape": opponent_relative_positions.shape
+        == (config.steps + 1, 2, 2),
+        "relative_velocity_shape": opponent_relative_velocities.shape
+        == (config.steps + 1, 2, 2),
         "positions_distinct": bool(
             np.linalg.norm(positions[0, 1] - positions[0, 0]) > 0.0
         ),
@@ -207,7 +239,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_contact_state_logging",
+        "experiment": "tag_relative_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

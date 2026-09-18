@@ -5,6 +5,7 @@ from motionforge.logging.tag_trajectory import (
     TagFootContactLayout,
     TagJointState,
     TagJointStateLayout,
+    TagOpponentRelativeState,
     TagRootPose,
     TagRootPoseLayout,
     TagRootVelocity,
@@ -18,6 +19,7 @@ from motionforge.logging.tag_trajectory import (
     extract_tag_root_pose,
     extract_tag_root_velocity,
     tag_controller_command,
+    tag_opponent_relative_state,
 )
 
 __all__ = [
@@ -27,6 +29,7 @@ __all__ = [
     "TagFootContactLayout",
     "TagJointState",
     "TagJointStateLayout",
+    "TagOpponentRelativeState",
     "TagRootPose",
     "TagRootPoseLayout",
     "TagRootVelocity",
@@ -40,4 +43,5 @@ __all__ = [
     "extract_tag_root_pose",
     "extract_tag_root_velocity",
     "tag_controller_command",
+    "tag_opponent_relative_state",
 ]

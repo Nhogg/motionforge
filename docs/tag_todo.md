@@ -52,7 +52,7 @@ For each timestep record:
 - [x] joint positions and velocities
 - [x] controller commands
 - [x] foot contacts / contact forces
-- [ ] opponent-relative state
+- [x] opponent-relative state
 - [ ] terrain info
 - [ ] reward / game outcome
 - [ ] tracking error
