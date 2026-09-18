@@ -53,7 +53,7 @@ For each timestep record:
 - [x] controller commands
 - [x] foot contacts / contact forces
 - [x] opponent-relative state
-- [ ] terrain info
+- [x] terrain info
 - [ ] reward / game outcome
 - [ ] tracking error
 - [ ] fall / near-fall indicator

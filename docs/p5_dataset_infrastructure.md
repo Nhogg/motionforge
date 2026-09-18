@@ -95,6 +95,20 @@ verifies that both agents initially observe the configured separation, while
 allowing their vector components to differ because each observation uses its
 own heading frame.
 
+## Terrain information
+
+Schema version 7 records the P3/P4 flat-terrain assumption explicitly. During
+setup, the logger resolves the shared `floor` geom and requires it to be a
+horizontal MuJoCo plane. Each timestep records `terrain_kind=flat_plane`,
+`terrain_height` with shape `(2,)`, and `terrain_normal_world` with shape
+`(2, 3)`. Repeating the static sample per agent keeps the timestep schema
+uniform and leaves a clear replacement point for future local height or normal
+queries on non-flat terrain.
+
+The smoke experiment verifies that the recorded heights match the compiled
+floor, all normals are finite unit vectors, and every row declares the same
+terrain kind. No terrain curriculum or non-flat model is introduced in P5.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

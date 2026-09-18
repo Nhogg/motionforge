@@ -21,10 +21,12 @@ from motionforge.cli import run_hydra
 from motionforge.envs import TagEnvironmentConfig, TwoG1TagEnvironment
 from motionforge.logging import (
     TAG_TRAJECTORY_SCHEMA_VERSION,
+    build_tag_flat_terrain_layout,
     build_tag_foot_contact_layout,
     build_tag_joint_state_layout,
     build_tag_root_pose_layout,
     build_tag_root_velocity_layout,
+    extract_tag_flat_terrain,
     extract_tag_foot_contact,
     extract_tag_joint_state,
     extract_tag_root_pose,
@@ -41,8 +43,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_relative_state_f.jsonl")
-    summary: Path = Path("logs/p5/tag_relative_state_f_summary.json")
+    output: Path = Path("logs/p5/tag_terrain_state_g.jsonl")
+    summary: Path = Path("logs/p5/tag_terrain_state_g_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -67,6 +69,7 @@ def main(config: Config) -> None:
     velocity_layout = build_tag_root_velocity_layout(environment.model_bundle)
     joint_layout = build_tag_joint_state_layout(environment.model_bundle)
     foot_contact_layout = build_tag_foot_contact_layout(environment.model_bundle)
+    terrain_layout = build_tag_flat_terrain_layout(environment.model_bundle)
     reset = jax.jit(environment.reset)
     step = jax.jit(environment.step)
     extract = jax.jit(
@@ -92,6 +95,7 @@ def main(config: Config) -> None:
             state.observation.relative_position,
             state.observation.relative_velocity,
         )
+        terrain_state = extract_tag_flat_terrain(terrain_layout)
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
@@ -107,6 +111,8 @@ def main(config: Config) -> None:
         foot_contact_normal_force = np.asarray(foot_contact.normal_force)
         opponent_relative_position = np.asarray(relative_state.position)
         opponent_relative_velocity = np.asarray(relative_state.velocity)
+        terrain_height = np.asarray(terrain_state.height)
+        terrain_normal_world = np.asarray(terrain_state.normal_world)
         records.append(
             {
                 "command_joint_position_target": (
@@ -129,6 +135,9 @@ def main(config: Config) -> None:
                 "position": position.tolist(),
                 "schema_version": TAG_TRAJECTORY_SCHEMA_VERSION,
                 "simulation_time": float(np.asarray(state.diagnostics.elapsed_seconds)),
+                "terrain_height": terrain_height.tolist(),
+                "terrain_kind": "flat_plane",
+                "terrain_normal_world": terrain_normal_world.tolist(),
                 "timestep": timestep,
                 "world_linear_velocity": world_linear_velocity.tolist(),
             }
@@ -166,6 +175,8 @@ def main(config: Config) -> None:
     opponent_relative_velocities = np.asarray(
         [record["opponent_relative_velocity_heading"] for record in records]
     )
+    terrain_heights = np.asarray([record["terrain_height"] for record in records])
+    terrain_normals = np.asarray([record["terrain_normal_world"] for record in records])
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -181,6 +192,8 @@ def main(config: Config) -> None:
             and np.isfinite(foot_contact_normal_forces).all()
             and np.isfinite(opponent_relative_positions).all()
             and np.isfinite(opponent_relative_velocities).all()
+            and np.isfinite(terrain_heights).all()
+            and np.isfinite(terrain_normals).all()
         ),
         "foot_contact_force_nonnegative": bool(
             np.all(foot_contact_normal_forces >= -1e-5)
@@ -228,6 +241,17 @@ def main(config: Config) -> None:
                 config.steps * environment.config.control_timestep,
             )
         ),
+        "terrain_height_matches_floor": bool(
+            np.allclose(terrain_heights, terrain_layout.height)
+        ),
+        "terrain_height_shape": terrain_heights.shape == (config.steps + 1, 2),
+        "terrain_kind": all(
+            record["terrain_kind"] == "flat_plane" for record in records
+        ),
+        "terrain_normal_shape": terrain_normals.shape == (config.steps + 1, 2, 3),
+        "terrain_normals_unit": bool(
+            np.allclose(np.linalg.norm(terrain_normals, axis=-1), 1.0, atol=1e-7)
+        ),
         "timesteps_contiguous": [record["timestep"] for record in records]
         == list(range(config.steps + 1)),
     }
@@ -239,7 +263,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_relative_state_logging",
+        "experiment": "tag_terrain_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

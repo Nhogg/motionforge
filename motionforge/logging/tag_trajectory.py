@@ -12,10 +12,12 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jp
+import mujoco
+import numpy as np
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 6
+TAG_TRAJECTORY_SCHEMA_VERSION = 7
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,21 @@ class TagOpponentRelativeState(NamedTuple):
     velocity: jax.Array
 
 
+@dataclass(frozen=True)
+class TagFlatTerrainLayout:
+    """Static world-frame description of the accepted flat floor."""
+
+    height: float
+    normal_world: tuple[float, float, float]
+
+
+class TagTerrainState(NamedTuple):
+    """Terrain height and world normal beneath both agents."""
+
+    height: jax.Array
+    normal_world: jax.Array
+
+
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
     """Resolve root generalized-position addresses once at setup time."""
     return TagRootPoseLayout(
@@ -158,6 +175,24 @@ def build_tag_foot_contact_layout(model_bundle: TwoG1Model) -> TagFootContactLay
             )
             for agent in model_bundle.agents
         ),
+    )
+
+
+def build_tag_flat_terrain_layout(model_bundle: TwoG1Model) -> TagFlatTerrainLayout:
+    """Validate and describe the shared horizontal plane."""
+    floor = model_bundle.model.geom("floor")
+    if floor.type != mujoco.mjtGeom.mjGEOM_PLANE:
+        raise RuntimeError("The P5 flat-terrain logger requires a plane floor geom")
+
+    rotation = np.empty(9, dtype=np.float64)
+    mujoco.mju_quat2Mat(rotation, floor.quat)
+    normal = rotation.reshape(3, 3)[:, 2]
+    if not np.allclose(normal, np.asarray([0.0, 0.0, 1.0]), atol=1e-8):
+        raise RuntimeError("The P5 flat-terrain logger requires a horizontal floor")
+
+    return TagFlatTerrainLayout(
+        height=float(floor.pos[2]),
+        normal_world=tuple(float(value) for value in normal),
     )
 
 
@@ -278,4 +313,12 @@ def tag_opponent_relative_state(
     return TagOpponentRelativeState(
         position=jp.asarray(position),
         velocity=jp.asarray(velocity),
+    )
+
+
+def extract_tag_flat_terrain(layout: TagFlatTerrainLayout) -> TagTerrainState:
+    """Return the static flat-floor sample beneath both agents."""
+    return TagTerrainState(
+        height=jp.full((2,), layout.height),
+        normal_world=jp.tile(jp.asarray(layout.normal_world), (2, 1)),
     )
