@@ -152,6 +152,20 @@ from failures while retaining the continuous diagnostics needed to retune the
 threshold later. The smoke experiment validates shapes, finite diagnostics,
 exclusivity, and a fixture containing one near-fall and one true fall.
 
+## Linear acceleration
+
+Schema version 11 adds `world_linear_acceleration`, derived offline from the
+recorded world-frame root velocity with a first-order difference divided by the
+control timestep. Derivation lives in `motionforge/logging/tag_derivatives.py`,
+separate from online state extraction and simulation stepping.
+
+The output retains the input trajectory length and shape `(T, 2, 3)`. Timestep
+zero is filled with zeros but explicitly marked false by
+`world_linear_acceleration_valid`, because no preceding sample exists. Every
+later timestep is marked valid. The smoke experiment checks finite values,
+shape, validity semantics, and an exact synthetic constant-acceleration
+fixture.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

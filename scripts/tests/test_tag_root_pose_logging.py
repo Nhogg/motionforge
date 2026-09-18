@@ -27,6 +27,7 @@ from motionforge.logging import (
     build_tag_root_pose_layout,
     build_tag_root_velocity_layout,
     build_tag_tracking_layout,
+    derive_tag_linear_acceleration,
     extract_tag_flat_terrain,
     extract_tag_foot_contact,
     extract_tag_joint_state,
@@ -49,8 +50,8 @@ class Config:
     njmax: int = 256
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
-    output: Path = Path("logs/p5/tag_stability_state_j.jsonl")
-    summary: Path = Path("logs/p5/tag_stability_state_j_summary.json")
+    output: Path = Path("logs/p5/tag_acceleration_k.jsonl")
+    summary: Path = Path("logs/p5/tag_acceleration_k_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -216,16 +217,27 @@ def main(config: Config) -> None:
         if timestep < config.steps:
             state = step(state, joint_position_target)
 
-    config.output.parent.mkdir(parents=True, exist_ok=True)
-    config.output.write_text(
-        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
-        encoding="utf-8",
-    )
-
     positions = np.asarray([record["position"] for record in records])
     orientations = np.asarray([record["orientation_wxyz"] for record in records])
     world_linear_velocities = np.asarray(
         [record["world_linear_velocity"] for record in records]
+    )
+    linear_acceleration = derive_tag_linear_acceleration(
+        jp.asarray(world_linear_velocities),
+        environment.config.control_timestep,
+    )
+    world_linear_accelerations = np.asarray(linear_acceleration.world)
+    linear_acceleration_valid = np.asarray(linear_acceleration.valid)
+    for index, record in enumerate(records):
+        record["world_linear_acceleration"] = world_linear_accelerations[index].tolist()
+        record["world_linear_acceleration_valid"] = bool(
+            linear_acceleration_valid[index]
+        )
+
+    config.output.parent.mkdir(parents=True, exist_ok=True)
+    config.output.write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
     )
     pelvis_angular_velocities = np.asarray(
         [record["pelvis_angular_velocity"] for record in records]
@@ -284,6 +296,7 @@ def main(config: Config) -> None:
             and np.isfinite(command_tracking_errors).all()
             and np.isfinite(stability_root_heights).all()
             and np.isfinite(stability_up_alignments).all()
+            and np.isfinite(world_linear_accelerations).all()
         ),
         "foot_contact_force_nonnegative": bool(
             np.all(foot_contact_normal_forces >= -1e-5)
@@ -324,6 +337,11 @@ def main(config: Config) -> None:
         == (config.steps + 1, 2, 3),
         "linear_velocity_shape": world_linear_velocities.shape
         == (config.steps + 1, 2, 3),
+        "linear_acceleration_shape": world_linear_accelerations.shape
+        == (config.steps + 1, 2, 3),
+        "linear_acceleration_validity": bool(
+            not linear_acceleration_valid[0] and np.all(linear_acceleration_valid[1:])
+        ),
         "orientation_shape": orientations.shape == (config.steps + 1, 2, 4),
         "relative_position_shape": opponent_relative_positions.shape
         == (config.steps + 1, 2, 2),
@@ -395,6 +413,21 @@ def main(config: Config) -> None:
     checks["near_fall_fixture"] = bool(
         np.array_equal(np.asarray(stability_fixture.near_fall), [True, False])
     )
+    acceleration_fixture = derive_tag_linear_acceleration(
+        jp.asarray(
+            [
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+                [[0.2, 0.0, 0.0], [1.0, -0.4, 0.0]],
+            ]
+        ),
+        0.2,
+    )
+    checks["linear_acceleration_fixture"] = bool(
+        np.allclose(
+            np.asarray(acceleration_fixture.world[1]),
+            [[1.0, 0.0, 0.0], [0.0, -2.0, 0.0]],
+        )
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -403,7 +436,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_stability_state_logging",
+        "experiment": "tag_acceleration_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),
