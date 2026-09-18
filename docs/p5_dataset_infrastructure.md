@@ -188,6 +188,20 @@ derivatives, timestep zero is zero-filled and marked invalid by a parallel
 The smoke experiment checks shape, finiteness, validity semantics, and a
 synthetic command transition with exact expected component-wise rates.
 
+## Roll and pitch excursions
+
+Schema version 14 adds `root_roll_pitch` and `root_roll_pitch_excursion`, each
+with shape `(T, 2, 2)` and component order `[roll, pitch]`. The signed angles
+are converted from the recorded world-frame `wxyz` root quaternions after
+normalization. Excursion is the component-wise absolute angle, in radians, so
+downstream analysis can use either direction-sensitive posture or tilt
+magnitude without reconstructing Euler angles.
+
+These samples are valid at every timestep and do not use finite differences.
+The smoke experiment checks shape, finiteness, nonnegative excursions, and an
+exact fixture containing a positive 60-degree roll and negative 45-degree
+pitch.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

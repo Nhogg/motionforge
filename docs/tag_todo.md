@@ -63,7 +63,7 @@ Also derive:
 - [x] acceleration
 - [x] yaw acceleration
 - [x] command derivatives
-- [ ] roll / pitch excursions
+- [x] roll / pitch excursions
 - [ ] slip / contact events
 - [ ] recovery events
 

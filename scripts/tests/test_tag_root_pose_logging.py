@@ -29,6 +29,7 @@ from motionforge.logging import (
     build_tag_tracking_layout,
     derive_tag_command_velocity,
     derive_tag_linear_acceleration,
+    derive_tag_roll_pitch_excursion,
     derive_tag_yaw_acceleration,
     extract_tag_flat_terrain,
     extract_tag_foot_contact,
@@ -52,8 +53,8 @@ class Config:
     njmax: int = 256
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
-    output: Path = Path("logs/p5/tag_command_derivative_m.jsonl")
-    summary: Path = Path("logs/p5/tag_command_derivative_m_summary.json")
+    output: Path = Path("logs/p5/tag_roll_pitch_excursion_n.jsonl")
+    summary: Path = Path("logs/p5/tag_roll_pitch_excursion_n_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -264,6 +265,13 @@ def main(config: Config) -> None:
             command_derivative_valid[index]
         )
 
+    roll_pitch_excursion = derive_tag_roll_pitch_excursion(jp.asarray(orientations))
+    root_roll_pitch_angles = np.asarray(roll_pitch_excursion.angle)
+    root_roll_pitch_excursions = np.asarray(roll_pitch_excursion.absolute)
+    for index, record in enumerate(records):
+        record["root_roll_pitch"] = root_roll_pitch_angles[index].tolist()
+        record["root_roll_pitch_excursion"] = root_roll_pitch_excursions[index].tolist()
+
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
@@ -314,6 +322,8 @@ def main(config: Config) -> None:
             and np.isfinite(joint_velocities).all()
             and np.isfinite(command_velocities).all()
             and np.isfinite(command_velocity_derivatives).all()
+            and np.isfinite(root_roll_pitch_angles).all()
+            and np.isfinite(root_roll_pitch_excursions).all()
             and np.isfinite(command_joint_position_targets).all()
             and np.isfinite(foot_contact_normal_forces).all()
             and np.isfinite(opponent_relative_positions).all()
@@ -376,6 +386,14 @@ def main(config: Config) -> None:
             not linear_acceleration_valid[0] and np.all(linear_acceleration_valid[1:])
         ),
         "orientation_shape": orientations.shape == (config.steps + 1, 2, 4),
+        "roll_pitch_excursion_nonnegative": bool(
+            np.all(root_roll_pitch_excursions >= 0.0)
+        ),
+        "roll_pitch_excursion_shape": root_roll_pitch_excursions.shape
+        == (config.steps + 1, 2, 2),
+        "roll_pitch_excursion_values": bool(
+            np.allclose(root_roll_pitch_excursions, np.abs(root_roll_pitch_angles))
+        ),
         "yaw_acceleration_shape": pelvis_yaw_accelerations.shape
         == (config.steps + 1, 2),
         "yaw_acceleration_validity": bool(
@@ -493,6 +511,30 @@ def main(config: Config) -> None:
             [[-2.0, 1.0, 3.0], [-2.5, 1.5, 0.0]],
         )
     )
+    half_roll = np.pi / 6.0
+    half_pitch = -np.pi / 8.0
+    excursion_fixture = derive_tag_roll_pitch_excursion(
+        jp.asarray(
+            [
+                [
+                    [np.cos(half_roll), np.sin(half_roll), 0.0, 0.0],
+                    [np.cos(half_pitch), 0.0, np.sin(half_pitch), 0.0],
+                ]
+            ]
+        )
+    )
+    checks["roll_pitch_excursion_fixture"] = bool(
+        np.allclose(
+            np.asarray(excursion_fixture.angle[0]),
+            [[np.pi / 3.0, 0.0], [0.0, -np.pi / 4.0]],
+            atol=1e-6,
+        )
+        and np.allclose(
+            np.asarray(excursion_fixture.absolute[0]),
+            [[np.pi / 3.0, 0.0], [0.0, np.pi / 4.0]],
+            atol=1e-6,
+        )
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -501,7 +543,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_command_derivative_logging",
+        "experiment": "tag_roll_pitch_excursion_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

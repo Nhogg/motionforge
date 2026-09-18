@@ -1,9 +1,11 @@
 from motionforge.logging.tag_derivatives import (
     TagCommandDerivative,
     TagLinearAcceleration,
+    TagRollPitchExcursion,
     TagYawAcceleration,
     derive_tag_command_velocity,
     derive_tag_linear_acceleration,
+    derive_tag_roll_pitch_excursion,
     derive_tag_yaw_acceleration,
 )
 from motionforge.logging.tag_trajectory import (
@@ -54,6 +56,7 @@ __all__ = [
     "TagLinearAcceleration",
     "TagOpponentRelativeState",
     "TagRewardOutcome",
+    "TagRollPitchExcursion",
     "TagRootPose",
     "TagRootPoseLayout",
     "TagRootVelocity",
@@ -71,6 +74,7 @@ __all__ = [
     "build_tag_tracking_layout",
     "derive_tag_command_velocity",
     "derive_tag_linear_acceleration",
+    "derive_tag_roll_pitch_excursion",
     "derive_tag_yaw_acceleration",
     "extract_tag_flat_terrain",
     "extract_tag_foot_contact",

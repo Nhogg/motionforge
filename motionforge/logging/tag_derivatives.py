@@ -33,6 +33,13 @@ class TagCommandDerivative(NamedTuple):
     valid: jax.Array
 
 
+class TagRollPitchExcursion(NamedTuple):
+    """Signed root roll/pitch angles and their absolute excursions."""
+
+    angle: jax.Array
+    absolute: jax.Array
+
+
 def derive_tag_linear_acceleration(
     world_linear_velocity: jax.Array,
     control_timestep: float,
@@ -96,3 +103,24 @@ def derive_tag_command_velocity(
     derivative = jp.concatenate([jp.zeros_like(command[:1]), differences], axis=0)
     valid = jp.arange(command.shape[0]) > 0
     return TagCommandDerivative(velocity=derivative, valid=valid)
+
+
+def derive_tag_roll_pitch_excursion(
+    orientation_wxyz: jax.Array,
+) -> TagRollPitchExcursion:
+    """Convert time-major root quaternions to signed roll/pitch excursions."""
+    if orientation_wxyz.ndim != 3 or orientation_wxyz.shape[1:] != (2, 4):
+        raise ValueError(
+            f"orientation_wxyz must have shape (T, 2, 4); got {orientation_wxyz.shape}"
+        )
+    if orientation_wxyz.shape[0] == 0:
+        raise ValueError("orientation_wxyz must contain at least one timestep")
+
+    quaternion = jp.asarray(orientation_wxyz)
+    norm = jp.linalg.norm(quaternion, axis=-1, keepdims=True)
+    normalized = quaternion / jp.where(norm > 0.0, norm, 1.0)
+    w, x, y, z = jp.moveaxis(normalized, -1, 0)
+    roll = jp.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+    pitch = jp.arcsin(jp.clip(2.0 * (w * y - z * x), -1.0, 1.0))
+    angle = jp.stack([roll, pitch], axis=-1)
+    return TagRollPitchExcursion(angle=angle, absolute=jp.abs(angle))
