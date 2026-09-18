@@ -202,6 +202,20 @@ The smoke experiment checks shape, finiteness, nonnegative excursions, and an
 exact fixture containing a positive 60-degree roll and negative 45-degree
 pitch.
 
+## Slip and contact events
+
+Schema version 15 adds `foot_position_world` with shape `(T, 2, 2, 3)` as the
+explicit kinematic input for event derivation. `foot_planar_speed` is the
+finite-difference horizontal speed for each agent's left and right foot. A
+`foot_slip` event is active when that speed exceeds the configurable threshold
+while the same foot has floor contact.
+
+The schema also records boolean `foot_touchdown` and `foot_liftoff` transitions
+from the contact mask. Timestep zero has zero speed and no events and is marked
+invalid by `foot_event_valid`; later samples are valid. The seeded smoke test
+checks shapes, finiteness, contact-gated slip, validity semantics, and an exact
+synthetic sequence containing slip, touchdown, and liftoff events.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

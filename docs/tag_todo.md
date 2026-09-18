@@ -64,7 +64,7 @@ Also derive:
 - [x] yaw acceleration
 - [x] command derivatives
 - [x] roll / pitch excursions
-- [ ] slip / contact events
+- [x] slip / contact events
 - [ ] recovery events
 
 # P6 - Non-TAG baselines

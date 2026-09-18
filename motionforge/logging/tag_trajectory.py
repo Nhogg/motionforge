@@ -17,7 +17,7 @@ import numpy as np
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 14
+TAG_TRAJECTORY_SCHEMA_VERSION = 15
 
 
 @dataclass(frozen=True)
@@ -80,10 +80,11 @@ class TagFootContactLayout:
 
 
 class TagFootContact(NamedTuple):
-    """Per-agent left/right floor contact and summed normal force."""
+    """Per-agent foot kinematics, floor contact, and summed normal force."""
 
     active: jax.Array
     normal_force: jax.Array
+    position_world: jax.Array
 
 
 class TagOpponentRelativeState(NamedTuple):
@@ -355,6 +356,7 @@ def extract_tag_foot_contact(data, layout: TagFootContactLayout) -> TagFootConta
     return TagFootContact(
         active=jp.stack(active_rows),
         normal_force=jp.stack(force_rows),
+        position_world=jp.asarray(data.geom_xpos)[jp.asarray(layout.foot_geom_ids)],
     )
 
 

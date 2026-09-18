@@ -28,6 +28,7 @@ from motionforge.logging import (
     build_tag_root_velocity_layout,
     build_tag_tracking_layout,
     derive_tag_command_velocity,
+    derive_tag_foot_events,
     derive_tag_linear_acceleration,
     derive_tag_roll_pitch_excursion,
     derive_tag_yaw_acceleration,
@@ -53,8 +54,9 @@ class Config:
     njmax: int = 256
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
-    output: Path = Path("logs/p5/tag_roll_pitch_excursion_n.jsonl")
-    summary: Path = Path("logs/p5/tag_roll_pitch_excursion_n_summary.json")
+    slip_speed_threshold: float = 0.10
+    output: Path = Path("logs/p5/tag_foot_events_o.jsonl")
+    summary: Path = Path("logs/p5/tag_foot_events_o_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -68,6 +70,8 @@ def _validate_config(config: Config) -> None:
         raise ValueError("near_fall_minimum_root_height must be positive")
     if not 0.0 <= config.near_fall_minimum_up_alignment <= 1.0:
         raise ValueError("near_fall_minimum_up_alignment must be in [0, 1]")
+    if config.slip_speed_threshold < 0.0:
+        raise ValueError("slip_speed_threshold must be nonnegative")
 
 
 def main(config: Config) -> None:
@@ -149,6 +153,7 @@ def main(config: Config) -> None:
         )
         foot_contact_active = np.asarray(foot_contact.active)
         foot_contact_normal_force = np.asarray(foot_contact.normal_force)
+        foot_position_world = np.asarray(foot_contact.position_world)
         opponent_relative_position = np.asarray(relative_state.position)
         opponent_relative_velocity = np.asarray(relative_state.velocity)
         terrain_height = np.asarray(terrain_state.height)
@@ -186,6 +191,7 @@ def main(config: Config) -> None:
                 "episode_seed": config.seed,
                 "foot_contact": foot_contact_active.tolist(),
                 "foot_contact_normal_force": foot_contact_normal_force.tolist(),
+                "foot_position_world": foot_position_world.tolist(),
                 "game_done": bool(np.asarray(reward_outcome.done)),
                 "game_fallen": np.asarray(reward_outcome.fallen).tolist(),
                 "game_out_of_bounds": np.asarray(reward_outcome.out_of_bounds).tolist(),
@@ -272,6 +278,28 @@ def main(config: Config) -> None:
         record["root_roll_pitch"] = root_roll_pitch_angles[index].tolist()
         record["root_roll_pitch_excursion"] = root_roll_pitch_excursions[index].tolist()
 
+    foot_contacts = np.asarray([record["foot_contact"] for record in records])
+    foot_positions_world = np.asarray(
+        [record["foot_position_world"] for record in records]
+    )
+    foot_events = derive_tag_foot_events(
+        jp.asarray(foot_contacts),
+        jp.asarray(foot_positions_world),
+        environment.config.control_timestep,
+        config.slip_speed_threshold,
+    )
+    foot_planar_speeds = np.asarray(foot_events.planar_speed)
+    foot_slips = np.asarray(foot_events.slipping)
+    foot_touchdowns = np.asarray(foot_events.touchdown)
+    foot_liftoffs = np.asarray(foot_events.liftoff)
+    foot_event_valid = np.asarray(foot_events.valid)
+    for index, record in enumerate(records):
+        record["foot_planar_speed"] = foot_planar_speeds[index].tolist()
+        record["foot_slip"] = foot_slips[index].tolist()
+        record["foot_touchdown"] = foot_touchdowns[index].tolist()
+        record["foot_liftoff"] = foot_liftoffs[index].tolist()
+        record["foot_event_valid"] = bool(foot_event_valid[index])
+
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
@@ -282,7 +310,6 @@ def main(config: Config) -> None:
     command_joint_position_targets = np.asarray(
         [record["command_joint_position_target"] for record in records]
     )
-    foot_contacts = np.asarray([record["foot_contact"] for record in records])
     foot_contact_normal_forces = np.asarray(
         [record["foot_contact_normal_force"] for record in records]
     )
@@ -326,6 +353,8 @@ def main(config: Config) -> None:
             and np.isfinite(root_roll_pitch_excursions).all()
             and np.isfinite(command_joint_position_targets).all()
             and np.isfinite(foot_contact_normal_forces).all()
+            and np.isfinite(foot_positions_world).all()
+            and np.isfinite(foot_planar_speeds).all()
             and np.isfinite(opponent_relative_positions).all()
             and np.isfinite(opponent_relative_velocities).all()
             and np.isfinite(terrain_heights).all()
@@ -343,6 +372,19 @@ def main(config: Config) -> None:
         == (config.steps + 1, 2, 2),
         "foot_contact_observed": bool(np.any(foot_contacts)),
         "foot_contact_shape": foot_contacts.shape == (config.steps + 1, 2, 2),
+        "foot_event_shape": (
+            foot_slips.shape
+            == foot_touchdowns.shape
+            == foot_liftoffs.shape
+            == (config.steps + 1, 2, 2)
+        ),
+        "foot_event_validity": bool(
+            not foot_event_valid[0] and np.all(foot_event_valid[1:])
+        ),
+        "foot_position_shape": foot_positions_world.shape
+        == (config.steps + 1, 2, 2, 3),
+        "foot_speed_shape": foot_planar_speeds.shape == (config.steps + 1, 2, 2),
+        "slip_requires_contact": bool(not np.any(foot_slips & ~foot_contacts)),
         "game_outcome_ongoing": all(
             not record["game_done"] and record["game_winner_index"] == -1
             for record in records
@@ -535,6 +577,47 @@ def main(config: Config) -> None:
             atol=1e-6,
         )
     )
+    foot_event_fixture = derive_tag_foot_events(
+        jp.asarray(
+            [
+                [[False, True], [True, False]],
+                [[True, True], [False, False]],
+                [[True, False], [True, False]],
+            ]
+        ),
+        jp.asarray(
+            [
+                [
+                    [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                    [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                ],
+                [
+                    [[0.2, 0.0, 0.0], [0.01, 0.0, 0.0]],
+                    [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                ],
+                [
+                    [[0.22, 0.0, 0.0], [0.01, 0.0, 0.0]],
+                    [[0.2, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                ],
+            ]
+        ),
+        0.1,
+        0.5,
+    )
+    checks["foot_event_fixture"] = bool(
+        np.array_equal(
+            np.asarray(foot_event_fixture.touchdown[1:]),
+            [[[True, False], [False, False]], [[False, False], [True, False]]],
+        )
+        and np.array_equal(
+            np.asarray(foot_event_fixture.liftoff[1:]),
+            [[[False, False], [True, False]], [[False, True], [False, False]]],
+        )
+        and np.array_equal(
+            np.asarray(foot_event_fixture.slipping[1:]),
+            [[[True, False], [False, False]], [[False, False], [True, False]]],
+        )
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -543,7 +626,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_roll_pitch_excursion_logging",
+        "experiment": "tag_foot_event_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

@@ -40,6 +40,16 @@ class TagRollPitchExcursion(NamedTuple):
     absolute: jax.Array
 
 
+class TagFootEvents(NamedTuple):
+    """Foot planar speed plus slip and contact-transition events."""
+
+    planar_speed: jax.Array
+    slipping: jax.Array
+    touchdown: jax.Array
+    liftoff: jax.Array
+    valid: jax.Array
+
+
 def derive_tag_linear_acceleration(
     world_linear_velocity: jax.Array,
     control_timestep: float,
@@ -124,3 +134,51 @@ def derive_tag_roll_pitch_excursion(
     pitch = jp.arcsin(jp.clip(2.0 * (w * y - z * x), -1.0, 1.0))
     angle = jp.stack([roll, pitch], axis=-1)
     return TagRollPitchExcursion(angle=angle, absolute=jp.abs(angle))
+
+
+def derive_tag_foot_events(
+    contact_active: jax.Array,
+    position_world: jax.Array,
+    control_timestep: float,
+    slip_speed_threshold: float,
+) -> TagFootEvents:
+    """Derive foot speed, slip, touchdown, and liftoff from a trajectory."""
+    if contact_active.ndim != 3 or contact_active.shape[1:] != (2, 2):
+        raise ValueError(
+            f"contact_active must have shape (T, 2, 2); got {contact_active.shape}"
+        )
+    if position_world.ndim != 4 or position_world.shape[1:] != (2, 2, 3):
+        raise ValueError(
+            f"position_world must have shape (T, 2, 2, 3); got {position_world.shape}"
+        )
+    if contact_active.shape[0] != position_world.shape[0]:
+        raise ValueError("contact_active and position_world lengths must match")
+    if contact_active.shape[0] == 0:
+        raise ValueError("foot trajectories must contain at least one timestep")
+    if control_timestep <= 0.0:
+        raise ValueError("control_timestep must be positive")
+    if slip_speed_threshold < 0.0:
+        raise ValueError("slip_speed_threshold must be nonnegative")
+
+    contact = jp.asarray(contact_active, dtype=bool)
+    position = jp.asarray(position_world)
+    planar_delta = position[1:, ..., :2] - position[:-1, ..., :2]
+    speed = jp.linalg.norm(planar_delta, axis=-1) / control_timestep
+    planar_speed = jp.concatenate([jp.zeros_like(speed[:1]), speed], axis=0)
+    previous_contact = contact[:-1]
+    current_contact = contact[1:]
+    touchdown = jp.concatenate(
+        [jp.zeros_like(contact[:1]), current_contact & ~previous_contact], axis=0
+    )
+    liftoff = jp.concatenate(
+        [jp.zeros_like(contact[:1]), ~current_contact & previous_contact], axis=0
+    )
+    valid = jp.arange(contact.shape[0]) > 0
+    slipping = contact & (planar_speed > slip_speed_threshold) & valid[:, None, None]
+    return TagFootEvents(
+        planar_speed=planar_speed,
+        slipping=slipping,
+        touchdown=touchdown,
+        liftoff=liftoff,
+        valid=valid,
+    )
