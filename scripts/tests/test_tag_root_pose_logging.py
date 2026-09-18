@@ -27,6 +27,7 @@ from motionforge.logging import (
     build_tag_root_pose_layout,
     build_tag_root_velocity_layout,
     build_tag_tracking_layout,
+    derive_tag_command_velocity,
     derive_tag_linear_acceleration,
     derive_tag_yaw_acceleration,
     extract_tag_flat_terrain,
@@ -51,8 +52,8 @@ class Config:
     njmax: int = 256
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
-    output: Path = Path("logs/p5/tag_yaw_acceleration_l.jsonl")
-    summary: Path = Path("logs/p5/tag_yaw_acceleration_l_summary.json")
+    output: Path = Path("logs/p5/tag_command_derivative_m.jsonl")
+    summary: Path = Path("logs/p5/tag_command_derivative_m_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -248,6 +249,21 @@ def main(config: Config) -> None:
         record["pelvis_yaw_acceleration"] = pelvis_yaw_accelerations[index].tolist()
         record["pelvis_yaw_acceleration_valid"] = bool(yaw_acceleration_valid[index])
 
+    command_velocities = np.asarray([record["command_velocity"] for record in records])
+    command_derivative = derive_tag_command_velocity(
+        jp.asarray(command_velocities),
+        environment.config.control_timestep,
+    )
+    command_velocity_derivatives = np.asarray(command_derivative.velocity)
+    command_derivative_valid = np.asarray(command_derivative.valid)
+    for index, record in enumerate(records):
+        record["command_velocity_derivative"] = command_velocity_derivatives[
+            index
+        ].tolist()
+        record["command_velocity_derivative_valid"] = bool(
+            command_derivative_valid[index]
+        )
+
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
@@ -255,7 +271,6 @@ def main(config: Config) -> None:
     )
     joint_positions = np.asarray([record["joint_position"] for record in records])
     joint_velocities = np.asarray([record["joint_velocity"] for record in records])
-    command_velocities = np.asarray([record["command_velocity"] for record in records])
     command_joint_position_targets = np.asarray(
         [record["command_joint_position_target"] for record in records]
     )
@@ -298,6 +313,7 @@ def main(config: Config) -> None:
             and np.isfinite(joint_positions).all()
             and np.isfinite(joint_velocities).all()
             and np.isfinite(command_velocities).all()
+            and np.isfinite(command_velocity_derivatives).all()
             and np.isfinite(command_joint_position_targets).all()
             and np.isfinite(foot_contact_normal_forces).all()
             and np.isfinite(opponent_relative_positions).all()
@@ -332,6 +348,11 @@ def main(config: Config) -> None:
         "command_joint_target_shape": command_joint_position_targets.shape
         == (config.steps + 1, 2, 29),
         "command_velocity_shape": command_velocities.shape == (config.steps + 1, 2, 3),
+        "command_derivative_shape": command_velocity_derivatives.shape
+        == (config.steps + 1, 2, 3),
+        "command_derivative_validity": bool(
+            not command_derivative_valid[0] and np.all(command_derivative_valid[1:])
+        ),
         "command_tracking_error_shape": command_tracking_errors.shape
         == (config.steps + 1, 2, 3),
         "command_tracking_error_values": bool(
@@ -457,6 +478,21 @@ def main(config: Config) -> None:
     checks["yaw_acceleration_fixture"] = bool(
         np.allclose(np.asarray(yaw_acceleration_fixture.pelvis[1]), [3.0, 2.0])
     )
+    command_derivative_fixture = derive_tag_command_velocity(
+        jp.asarray(
+            [
+                [[0.0, 0.0, 0.0], [0.5, 0.0, -0.2]],
+                [[-0.4, 0.2, 0.6], [0.0, 0.3, -0.2]],
+            ]
+        ),
+        0.2,
+    )
+    checks["command_derivative_fixture"] = bool(
+        np.allclose(
+            np.asarray(command_derivative_fixture.velocity[1]),
+            [[-2.0, 1.0, 3.0], [-2.5, 1.5, 0.0]],
+        )
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -465,7 +501,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_yaw_acceleration_logging",
+        "experiment": "tag_command_derivative_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

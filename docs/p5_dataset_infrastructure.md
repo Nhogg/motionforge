@@ -177,6 +177,17 @@ zero-filled and invalid because no preceding yaw-rate sample exists.
 The smoke experiment checks finite values, shape, validity semantics, and an
 exact two-agent synthetic fixture with different yaw accelerations.
 
+## Command derivatives
+
+Schema version 13 adds `command_velocity_derivative`, the first-order time
+derivative of the recorded high-level `[vx, vy, yaw_rate]` command. The output
+has shape `(T, 2, 3)` and units `[m/s², m/s², rad/s²]`. As with the physical
+derivatives, timestep zero is zero-filled and marked invalid by a parallel
+`command_velocity_derivative_valid` mask.
+
+The smoke experiment checks shape, finiteness, validity semantics, and a
+synthetic command transition with exact expected component-wise rates.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data
