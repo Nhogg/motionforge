@@ -17,7 +17,7 @@ import numpy as np
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 15
+TAG_TRAJECTORY_SCHEMA_VERSION = 16
 
 
 @dataclass(frozen=True)

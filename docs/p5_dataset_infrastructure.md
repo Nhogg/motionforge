@@ -216,6 +216,21 @@ invalid by `foot_event_valid`; later samples are valid. The seeded smoke test
 checks shapes, finiteness, contact-gated slip, validity semantics, and an exact
 synthetic sequence containing slip, touchdown, and liftoff events.
 
+## Recovery events
+
+Schema version 16 segments the existing stability flags into near-fall
+episodes. `recovery_onset` marks entry into a near-fall, and
+`recovery_active` remains true while the warning persists. The first subsequent
+stable, non-fallen sample emits `recovery_succeeded`; transition from an active
+episode into a fall emits `recovery_failed`. These terminal event flags are
+mutually exclusive.
+
+`recovery_duration` records seconds from onset to a successful recovery and is
+zero on non-success samples, where `recovery_succeeded` acts as its validity
+flag. The derivation uses a JAX scan over the completed trajectory and does not
+affect online simulation. An exact fixture verifies one two-timestep recovery
+and one episode ending in failure.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

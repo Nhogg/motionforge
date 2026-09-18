@@ -50,6 +50,16 @@ class TagFootEvents(NamedTuple):
     valid: jax.Array
 
 
+class TagRecoveryEvents(NamedTuple):
+    """Near-fall episode state, outcomes, and successful recovery duration."""
+
+    active: jax.Array
+    onset: jax.Array
+    recovered: jax.Array
+    failed: jax.Array
+    duration: jax.Array
+
+
 def derive_tag_linear_acceleration(
     world_linear_velocity: jax.Array,
     control_timestep: float,
@@ -182,3 +192,45 @@ def derive_tag_foot_events(
         liftoff=liftoff,
         valid=valid,
     )
+
+
+def derive_tag_recovery_events(
+    near_fall: jax.Array,
+    fallen: jax.Array,
+    control_timestep: float,
+) -> TagRecoveryEvents:
+    """Segment near-fall warnings into successful or failed recovery episodes."""
+    if near_fall.ndim != 2 or near_fall.shape[1:] != (2,):
+        raise ValueError(f"near_fall must have shape (T, 2); got {near_fall.shape}")
+    if fallen.shape != near_fall.shape:
+        raise ValueError("fallen must have the same shape as near_fall")
+    if near_fall.shape[0] == 0:
+        raise ValueError("stability trajectories must contain at least one timestep")
+    if control_timestep <= 0.0:
+        raise ValueError("control_timestep must be positive")
+
+    warning = jp.asarray(near_fall, dtype=bool)
+    failure = jp.asarray(fallen, dtype=bool)
+    timesteps = jp.arange(warning.shape[0], dtype=jp.int32)
+
+    def scan_episode(carry, sample):
+        active, start_step = carry
+        step, current_warning, current_failure = sample
+        onset = current_warning & ~active
+        start_step = jp.where(onset, step, start_step)
+        recovered = active & ~current_warning & ~current_failure
+        failed = active & current_failure
+        duration = jp.where(
+            recovered,
+            (step - start_step).astype(jp.float32) * control_timestep,
+            0.0,
+        )
+        active = (active | current_warning) & ~recovered & ~failed
+        return (active, start_step), (active, onset, recovered, failed, duration)
+
+    (_, _), events = jax.lax.scan(
+        scan_episode,
+        (jp.zeros((2,), dtype=bool), jp.zeros((2,), dtype=jp.int32)),
+        (timesteps, warning, failure),
+    )
+    return TagRecoveryEvents(*events)

@@ -30,6 +30,7 @@ from motionforge.logging import (
     derive_tag_command_velocity,
     derive_tag_foot_events,
     derive_tag_linear_acceleration,
+    derive_tag_recovery_events,
     derive_tag_roll_pitch_excursion,
     derive_tag_yaw_acceleration,
     extract_tag_flat_terrain,
@@ -55,8 +56,8 @@ class Config:
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
     slip_speed_threshold: float = 0.10
-    output: Path = Path("logs/p5/tag_foot_events_o.jsonl")
-    summary: Path = Path("logs/p5/tag_foot_events_o_summary.json")
+    output: Path = Path("logs/p5/tag_recovery_events_p.jsonl")
+    summary: Path = Path("logs/p5/tag_recovery_events_p_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -300,6 +301,27 @@ def main(config: Config) -> None:
         record["foot_liftoff"] = foot_liftoffs[index].tolist()
         record["foot_event_valid"] = bool(foot_event_valid[index])
 
+    stability_near_falls = np.asarray(
+        [record["stability_near_fall"] for record in records]
+    )
+    stability_falls = np.asarray([record["stability_fallen"] for record in records])
+    recovery_events = derive_tag_recovery_events(
+        jp.asarray(stability_near_falls),
+        jp.asarray(stability_falls),
+        environment.config.control_timestep,
+    )
+    recovery_active = np.asarray(recovery_events.active)
+    recovery_onsets = np.asarray(recovery_events.onset)
+    recovery_successes = np.asarray(recovery_events.recovered)
+    recovery_failures = np.asarray(recovery_events.failed)
+    recovery_durations = np.asarray(recovery_events.duration)
+    for index, record in enumerate(records):
+        record["recovery_active"] = recovery_active[index].tolist()
+        record["recovery_onset"] = recovery_onsets[index].tolist()
+        record["recovery_succeeded"] = recovery_successes[index].tolist()
+        record["recovery_failed"] = recovery_failures[index].tolist()
+        record["recovery_duration"] = recovery_durations[index].tolist()
+
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
@@ -326,10 +348,6 @@ def main(config: Config) -> None:
         [record["command_velocity_tracking_error"] for record in records]
     )
     expected_tracking_errors = np.asarray(expected_tracking_errors)
-    stability_falls = np.asarray([record["stability_fallen"] for record in records])
-    stability_near_falls = np.asarray(
-        [record["stability_near_fall"] for record in records]
-    )
     stability_root_heights = np.asarray(
         [record["stability_root_height"] for record in records]
     )
@@ -351,6 +369,7 @@ def main(config: Config) -> None:
             and np.isfinite(command_velocity_derivatives).all()
             and np.isfinite(root_roll_pitch_angles).all()
             and np.isfinite(root_roll_pitch_excursions).all()
+            and np.isfinite(recovery_durations).all()
             and np.isfinite(command_joint_position_targets).all()
             and np.isfinite(foot_contact_normal_forces).all()
             and np.isfinite(foot_positions_world).all()
@@ -451,6 +470,18 @@ def main(config: Config) -> None:
         "position_shape": positions.shape == (config.steps + 1, 2, 3),
         "quaternions_normalized": bool(np.allclose(quaternion_norms, 1.0, atol=1e-5)),
         "record_count": len(records) == config.steps + 1,
+        "recovery_event_exclusive": bool(
+            not np.any(recovery_successes & recovery_failures)
+        ),
+        "recovery_event_shape": (
+            recovery_active.shape
+            == recovery_onsets.shape
+            == recovery_successes.shape
+            == recovery_failures.shape
+            == recovery_durations.shape
+            == (config.steps + 1, 2)
+        ),
+        "recovery_time_nonnegative": bool(np.all(recovery_durations >= 0.0)),
         "simulation_time": bool(
             np.isclose(
                 records[-1]["simulation_time"],
@@ -618,6 +649,41 @@ def main(config: Config) -> None:
             [[[True, False], [False, False]], [[False, False], [True, False]]],
         )
     )
+    recovery_fixture = derive_tag_recovery_events(
+        jp.asarray(
+            [
+                [False, False],
+                [True, False],
+                [True, False],
+                [False, False],
+                [False, True],
+                [False, True],
+                [False, False],
+            ]
+        ),
+        jp.asarray(
+            [
+                [False, False],
+                [False, False],
+                [False, False],
+                [False, False],
+                [False, False],
+                [False, False],
+                [False, True],
+            ]
+        ),
+        0.1,
+    )
+    checks["recovery_event_fixture"] = bool(
+        np.array_equal(
+            np.argwhere(np.asarray(recovery_fixture.onset)), [[1, 0], [4, 1]]
+        )
+        and np.array_equal(
+            np.argwhere(np.asarray(recovery_fixture.recovered)), [[3, 0]]
+        )
+        and np.array_equal(np.argwhere(np.asarray(recovery_fixture.failed)), [[6, 1]])
+        and np.isclose(np.asarray(recovery_fixture.duration)[3, 0], 0.2)
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -626,7 +692,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_foot_event_logging",
+        "experiment": "tag_recovery_event_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

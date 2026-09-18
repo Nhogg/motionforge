@@ -65,7 +65,7 @@ Also derive:
 - [x] command derivatives
 - [x] roll / pitch excursions
 - [x] slip / contact events
-- [ ] recovery events
+- [x] recovery events
 
 # P6 - Non-TAG baselines
 
