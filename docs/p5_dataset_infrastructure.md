@@ -109,6 +109,22 @@ The smoke experiment verifies that the recorded heights match the compiled
 floor, all normals are finite unit vectors, and every row declares the same
 terrain kind. No terrain curriculum or non-flat model is introduced in P5.
 
+## Reward and game outcome
+
+Schema version 8 adds a validated per-agent `game_reward` vector and the
+canonical sticky termination fields: tag, per-agent fall, per-agent
+out-of-bounds, timeout, and aggregate done. Rewards are supplied by the caller
+because P5 does not define the learned-game objective planned for P7. The smoke
+experiment therefore records neutral zero rewards rather than introducing a
+premature reward function.
+
+`game_winner_index` is derived from the fixed role assignment and terminal
+cause. A tag awards the outcome to the pursuer, a timeout to the evader, and a
+single-agent fall or boundary exit to the other agent. It is `-1` while the
+episode is active or when a simultaneous failure has no unique winner. Direct
+fixtures verify tag and timeout classification in addition to the per-timestep
+shape, finiteness, and ongoing-outcome checks.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

@@ -17,7 +17,7 @@ import numpy as np
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 7
+TAG_TRAJECTORY_SCHEMA_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -106,6 +106,18 @@ class TagTerrainState(NamedTuple):
 
     height: jax.Array
     normal_world: jax.Array
+
+
+class TagRewardOutcome(NamedTuple):
+    """Per-agent reward and canonical game termination outcome."""
+
+    reward: jax.Array
+    tagged: jax.Array
+    fallen: jax.Array
+    out_of_bounds: jax.Array
+    timed_out: jax.Array
+    done: jax.Array
+    winner_index: jax.Array
 
 
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
@@ -321,4 +333,45 @@ def extract_tag_flat_terrain(layout: TagFlatTerrainLayout) -> TagTerrainState:
     return TagTerrainState(
         height=jp.full((2,), layout.height),
         normal_world=jp.tile(jp.asarray(layout.normal_world), (2, 1)),
+    )
+
+
+def tag_reward_outcome(
+    reward: jax.Array,
+    tagged: jax.Array,
+    fallen: jax.Array,
+    out_of_bounds: jax.Array,
+    timed_out: jax.Array,
+    pursuer_index: int,
+) -> TagRewardOutcome:
+    """Validate rewards and classify canonical tag terminal outcomes."""
+    if reward.shape != (2,):
+        raise ValueError(f"reward must have shape (2,); got {reward.shape}")
+    if fallen.shape != (2,):
+        raise ValueError(f"fallen must have shape (2,); got {fallen.shape}")
+    if out_of_bounds.shape != (2,):
+        raise ValueError(
+            f"out_of_bounds must have shape (2,); got {out_of_bounds.shape}"
+        )
+    if pursuer_index not in (0, 1):
+        raise ValueError("pursuer_index must be 0 or 1")
+
+    evader_index = 1 - pursuer_index
+    failed = jp.asarray(fallen) | jp.asarray(out_of_bounds)
+    one_failed = failed[0] ^ failed[1]
+    failure_winner = jp.where(failed[0], 1, 0)
+    winner_index = jp.asarray(-1, dtype=jp.int32)
+    winner_index = jp.where(one_failed, failure_winner, winner_index)
+    winner_index = jp.where(timed_out, evader_index, winner_index)
+    winner_index = jp.where(tagged, pursuer_index, winner_index)
+    done = tagged | jp.any(failed) | timed_out
+
+    return TagRewardOutcome(
+        reward=jp.asarray(reward),
+        tagged=jp.asarray(tagged),
+        fallen=jp.asarray(fallen),
+        out_of_bounds=jp.asarray(out_of_bounds),
+        timed_out=jp.asarray(timed_out),
+        done=done,
+        winner_index=winner_index,
     )

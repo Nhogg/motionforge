@@ -33,6 +33,7 @@ from motionforge.logging import (
     extract_tag_root_velocity,
     tag_controller_command,
     tag_opponent_relative_state,
+    tag_reward_outcome,
 )
 
 
@@ -43,8 +44,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_terrain_state_g.jsonl")
-    summary: Path = Path("logs/p5/tag_terrain_state_g_summary.json")
+    output: Path = Path("logs/p5/tag_reward_outcome_h.jsonl")
+    summary: Path = Path("logs/p5/tag_reward_outcome_h_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -84,6 +85,10 @@ def main(config: Config) -> None:
     state = reset(jax.random.PRNGKey(config.seed))
     velocity_command = jp.zeros((2, 3))
     joint_position_target = environment.default_joint_targets
+    reward = jp.zeros((2,))
+    pursuer_index = next(
+        agent.index for agent in environment.roles.agents if agent.role == "pursuer"
+    )
     records = []
     for timestep in range(config.steps + 1):
         root_pose, root_velocity, joint_state, foot_contact = extract(state)
@@ -96,6 +101,14 @@ def main(config: Config) -> None:
             state.observation.relative_velocity,
         )
         terrain_state = extract_tag_flat_terrain(terrain_layout)
+        reward_outcome = tag_reward_outcome(
+            reward,
+            state.termination.tagged,
+            state.termination.fallen,
+            state.termination.out_of_bounds,
+            state.termination.timed_out,
+            pursuer_index,
+        )
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
@@ -113,6 +126,7 @@ def main(config: Config) -> None:
         opponent_relative_velocity = np.asarray(relative_state.velocity)
         terrain_height = np.asarray(terrain_state.height)
         terrain_normal_world = np.asarray(terrain_state.normal_world)
+        game_reward = np.asarray(reward_outcome.reward)
         records.append(
             {
                 "command_joint_position_target": (
@@ -122,6 +136,13 @@ def main(config: Config) -> None:
                 "episode_seed": config.seed,
                 "foot_contact": foot_contact_active.tolist(),
                 "foot_contact_normal_force": foot_contact_normal_force.tolist(),
+                "game_done": bool(np.asarray(reward_outcome.done)),
+                "game_fallen": np.asarray(reward_outcome.fallen).tolist(),
+                "game_out_of_bounds": np.asarray(reward_outcome.out_of_bounds).tolist(),
+                "game_reward": game_reward.tolist(),
+                "game_tagged": bool(np.asarray(reward_outcome.tagged)),
+                "game_timed_out": bool(np.asarray(reward_outcome.timed_out)),
+                "game_winner_index": int(np.asarray(reward_outcome.winner_index)),
                 "joint_position": joint_position.tolist(),
                 "joint_velocity": joint_velocity.tolist(),
                 "orientation_wxyz": orientation.tolist(),
@@ -177,6 +198,7 @@ def main(config: Config) -> None:
     )
     terrain_heights = np.asarray([record["terrain_height"] for record in records])
     terrain_normals = np.asarray([record["terrain_normal_world"] for record in records])
+    game_rewards = np.asarray([record["game_reward"] for record in records])
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -194,6 +216,7 @@ def main(config: Config) -> None:
             and np.isfinite(opponent_relative_velocities).all()
             and np.isfinite(terrain_heights).all()
             and np.isfinite(terrain_normals).all()
+            and np.isfinite(game_rewards).all()
         ),
         "foot_contact_force_nonnegative": bool(
             np.all(foot_contact_normal_forces >= -1e-5)
@@ -202,6 +225,11 @@ def main(config: Config) -> None:
         == (config.steps + 1, 2, 2),
         "foot_contact_observed": bool(np.any(foot_contacts)),
         "foot_contact_shape": foot_contacts.shape == (config.steps + 1, 2, 2),
+        "game_outcome_ongoing": all(
+            not record["game_done"] and record["game_winner_index"] == -1
+            for record in records
+        ),
+        "game_reward_shape": game_rewards.shape == (config.steps + 1, 2),
         "initial_relative_distance": bool(
             np.allclose(
                 np.linalg.norm(opponent_relative_positions[0], axis=1),
@@ -255,6 +283,28 @@ def main(config: Config) -> None:
         "timesteps_contiguous": [record["timestep"] for record in records]
         == list(range(config.steps + 1)),
     }
+    tag_fixture = tag_reward_outcome(
+        jp.asarray([1.0, -1.0]),
+        jp.asarray(True),
+        jp.zeros((2,), dtype=bool),
+        jp.zeros((2,), dtype=bool),
+        jp.asarray(False),
+        pursuer_index,
+    )
+    timeout_fixture = tag_reward_outcome(
+        jp.zeros((2,)),
+        jp.asarray(False),
+        jp.zeros((2,), dtype=bool),
+        jp.zeros((2,), dtype=bool),
+        jp.asarray(True),
+        pursuer_index,
+    )
+    checks["tag_winner_is_pursuer"] = (
+        int(np.asarray(tag_fixture.winner_index)) == pursuer_index
+    )
+    checks["timeout_winner_is_evader"] = (
+        int(np.asarray(timeout_fixture.winner_index)) == 1 - pursuer_index
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -263,7 +313,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_terrain_state_logging",
+        "experiment": "tag_reward_outcome_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),
