@@ -51,7 +51,7 @@ For each timestep record:
 - [x] root linear / angular velocity
 - [x] joint positions and velocities
 - [x] controller commands
-- [ ] foot contacts / contact forces
+- [x] foot contacts / contact forces
 - [ ] opponent-relative state
 - [ ] terrain info
 - [ ] reward / game outcome

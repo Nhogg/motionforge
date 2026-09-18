@@ -65,6 +65,22 @@ between the last logged joint targets and the controls present in simulator
 state. Scripted and learned rollout generators will pass their live commands
 through the same boundary.
 
+## Foot contacts and contact forces
+
+Schema version 5 adds per-agent left/right foot interaction with the shared
+floor. A setup-time layout resolves the four namespaced foot geom IDs and the
+floor geom ID. The Warp extractor filters active fixed-capacity contact slots,
+requires nonpositive signed distance, and records `foot_contact` as a `(2, 2)`
+boolean array in `[agent, left/right]` order.
+
+For each active foot-floor contact, `foot_contact_normal_force` sums the raw
+normal constraint force addressed by MuJoCo's contact record. The resulting
+`(2, 2)` array is in simulator force units (Newtons). Tangential components
+are not folded into this value; later slip-event derivation will combine the
+contact mask with foot kinematics explicitly. The smoke experiment verifies
+shapes, finite nonnegative forces, and the presence of at least one foot-floor
+contact during the rollout.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

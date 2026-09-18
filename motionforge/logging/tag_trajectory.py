@@ -15,7 +15,7 @@ import jax.numpy as jp
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 4
+TAG_TRAJECTORY_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -69,6 +69,21 @@ class TagControllerCommand(NamedTuple):
     joint_position_target: jax.Array
 
 
+@dataclass(frozen=True)
+class TagFootContactLayout:
+    """Floor and left/right foot geom IDs for both agents."""
+
+    floor_geom_id: int
+    foot_geom_ids: tuple[tuple[int, int], tuple[int, int]]
+
+
+class TagFootContact(NamedTuple):
+    """Per-agent left/right floor contact and summed normal force."""
+
+    active: jax.Array
+    normal_force: jax.Array
+
+
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
     """Resolve root generalized-position addresses once at setup time."""
     return TagRootPoseLayout(
@@ -120,6 +135,20 @@ def build_tag_joint_state_layout(model_bundle: TwoG1Model) -> TagJointStateLayou
         ),
         joint_qvel_slices=tuple(
             slice(agent.qvel_slice.start + 6, agent.qvel_slice.stop)
+            for agent in model_bundle.agents
+        ),
+    )
+
+
+def build_tag_foot_contact_layout(model_bundle: TwoG1Model) -> TagFootContactLayout:
+    """Resolve floor and foot collision geoms once at setup time."""
+    return TagFootContactLayout(
+        floor_geom_id=model_bundle.model.geom("floor").id,
+        foot_geom_ids=tuple(
+            (
+                model_bundle.model.geom(f"{agent.prefix}left_foot").id,
+                model_bundle.model.geom(f"{agent.prefix}right_foot").id,
+            )
             for agent in model_bundle.agents
         ),
     )
@@ -187,4 +216,44 @@ def tag_controller_command(
     return TagControllerCommand(
         velocity=jp.asarray(velocity),
         joint_position_target=jp.asarray(joint_position_target),
+    )
+
+
+def extract_tag_foot_contact(data, layout: TagFootContactLayout) -> TagFootContact:
+    """Extract Warp floor contacts and their normal constraint forces."""
+    impl = data._impl
+    contact_geoms = jp.asarray(impl.contact__geom)
+    distances = jp.asarray(impl.contact__dist)
+    world_ids = jp.asarray(impl.contact__worldid)
+    active_counts = jp.asarray(impl.nacon)
+    slots = jp.arange(distances.shape[0]) % impl.naconmax
+    buffer_active = slots < active_counts[world_ids]
+
+    normal_addresses = jp.asarray(impl.contact__efc_address)[:, 0]
+    address_valid = normal_addresses >= 0
+    safe_addresses = jp.clip(normal_addresses, 0, impl.efc__force.shape[0] - 1)
+    normal_forces = jp.asarray(impl.efc__force)[safe_addresses]
+
+    active_rows = []
+    force_rows = []
+    geom1 = contact_geoms[:, 0]
+    geom2 = contact_geoms[:, 1]
+    for agent_feet in layout.foot_geom_ids:
+        active_feet = []
+        foot_forces = []
+        for foot_geom_id in agent_feet:
+            foot_floor = ((geom1 == foot_geom_id) & (geom2 == layout.floor_geom_id)) | (
+                (geom2 == foot_geom_id) & (geom1 == layout.floor_geom_id)
+            )
+            active = buffer_active & foot_floor & (distances <= 0.0)
+            active_feet.append(jp.any(active))
+            foot_forces.append(
+                jp.sum(jp.where(active & address_valid, normal_forces, 0.0))
+            )
+        active_rows.append(jp.stack(active_feet))
+        force_rows.append(jp.stack(foot_forces))
+
+    return TagFootContact(
+        active=jp.stack(active_rows),
+        normal_force=jp.stack(force_rows),
     )

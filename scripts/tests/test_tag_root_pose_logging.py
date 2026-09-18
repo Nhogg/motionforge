@@ -21,9 +21,11 @@ from motionforge.cli import run_hydra
 from motionforge.envs import TagEnvironmentConfig, TwoG1TagEnvironment
 from motionforge.logging import (
     TAG_TRAJECTORY_SCHEMA_VERSION,
+    build_tag_foot_contact_layout,
     build_tag_joint_state_layout,
     build_tag_root_pose_layout,
     build_tag_root_velocity_layout,
+    extract_tag_foot_contact,
     extract_tag_joint_state,
     extract_tag_root_pose,
     extract_tag_root_velocity,
@@ -38,8 +40,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_controller_state_d.jsonl")
-    summary: Path = Path("logs/p5/tag_controller_state_d_summary.json")
+    output: Path = Path("logs/p5/tag_contact_state_e.jsonl")
+    summary: Path = Path("logs/p5/tag_contact_state_e_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -63,6 +65,7 @@ def main(config: Config) -> None:
     pose_layout = build_tag_root_pose_layout(environment.model_bundle)
     velocity_layout = build_tag_root_velocity_layout(environment.model_bundle)
     joint_layout = build_tag_joint_state_layout(environment.model_bundle)
+    foot_contact_layout = build_tag_foot_contact_layout(environment.model_bundle)
     reset = jax.jit(environment.reset)
     step = jax.jit(environment.step)
     extract = jax.jit(
@@ -70,6 +73,7 @@ def main(config: Config) -> None:
             extract_tag_root_pose(state.data, pose_layout),
             extract_tag_root_velocity(state.data, velocity_layout),
             extract_tag_joint_state(state.data, joint_layout),
+            extract_tag_foot_contact(state.data, foot_contact_layout),
         )
     )
 
@@ -78,7 +82,7 @@ def main(config: Config) -> None:
     joint_position_target = environment.default_joint_targets
     records = []
     for timestep in range(config.steps + 1):
-        root_pose, root_velocity, joint_state = extract(state)
+        root_pose, root_velocity, joint_state, foot_contact = extract(state)
         controller_command = tag_controller_command(
             velocity_command,
             joint_position_target,
@@ -94,6 +98,8 @@ def main(config: Config) -> None:
         command_joint_position_target = np.asarray(
             controller_command.joint_position_target
         )
+        foot_contact_active = np.asarray(foot_contact.active)
+        foot_contact_normal_force = np.asarray(foot_contact.normal_force)
         records.append(
             {
                 "command_joint_position_target": (
@@ -101,6 +107,8 @@ def main(config: Config) -> None:
                 ),
                 "command_velocity": command_velocity.tolist(),
                 "episode_seed": config.seed,
+                "foot_contact": foot_contact_active.tolist(),
+                "foot_contact_normal_force": foot_contact_normal_force.tolist(),
                 "joint_position": joint_position.tolist(),
                 "joint_velocity": joint_velocity.tolist(),
                 "orientation_wxyz": orientation.tolist(),
@@ -135,6 +143,10 @@ def main(config: Config) -> None:
     command_joint_position_targets = np.asarray(
         [record["command_joint_position_target"] for record in records]
     )
+    foot_contacts = np.asarray([record["foot_contact"] for record in records])
+    foot_contact_normal_forces = np.asarray(
+        [record["foot_contact_normal_force"] for record in records]
+    )
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -147,7 +159,15 @@ def main(config: Config) -> None:
             and np.isfinite(joint_velocities).all()
             and np.isfinite(command_velocities).all()
             and np.isfinite(command_joint_position_targets).all()
+            and np.isfinite(foot_contact_normal_forces).all()
         ),
+        "foot_contact_force_nonnegative": bool(
+            np.all(foot_contact_normal_forces >= -1e-5)
+        ),
+        "foot_contact_force_shape": foot_contact_normal_forces.shape
+        == (config.steps + 1, 2, 2),
+        "foot_contact_observed": bool(np.any(foot_contacts)),
+        "foot_contact_shape": foot_contacts.shape == (config.steps + 1, 2, 2),
         "command_joint_target_shape": command_joint_position_targets.shape
         == (config.steps + 1, 2, 29),
         "command_velocity_shape": command_velocities.shape == (config.steps + 1, 2, 3),
@@ -187,7 +207,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_controller_state_logging",
+        "experiment": "tag_contact_state_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),
