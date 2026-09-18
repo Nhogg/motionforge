@@ -1,6 +1,8 @@
 from motionforge.logging.tag_derivatives import (
     TagLinearAcceleration,
+    TagYawAcceleration,
     derive_tag_linear_acceleration,
+    derive_tag_yaw_acceleration,
 )
 from motionforge.logging.tag_trajectory import (
     TAG_TRAJECTORY_SCHEMA_VERSION,
@@ -57,6 +59,7 @@ __all__ = [
     "TagTerrainState",
     "TagTrackingError",
     "TagTrackingLayout",
+    "TagYawAcceleration",
     "build_tag_flat_terrain_layout",
     "build_tag_foot_contact_layout",
     "build_tag_joint_state_layout",
@@ -64,6 +67,7 @@ __all__ = [
     "build_tag_root_velocity_layout",
     "build_tag_tracking_layout",
     "derive_tag_linear_acceleration",
+    "derive_tag_yaw_acceleration",
     "extract_tag_flat_terrain",
     "extract_tag_foot_contact",
     "extract_tag_joint_state",

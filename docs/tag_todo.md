@@ -61,7 +61,7 @@ For each timestep record:
 Also derive:
 
 - [x] acceleration
-- [ ] yaw acceleration
+- [x] yaw acceleration
 - [ ] command derivatives
 - [ ] roll / pitch excursions
 - [ ] slip / contact events

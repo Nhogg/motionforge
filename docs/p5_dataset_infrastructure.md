@@ -166,6 +166,17 @@ later timestep is marked valid. The smoke experiment checks finite values,
 shape, validity semantics, and an exact synthetic constant-acceleration
 fixture.
 
+## Yaw acceleration
+
+Schema version 12 adds `pelvis_yaw_acceleration`, derived from the z component
+of the recorded pelvis-frame angular velocity. It uses the same first-order
+difference and control timestep as linear acceleration, producing shape
+`(T, 2)` with a parallel `pelvis_yaw_acceleration_valid` mask. Timestep zero is
+zero-filled and invalid because no preceding yaw-rate sample exists.
+
+The smoke experiment checks finite values, shape, validity semantics, and an
+exact two-agent synthetic fixture with different yaw accelerations.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data

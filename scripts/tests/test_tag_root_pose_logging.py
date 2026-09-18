@@ -28,6 +28,7 @@ from motionforge.logging import (
     build_tag_root_velocity_layout,
     build_tag_tracking_layout,
     derive_tag_linear_acceleration,
+    derive_tag_yaw_acceleration,
     extract_tag_flat_terrain,
     extract_tag_foot_contact,
     extract_tag_joint_state,
@@ -50,8 +51,8 @@ class Config:
     njmax: int = 256
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
-    output: Path = Path("logs/p5/tag_acceleration_k.jsonl")
-    summary: Path = Path("logs/p5/tag_acceleration_k_summary.json")
+    output: Path = Path("logs/p5/tag_yaw_acceleration_l.jsonl")
+    summary: Path = Path("logs/p5/tag_yaw_acceleration_l_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -234,13 +235,23 @@ def main(config: Config) -> None:
             linear_acceleration_valid[index]
         )
 
+    pelvis_angular_velocities = np.asarray(
+        [record["pelvis_angular_velocity"] for record in records]
+    )
+    yaw_acceleration = derive_tag_yaw_acceleration(
+        jp.asarray(pelvis_angular_velocities),
+        environment.config.control_timestep,
+    )
+    pelvis_yaw_accelerations = np.asarray(yaw_acceleration.pelvis)
+    yaw_acceleration_valid = np.asarray(yaw_acceleration.valid)
+    for index, record in enumerate(records):
+        record["pelvis_yaw_acceleration"] = pelvis_yaw_accelerations[index].tolist()
+        record["pelvis_yaw_acceleration_valid"] = bool(yaw_acceleration_valid[index])
+
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
         encoding="utf-8",
-    )
-    pelvis_angular_velocities = np.asarray(
-        [record["pelvis_angular_velocity"] for record in records]
     )
     joint_positions = np.asarray([record["joint_position"] for record in records])
     joint_velocities = np.asarray([record["joint_velocity"] for record in records])
@@ -283,6 +294,7 @@ def main(config: Config) -> None:
             and np.isfinite(orientations).all()
             and np.isfinite(world_linear_velocities).all()
             and np.isfinite(pelvis_angular_velocities).all()
+            and np.isfinite(pelvis_yaw_accelerations).all()
             and np.isfinite(joint_positions).all()
             and np.isfinite(joint_velocities).all()
             and np.isfinite(command_velocities).all()
@@ -343,6 +355,11 @@ def main(config: Config) -> None:
             not linear_acceleration_valid[0] and np.all(linear_acceleration_valid[1:])
         ),
         "orientation_shape": orientations.shape == (config.steps + 1, 2, 4),
+        "yaw_acceleration_shape": pelvis_yaw_accelerations.shape
+        == (config.steps + 1, 2),
+        "yaw_acceleration_validity": bool(
+            not yaw_acceleration_valid[0] and np.all(yaw_acceleration_valid[1:])
+        ),
         "relative_position_shape": opponent_relative_positions.shape
         == (config.steps + 1, 2, 2),
         "relative_velocity_shape": opponent_relative_velocities.shape
@@ -428,6 +445,18 @@ def main(config: Config) -> None:
             [[1.0, 0.0, 0.0], [0.0, -2.0, 0.0]],
         )
     )
+    yaw_acceleration_fixture = derive_tag_yaw_acceleration(
+        jp.asarray(
+            [
+                [[0.0, 0.0, 0.2], [0.0, 0.0, -0.4]],
+                [[0.0, 0.0, 0.5], [0.0, 0.0, -0.2]],
+            ]
+        ),
+        0.1,
+    )
+    checks["yaw_acceleration_fixture"] = bool(
+        np.allclose(np.asarray(yaw_acceleration_fixture.pelvis[1]), [3.0, 2.0])
+    )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
@@ -436,7 +465,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_acceleration_logging",
+        "experiment": "tag_yaw_acceleration_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),
