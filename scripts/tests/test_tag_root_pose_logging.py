@@ -26,11 +26,13 @@ from motionforge.logging import (
     build_tag_joint_state_layout,
     build_tag_root_pose_layout,
     build_tag_root_velocity_layout,
+    build_tag_tracking_layout,
     extract_tag_flat_terrain,
     extract_tag_foot_contact,
     extract_tag_joint_state,
     extract_tag_root_pose,
     extract_tag_root_velocity,
+    extract_tag_tracking_error,
     tag_controller_command,
     tag_opponent_relative_state,
     tag_reward_outcome,
@@ -44,8 +46,8 @@ class Config:
     separation: float = 2.0
     naconmax: int = 32
     njmax: int = 256
-    output: Path = Path("logs/p5/tag_reward_outcome_h.jsonl")
-    summary: Path = Path("logs/p5/tag_reward_outcome_h_summary.json")
+    output: Path = Path("logs/p5/tag_tracking_error_i.jsonl")
+    summary: Path = Path("logs/p5/tag_tracking_error_i_summary.json")
 
 
 def _validate_config(config: Config) -> None:
@@ -71,6 +73,7 @@ def main(config: Config) -> None:
     joint_layout = build_tag_joint_state_layout(environment.model_bundle)
     foot_contact_layout = build_tag_foot_contact_layout(environment.model_bundle)
     terrain_layout = build_tag_flat_terrain_layout(environment.model_bundle)
+    tracking_layout = build_tag_tracking_layout(environment.model_bundle)
     reset = jax.jit(environment.reset)
     step = jax.jit(environment.step)
     extract = jax.jit(
@@ -90,6 +93,7 @@ def main(config: Config) -> None:
         agent.index for agent in environment.roles.agents if agent.role == "pursuer"
     )
     records = []
+    expected_tracking_errors = []
     for timestep in range(config.steps + 1):
         root_pose, root_velocity, joint_state, foot_contact = extract(state)
         controller_command = tag_controller_command(
@@ -109,6 +113,11 @@ def main(config: Config) -> None:
             state.termination.timed_out,
             pursuer_index,
         )
+        tracking_error = extract_tag_tracking_error(
+            state.data,
+            tracking_layout,
+            velocity_command,
+        )
         root_pose.position.block_until_ready()
         position = np.asarray(root_pose.position)
         orientation = np.asarray(root_pose.orientation_wxyz)
@@ -127,12 +136,31 @@ def main(config: Config) -> None:
         terrain_height = np.asarray(terrain_state.height)
         terrain_normal_world = np.asarray(terrain_state.normal_world)
         game_reward = np.asarray(reward_outcome.reward)
+        command_tracking_error = np.asarray(tracking_error.velocity)
+        measured_controller_velocity = np.stack(
+            [
+                np.asarray(
+                    [
+                        state.data.sensordata[linear_slice][0],
+                        state.data.sensordata[linear_slice][1],
+                        state.data.sensordata[angular_slice][2],
+                    ]
+                )
+                for linear_slice, angular_slice in zip(
+                    tracking_layout.pelvis_linear_velocity_slices,
+                    tracking_layout.pelvis_angular_velocity_slices,
+                    strict=True,
+                )
+            ]
+        )
+        expected_tracking_errors.append(command_velocity - measured_controller_velocity)
         records.append(
             {
                 "command_joint_position_target": (
                     command_joint_position_target.tolist()
                 ),
                 "command_velocity": command_velocity.tolist(),
+                "command_velocity_tracking_error": command_tracking_error.tolist(),
                 "episode_seed": config.seed,
                 "foot_contact": foot_contact_active.tolist(),
                 "foot_contact_normal_force": foot_contact_normal_force.tolist(),
@@ -199,6 +227,10 @@ def main(config: Config) -> None:
     terrain_heights = np.asarray([record["terrain_height"] for record in records])
     terrain_normals = np.asarray([record["terrain_normal_world"] for record in records])
     game_rewards = np.asarray([record["game_reward"] for record in records])
+    command_tracking_errors = np.asarray(
+        [record["command_velocity_tracking_error"] for record in records]
+    )
+    expected_tracking_errors = np.asarray(expected_tracking_errors)
     quaternion_norms = np.linalg.norm(orientations, axis=-1)
     checks = {
         "backend_gpu": jax.default_backend() == "gpu",
@@ -217,6 +249,7 @@ def main(config: Config) -> None:
             and np.isfinite(terrain_heights).all()
             and np.isfinite(terrain_normals).all()
             and np.isfinite(game_rewards).all()
+            and np.isfinite(command_tracking_errors).all()
         ),
         "foot_contact_force_nonnegative": bool(
             np.all(foot_contact_normal_forces >= -1e-5)
@@ -240,6 +273,11 @@ def main(config: Config) -> None:
         "command_joint_target_shape": command_joint_position_targets.shape
         == (config.steps + 1, 2, 29),
         "command_velocity_shape": command_velocities.shape == (config.steps + 1, 2, 3),
+        "command_tracking_error_shape": command_tracking_errors.shape
+        == (config.steps + 1, 2, 3),
+        "command_tracking_error_values": bool(
+            np.allclose(command_tracking_errors, expected_tracking_errors)
+        ),
         "commands_match_applied_controls": bool(
             np.allclose(
                 command_joint_position_targets[-1],
@@ -313,7 +351,7 @@ def main(config: Config) -> None:
             "output": str(config.output),
             "summary": str(config.summary),
         },
-        "experiment": "tag_reward_outcome_logging",
+        "experiment": "tag_tracking_error_logging",
         "jax_version": jax.__version__,
         "mujoco_version": mujoco.__version__,
         "passed": bool(all(checks.values())),

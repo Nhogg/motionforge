@@ -55,7 +55,7 @@ For each timestep record:
 - [x] opponent-relative state
 - [x] terrain info
 - [x] reward / game outcome
-- [ ] tracking error
+- [x] tracking error
 - [ ] fall / near-fall indicator
 
 Also derive:

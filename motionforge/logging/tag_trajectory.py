@@ -17,7 +17,7 @@ import numpy as np
 
 from motionforge.envs.two_g1 import TwoG1Model
 
-TAG_TRAJECTORY_SCHEMA_VERSION = 8
+TAG_TRAJECTORY_SCHEMA_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -120,6 +120,20 @@ class TagRewardOutcome(NamedTuple):
     winner_index: jax.Array
 
 
+@dataclass(frozen=True)
+class TagTrackingLayout:
+    """Sensor addresses needed for command tracking error."""
+
+    pelvis_linear_velocity_slices: tuple[slice, slice]
+    pelvis_angular_velocity_slices: tuple[slice, slice]
+
+
+class TagTrackingError(NamedTuple):
+    """Command-minus-measurement planar velocity and yaw-rate error."""
+
+    velocity: jax.Array
+
+
 def build_tag_root_pose_layout(model_bundle: TwoG1Model) -> TagRootPoseLayout:
     """Resolve root generalized-position addresses once at setup time."""
     return TagRootPoseLayout(
@@ -147,6 +161,28 @@ def build_tag_root_velocity_layout(
             _sensor_slice(
                 model_bundle.model,
                 f"{agent.prefix}global_linvel_pelvis",
+                3,
+            )
+            for agent in model_bundle.agents
+        ),
+        pelvis_angular_velocity_slices=tuple(
+            _sensor_slice(
+                model_bundle.model,
+                f"{agent.prefix}gyro_pelvis",
+                3,
+            )
+            for agent in model_bundle.agents
+        ),
+    )
+
+
+def build_tag_tracking_layout(model_bundle: TwoG1Model) -> TagTrackingLayout:
+    """Resolve controller-frame velocity sensors once at setup time."""
+    return TagTrackingLayout(
+        pelvis_linear_velocity_slices=tuple(
+            _sensor_slice(
+                model_bundle.model,
+                f"{agent.prefix}local_linvel_pelvis",
                 3,
             )
             for agent in model_bundle.agents
@@ -374,4 +410,32 @@ def tag_reward_outcome(
         timed_out=jp.asarray(timed_out),
         done=done,
         winner_index=winner_index,
+    )
+
+
+def extract_tag_tracking_error(
+    data,
+    layout: TagTrackingLayout,
+    command_velocity: jax.Array,
+) -> TagTrackingError:
+    """Compute command-minus-measurement error in controller coordinates."""
+    if command_velocity.shape != (2, 3):
+        raise ValueError(
+            f"command_velocity must have shape (2, 3); got {command_velocity.shape}"
+        )
+
+    measured = []
+    for linear_slice, angular_slice in zip(
+        layout.pelvis_linear_velocity_slices,
+        layout.pelvis_angular_velocity_slices,
+        strict=True,
+    ):
+        local_linear = data.sensordata[linear_slice]
+        local_angular = data.sensordata[angular_slice]
+        measured.append(
+            jp.asarray([local_linear[0], local_linear[1], local_angular[2]])
+        )
+
+    return TagTrackingError(
+        velocity=jp.asarray(command_velocity) - jp.stack(measured),
     )

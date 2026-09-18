@@ -125,6 +125,19 @@ episode is active or when a simultaneous failure has no unique winner. Direct
 fixtures verify tag and timeout classification in addition to the per-timestep
 shape, finiteness, and ongoing-outcome checks.
 
+## Tracking error
+
+Schema version 9 records `command_velocity_tracking_error` with shape `(2, 3)`
+using the explicit convention `command - measurement`. The first two measured
+components come from each pelvis's local linear-velocity sensor and the third
+comes from the pelvis gyro yaw rate. These are the same coordinate conventions
+used by the locomotion controller, so heading-frame commands are never compared
+against world-frame root velocity.
+
+The smoke experiment validates finite values and the full trajectory shape.
+The vector form is retained instead of reducing immediately to a norm so later
+analysis can distinguish forward, lateral, and yaw tracking failures.
+
 The JSONL format is an inspectable smoke-test artifact rather than the final
 large-dataset storage decision. Later P5 fields will extend the same versioned
 record boundary before a compact batch format is selected from measured data
