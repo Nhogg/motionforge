@@ -78,3 +78,9 @@ between flat and rough terrain. All environment, command-range, schema,
 provenance, and opponent-absence checks passed. Two episodes terminated early
 and were reset deterministically; the exact sample budget was preserved across
 nine actual episodes instead of silently discarding those failures.
+
+`scripts/evaluation/render_terrain_curriculum.py` provides a visual audit. It
+renders one seeded, ordinary-command episode from each curriculum stage and
+concatenates the episodes in stage order. The MP4 has a JSON sidecar recording
+the terrain, rough probability, sampled command, seed, and termination time for
+each segment.
