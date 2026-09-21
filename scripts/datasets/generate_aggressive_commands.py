@@ -1,9 +1,8 @@
-"""Generate the P6 ordinary random-command locomotion dataset.
+"""Generate the P6 deliberately aggressive command baseline dataset.
 
-Inputs are a deterministic locomotion checkpoint, an initial seed, and an exact
-agent-control-step budget. Outputs are JSONL timestep records and a JSON
-manifest. The generator uses flat terrain, disables pushes, and leaves the
-canonical structured command sampler unchanged.
+The seeded schedule guarantees hard turns, forward/reverse transitions,
+braking, lateral reversals, and high-yaw reversals. It writes the shared
+single-agent JSONL schema and a machine-readable manifest with maneuver counts.
 """
 
 from __future__ import annotations
@@ -11,19 +10,21 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+from collections import Counter
 from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
 
 import jax
-import jax.numpy as jp
 import mujoco
 import numpy as np
 
 from motionforge.cli import run_hydra
-from motionforge.controllers import G1LocomotionController
+from motionforge.controllers import G1LocomotionController, apply_velocity_command
 from motionforge.datasets import (
+    AGGRESSIVE_MANEUVER_NAMES,
     LOCOMOTION_DATASET_SCHEMA_VERSION,
+    AggressiveCommandSchedule,
     extract_g1_locomotion_sample,
     json_default,
     locomotion_record,
@@ -38,20 +39,22 @@ class Config:
     )
     seed: int = 0
     samples: int = 1_024
+    command_hold_seconds: float = 0.50
     naconmax: int = 16
     njmax: int = 128
     fall_minimum_root_height: float = 0.45
     fall_minimum_up_alignment: float = 0.50
     near_fall_minimum_root_height: float = 0.60
     near_fall_minimum_up_alignment: float = 0.80
-    output: Path = Path("logs/p6/random_commands_smoke.jsonl")
-    manifest: Path = Path("logs/p6/random_commands_smoke_manifest.json")
+    output: Path = Path("logs/p6/aggressive_commands_smoke.jsonl")
+    manifest: Path = Path("logs/p6/aggressive_commands_smoke_manifest.json")
 
 
 def validate_config(config: Config) -> None:
-    """Reject invalid budgets, thresholds, and output collisions."""
     if config.samples <= 0:
         raise ValueError("samples must be positive")
+    if config.command_hold_seconds <= 0.0:
+        raise ValueError("command_hold_seconds must be positive")
     if config.naconmax <= 0 or config.njmax <= 0:
         raise ValueError("contact capacities must be positive")
     if config.fall_minimum_root_height <= 0.0:
@@ -83,6 +86,13 @@ def main(config: Config) -> None:
         environment,
         deterministic=True,
     )
+    hold_steps = max(1, round(config.command_hold_seconds / environment.dt))
+    schedule = AggressiveCommandSchedule(hold_steps=hold_steps, seed=config.seed)
+    if config.samples < schedule.cycle_steps:
+        raise ValueError(
+            f"samples must be at least one full aggressive cycle "
+            f"({schedule.cycle_steps})"
+        )
 
     reset = jax.jit(environment.reset)
     act = jax.jit(controller.act)
@@ -108,28 +118,35 @@ def main(config: Config) -> None:
     rng, reset_rng = jax.random.split(rng)
     state = reset(reset_rng)
     records: list[dict] = []
+    maneuver_counts: Counter[str] = Counter()
+    phase_counts: Counter[str] = Counter()
     command_transitions = 0
     previous_command = None
 
     while len(records) < config.samples:
-        command = jp.asarray(state.info["command"])
+        sample_index = len(records)
+        command, maneuver, phase = schedule.command(sample_index)
+        commanded_state = apply_velocity_command(state, command)
         rng, action_rng = jax.random.split(rng)
-        control = act(state.obs, action_rng)
+        control = act(commanded_state.obs, action_rng)
         sample = extract(
-            state,
+            commanded_state,
             command,
             control.normalized_action,
             control.joint_position_targets,
         )
         record = locomotion_record(
             sample,
-            dataset_kind="ordinary_random_commands",
+            dataset_kind="aggressive_commands",
             episode=episode,
             episode_seed=episode_seed,
             timestep=timestep,
-            state=state,
+            state=commanded_state,
+            extra={"maneuver": maneuver, "maneuver_phase": phase},
         )
         records.append(record)
+        maneuver_counts[maneuver] += 1
+        phase_counts[f"{maneuver}:{phase}"] += 1
         command_array = np.asarray(record["command_velocity"])
         if previous_command is not None and not np.array_equal(
             command_array, previous_command
@@ -137,7 +154,7 @@ def main(config: Config) -> None:
             command_transitions += 1
         previous_command = command_array
 
-        state = step(state, control.normalized_action)
+        state = step(commanded_state, control.normalized_action)
         timestep += 1
         if bool(np.asarray(state.done)) and len(records) < config.samples:
             episode += 1
@@ -154,6 +171,7 @@ def main(config: Config) -> None:
     config.output.parent.mkdir(parents=True, exist_ok=True)
     config.output.write_text(serialized, encoding="utf-8")
 
+    commands = np.asarray([record["command_velocity"] for record in records])
     numeric_finite = all(
         np.isfinite(
             np.asarray(
@@ -166,8 +184,25 @@ def main(config: Config) -> None:
         ).all()
         for record in records
     )
+    all_phases_present = all(
+        phase_counts[f"{maneuver}:{phase}"] > 0
+        for maneuver in AGGRESSIVE_MANEUVER_NAMES
+        for phase in (0, 1)
+    )
     checks = {
+        "all_maneuvers_present": all(
+            maneuver_counts[name] > 0 for name in AGGRESSIVE_MANEUVER_NAMES
+        ),
+        "all_phases_present": all_phases_present,
         "checkpoint_loaded": controller.checkpoint_path == config.checkpoint.resolve(),
+        "commands_in_controller_range": bool(
+            np.all(commands[:, 0] >= environment_config.lin_vel_x[0])
+            and np.all(commands[:, 0] <= environment_config.lin_vel_x[1])
+            and np.all(commands[:, 1] >= environment_config.lin_vel_y[0])
+            and np.all(commands[:, 1] <= environment_config.lin_vel_y[1])
+            and np.all(commands[:, 2] >= environment_config.ang_vel_yaw[0])
+            and np.all(commands[:, 2] <= environment_config.ang_vel_yaw[1])
+        ),
         "exact_sample_budget": len(records) == config.samples,
         "finite_values": bool(numeric_finite),
         "flat_terrain": bool(
@@ -176,6 +211,7 @@ def main(config: Config) -> None:
             ).all()
         ),
         "gpu_backend": jax.default_backend() == "gpu",
+        "high_yaw_present": bool(np.any(np.abs(commands[:, 2]) >= 1.0)),
         "no_opponent_fields": all(
             not any(key.startswith("opponent_") for key in record) for record in records
         ),
@@ -190,11 +226,6 @@ def main(config: Config) -> None:
         "backend": jax.default_backend(),
         "checkpoint": str(controller.checkpoint_path),
         "checks": checks,
-        "command_limits": {
-            "x": list(environment_config.lin_vel_x),
-            "y": list(environment_config.lin_vel_y),
-            "yaw": list(environment_config.ang_vel_yaw),
-        },
         "command_transitions": command_transitions,
         "config": {
             **asdict(config),
@@ -203,15 +234,19 @@ def main(config: Config) -> None:
             "output": str(config.output),
         },
         "control_timestep": float(environment.dt),
-        "dataset_kind": "ordinary_random_commands",
+        "dataset_kind": "aggressive_commands",
         "episodes": episode + 1,
-        "experiment": "p6_random_command_dataset",
+        "experiment": "p6_aggressive_command_dataset",
+        "hold_steps": hold_steps,
         "jax_version": jax.__version__,
+        "maneuver_counts": dict(maneuver_counts),
         "mujoco_version": version("mujoco"),
         "output_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
         "passed": bool(all(checks.values())),
+        "phase_counts": dict(phase_counts),
         "python_version": platform.python_version(),
         "samples": len(records),
+        "schedule_cycle_steps": schedule.cycle_steps,
         "schema_version": LOCOMOTION_DATASET_SCHEMA_VERSION,
         "seed": config.seed,
     }

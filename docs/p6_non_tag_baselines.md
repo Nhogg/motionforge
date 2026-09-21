@@ -36,3 +36,24 @@ ordinary command transitions. All manifest checks passed: checkpoint loading,
 finite values, flat terrain, disabled pushes, absence of opponent fields,
 consistent schema, and an upright initial state. This is validation evidence,
 not yet the final equal-budget P6 dataset.
+
+## Deliberately aggressive command sampling
+
+The aggressive baseline uses the same checkpoint, flat environment, raw sample
+schema, exact timestep budget, and disabled-push setting as the ordinary
+baseline. Only its high-level command schedule changes. The schedule cycles
+through paired phases for hard turns, forward/reverse motion, braking, lateral
+reversal, and high-yaw reversal. A seed rotates the maneuver order and selects
+the initial direction without allowing any required maneuver to disappear.
+
+Each JSONL row records its maneuver name and phase. The manifest reports counts
+for every maneuver and phase, making coverage an explicit acceptance check
+rather than a probabilistic consequence of random sampling. Commands remain
+inside the accepted locomotion controller's trained limits.
+
+Evidence: `logs/p6/aggressive_commands_1024_a_manifest.json`. The GPU audit
+wrote exactly 1,024 schema-v1 samples in one episode with 40 command
+transitions. Every required maneuver and both phases were present, including
+high yaw rates, and all state, controller-range, environment, and provenance
+checks passed. As with the ordinary audit, this validates the generator but is
+not yet the final equal-budget dataset.
