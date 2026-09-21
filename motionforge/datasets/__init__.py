@@ -3,6 +3,7 @@
 from motionforge.datasets.command_samplers import (
     AGGRESSIVE_MANEUVER_NAMES,
     AggressiveCommandSchedule,
+    TerrainCurriculum,
 )
 from motionforge.datasets.locomotion import (
     LOCOMOTION_DATASET_SCHEMA_VERSION,
@@ -16,6 +17,7 @@ __all__ = [
     "LOCOMOTION_DATASET_SCHEMA_VERSION",
     "AggressiveCommandSchedule",
     "G1LocomotionSample",
+    "TerrainCurriculum",
     "extract_g1_locomotion_sample",
     "json_default",
     "locomotion_record",

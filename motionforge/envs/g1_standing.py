@@ -46,9 +46,10 @@ class G1StandingJoystick(joystick.Joystick):
         self,
         config: config_dict.ConfigDict | None = None,
         config_overrides: dict[str, Any] | None = None,
+        task: str = "flat_terrain",
     ) -> None:
         super().__init__(
-            task="flat_terrain",
+            task=task,
             config=default_config() if config is None else config,
             config_overrides=config_overrides,
         )

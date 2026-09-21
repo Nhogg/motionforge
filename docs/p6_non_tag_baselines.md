@@ -57,3 +57,24 @@ transitions. Every required maneuver and both phases were present, including
 high yaw rates, and all state, controller-range, environment, and provenance
 checks passed. As with the ordinary audit, this validates the generator but is
 not yet the final equal-budget dataset.
+
+## Terrain curriculum without an opponent
+
+The terrain baseline uses the ordinary structured command sampler and the same
+accepted checkpoint and per-agent schema as the other P6 conditions. It adds
+no opponent and no external pushes. Fixed-length collection episodes progress
+through rough-heightfield probabilities `[0.0, 0.5, 0.75, 1.0]`, so early data
+is flat-only and the final stage is rough-only. Intermediate terrain choices
+are seeded and recorded per row.
+
+The implementation reuses Playground's existing G1 flat plane and rough
+heightfield models. It does not introduce the slopes, bumps, gaps, or
+adversarial terrain reserved for later phases. The manifest reports sample
+counts by curriculum stage and terrain type, plus early physical terminations.
+
+Evidence: `logs/p6/terrain_curriculum_1024_a_manifest.json`. The GPU audit
+wrote exactly 1,024 schema-v1 samples across all four stages, split evenly
+between flat and rough terrain. All environment, command-range, schema,
+provenance, and opponent-absence checks passed. Two episodes terminated early
+and were reset deterministically; the exact sample budget was preserved across
+nine actual episodes instead of silently discarding those failures.
