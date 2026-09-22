@@ -79,7 +79,7 @@ The aggressive baseline MUST contain hard turns, reversals, braking, lateral mot
 
 # P7 - Train a TAG agent
 
-- [ ] Freeze the evader as a scripted policy
+- [x] Freeze the evader as a scripted policy
 - [ ] Train the pursuer
 - [ ] Verify consistent pursuit success
 - [ ] Freeze the pursuer and train an evader

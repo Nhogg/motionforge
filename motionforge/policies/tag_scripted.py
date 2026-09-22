@@ -6,7 +6,10 @@ commands. They do not own physics or the learned low-level locomotion policy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import jax
 import jax.numpy as jp
@@ -74,6 +77,48 @@ class ScriptedEvaderConfig:
 
 
 _DEFAULT_EVADER_CONFIG = ScriptedEvaderConfig()
+
+
+@dataclass(frozen=True)
+class FrozenScriptedEvader:
+    """Versioned, immutable scripted opponent bound to one model agent."""
+
+    agent_index: int
+    config: ScriptedEvaderConfig = _DEFAULT_EVADER_CONFIG
+    specification_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.agent_index not in (0, 1):
+            raise ValueError("agent_index must be 0 or 1")
+        if self.specification_version <= 0:
+            raise ValueError("specification_version must be positive")
+
+    def command(self, observation: Any) -> jax.Array:
+        """Return the evader command from a two-agent tag observation."""
+        return scripted_evader_command(
+            observation.relative_position[self.agent_index],
+            observation.arena_center_position[self.agent_index],
+            self.config,
+        )
+
+    def specification(self) -> dict:
+        """Return the canonical JSON-compatible opponent specification."""
+        return {
+            "agent_index": self.agent_index,
+            "config": asdict(self.config),
+            "policy_type": "scripted_evader",
+            "specification_version": self.specification_version,
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        """Hash the canonical specification for experiment provenance."""
+        encoded = json.dumps(
+            self.specification(),
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
 
 def scripted_pursuer_command(
