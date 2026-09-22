@@ -71,9 +71,9 @@ Also derive:
 
 Generate equal-sized datasets from:
 
-- [ ] ordinary random velocity commands
-- [ ] deliberately aggressive command sampling
-- [ ] terrain curriculum without an opponent
+- [x] ordinary random velocity commands
+- [x] deliberately aggressive command sampling
+- [x] terrain curriculum without an opponent
 
 The aggressive baseline MUST contain hard turns, reversals, braking, lateral motion, and high yaw rates
 

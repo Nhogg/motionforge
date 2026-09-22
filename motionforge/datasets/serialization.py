@@ -2,12 +2,52 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+from typing import Self
 
 import jax
 import numpy as np
 
 from motionforge.datasets.locomotion import LOCOMOTION_DATASET_SCHEMA_VERSION
+
+
+class JsonlDatasetWriter:
+    """Stream records to an atomic JSONL artifact with an incremental digest."""
+
+    def __init__(self, output: Path) -> None:
+        self.output = output
+        self.temporary_output = output.with_suffix(f"{output.suffix}.tmp")
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self._stream = self.temporary_output.open("w", encoding="utf-8")
+        self._digest = hashlib.sha256()
+        self.count = 0
+
+    def write(self, record: dict) -> None:
+        line = json.dumps(record, sort_keys=True) + "\n"
+        self._stream.write(line)
+        self._digest.update(line.encode())
+        self.count += 1
+
+    @property
+    def sha256(self) -> str:
+        return self._digest.hexdigest()
+
+    def close(self) -> None:
+        if self._stream.closed:
+            return
+        self._stream.close()
+        self.temporary_output.replace(self.output)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if exc_type is None:
+            self.close()
+        else:
+            self._stream.close()
 
 
 def locomotion_record(

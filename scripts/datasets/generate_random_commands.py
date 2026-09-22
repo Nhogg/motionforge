@@ -8,7 +8,6 @@ canonical structured command sampler unchanged.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import platform
 from dataclasses import asdict, dataclass
@@ -24,6 +23,7 @@ from motionforge.cli import run_hydra
 from motionforge.controllers import G1LocomotionController
 from motionforge.datasets import (
     LOCOMOTION_DATASET_SCHEMA_VERSION,
+    JsonlDatasetWriter,
     extract_g1_locomotion_sample,
     json_default,
     locomotion_record,
@@ -107,84 +107,82 @@ def main(config: Config) -> None:
     timestep = 0
     rng, reset_rng = jax.random.split(rng)
     state = reset(reset_rng)
-    records: list[dict] = []
     command_transitions = 0
     previous_command = None
+    finite_values = True
+    no_opponent_fields = True
+    schema_consistent = True
+    starts_upright: bool | None = None
 
-    while len(records) < config.samples:
-        command = jp.asarray(state.info["command"])
-        rng, action_rng = jax.random.split(rng)
-        control = act(state.obs, action_rng)
-        sample = extract(
-            state,
-            command,
-            control.normalized_action,
-            control.joint_position_targets,
-        )
-        record = locomotion_record(
-            sample,
-            dataset_kind="ordinary_random_commands",
-            episode=episode,
-            episode_seed=episode_seed,
-            timestep=timestep,
-            state=state,
-        )
-        records.append(record)
-        command_array = np.asarray(record["command_velocity"])
-        if previous_command is not None and not np.array_equal(
-            command_array, previous_command
-        ):
-            command_transitions += 1
-        previous_command = command_array
-
-        state = step(state, control.normalized_action)
-        timestep += 1
-        if bool(np.asarray(state.done)) and len(records) < config.samples:
-            episode += 1
-            episode_seed = config.seed + episode
-            rng = jax.random.PRNGKey(episode_seed)
-            rng, reset_rng = jax.random.split(rng)
-            state = reset(reset_rng)
-            timestep = 0
-            previous_command = None
-
-    serialized = "".join(
-        json.dumps(record, sort_keys=True) + "\n" for record in records
-    )
-    config.output.parent.mkdir(parents=True, exist_ok=True)
-    config.output.write_text(serialized, encoding="utf-8")
-
-    numeric_finite = all(
-        np.isfinite(
-            np.asarray(
-                record["root_position_world"]
-                + record["root_linear_velocity_world"]
-                + record["command_velocity"]
-                + record["joint_position"]
-                + record["joint_velocity"]
+    with JsonlDatasetWriter(config.output) as writer:
+        while writer.count < config.samples:
+            command = jp.asarray(state.info["command"])
+            rng, action_rng = jax.random.split(rng)
+            control = act(state.obs, action_rng)
+            sample = extract(
+                state,
+                command,
+                control.normalized_action,
+                control.joint_position_targets,
             )
-        ).all()
-        for record in records
-    )
+            record = locomotion_record(
+                sample,
+                dataset_kind="ordinary_random_commands",
+                episode=episode,
+                episode_seed=episode_seed,
+                timestep=timestep,
+                state=state,
+            )
+            if starts_upright is None:
+                starts_upright = not record["fallen"]
+            finite_values &= bool(
+                np.isfinite(
+                    np.asarray(
+                        record["root_position_world"]
+                        + record["root_linear_velocity_world"]
+                        + record["command_velocity"]
+                        + record["joint_position"]
+                        + record["joint_velocity"]
+                    )
+                ).all()
+            )
+            no_opponent_fields &= not any(key.startswith("opponent_") for key in record)
+            schema_consistent &= (
+                record["schema_version"] == LOCOMOTION_DATASET_SCHEMA_VERSION
+            )
+            writer.write(record)
+            command_array = np.asarray(record["command_velocity"])
+            if previous_command is not None and not np.array_equal(
+                command_array, previous_command
+            ):
+                command_transitions += 1
+            previous_command = command_array
+
+            state = step(state, control.normalized_action)
+            timestep += 1
+            if bool(np.asarray(state.done)) and writer.count < config.samples:
+                episode += 1
+                episode_seed = config.seed + episode
+                rng = jax.random.PRNGKey(episode_seed)
+                rng, reset_rng = jax.random.split(rng)
+                state = reset(reset_rng)
+                timestep = 0
+                previous_command = None
+
     checks = {
         "checkpoint_loaded": controller.checkpoint_path == config.checkpoint.resolve(),
-        "exact_sample_budget": len(records) == config.samples,
-        "finite_values": bool(numeric_finite),
+        "exact_sample_budget": writer.count == config.samples,
+        "finite_values": finite_values,
         "flat_terrain": bool(
             np.asarray(
                 environment.mj_model.geom("floor").type == mujoco.mjtGeom.mjGEOM_PLANE
             ).all()
         ),
         "gpu_backend": jax.default_backend() == "gpu",
-        "no_opponent_fields": all(
-            not any(key.startswith("opponent_") for key in record) for record in records
-        ),
+        "no_opponent_fields": no_opponent_fields,
         "pushes_disabled": not bool(environment_config.push_config.enable),
-        "schema_consistent": all(
-            record["schema_version"] == LOCOMOTION_DATASET_SCHEMA_VERSION
-            for record in records
-        ),
-        "starts_upright": not records[0]["fallen"],
+        "schema_consistent": schema_consistent,
+        "starts_upright": bool(starts_upright),
     }
     manifest = {
         "backend": jax.default_backend(),
@@ -208,10 +206,10 @@ def main(config: Config) -> None:
         "experiment": "p6_random_command_dataset",
         "jax_version": jax.__version__,
         "mujoco_version": version("mujoco"),
-        "output_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
+        "output_sha256": writer.sha256,
         "passed": bool(all(checks.values())),
         "python_version": platform.python_version(),
-        "samples": len(records),
+        "samples": writer.count,
         "schema_version": LOCOMOTION_DATASET_SCHEMA_VERSION,
         "seed": config.seed,
     }

@@ -6,6 +6,21 @@ than episodes, so early termination cannot silently reduce one condition's data
 volume. Seeds, configuration, checkpoint provenance, schema version, and an
 output SHA-256 digest are written to a JSON manifest.
 
+The final comparison budget is 1,000,000 transitions per condition. The
+generators stream records directly to temporary JSONL artifacts and atomically
+publish them on completion, bounding host memory independently of dataset size.
+`scripts/datasets/generate_p6_baseline_suite.py` runs all three conditions with
+one configuration and independently verifies row counts and hashes before
+writing the suite manifest.
+
+Final evidence: `logs/p6/final_seed0/suite_manifest.json`. The suite contains
+exactly 1,000,000 rows in each condition (3,000,000 total; 11,013,063,100
+bytes). Every dataset manifest passed, independently recomputed file hashes and
+row counts matched, and checkpoint, seed, schema version, and control timestep
+were common across conditions. Required aggressive maneuvers and phases were
+present, including high yaw, and every terrain curriculum stage plus both flat
+and rough terrain were represented.
+
 ## Ordinary random velocity commands
 
 The first baseline uses one G1 on flat terrain with no opponent and no external

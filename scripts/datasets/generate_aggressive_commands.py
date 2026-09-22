@@ -7,7 +7,6 @@ single-agent JSONL schema and a machine-readable manifest with maneuver counts.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import platform
 from collections import Counter
@@ -25,6 +24,7 @@ from motionforge.datasets import (
     AGGRESSIVE_MANEUVER_NAMES,
     LOCOMOTION_DATASET_SCHEMA_VERSION,
     AggressiveCommandSchedule,
+    JsonlDatasetWriter,
     extract_g1_locomotion_sample,
     json_default,
     locomotion_record,
@@ -117,73 +117,89 @@ def main(config: Config) -> None:
     timestep = 0
     rng, reset_rng = jax.random.split(rng)
     state = reset(reset_rng)
-    records: list[dict] = []
     maneuver_counts: Counter[str] = Counter()
     phase_counts: Counter[str] = Counter()
     command_transitions = 0
     previous_command = None
+    commands_in_range = True
+    finite_values = True
+    high_yaw_present = False
+    no_opponent_fields = True
+    schema_consistent = True
+    starts_upright: bool | None = None
 
-    while len(records) < config.samples:
-        sample_index = len(records)
-        command, maneuver, phase = schedule.command(sample_index)
-        commanded_state = apply_velocity_command(state, command)
-        rng, action_rng = jax.random.split(rng)
-        control = act(commanded_state.obs, action_rng)
-        sample = extract(
-            commanded_state,
-            command,
-            control.normalized_action,
-            control.joint_position_targets,
-        )
-        record = locomotion_record(
-            sample,
-            dataset_kind="aggressive_commands",
-            episode=episode,
-            episode_seed=episode_seed,
-            timestep=timestep,
-            state=commanded_state,
-            extra={"maneuver": maneuver, "maneuver_phase": phase},
-        )
-        records.append(record)
-        maneuver_counts[maneuver] += 1
-        phase_counts[f"{maneuver}:{phase}"] += 1
-        command_array = np.asarray(record["command_velocity"])
-        if previous_command is not None and not np.array_equal(
-            command_array, previous_command
-        ):
-            command_transitions += 1
-        previous_command = command_array
-
-        state = step(commanded_state, control.normalized_action)
-        timestep += 1
-        if bool(np.asarray(state.done)) and len(records) < config.samples:
-            episode += 1
-            episode_seed = config.seed + episode
-            rng = jax.random.PRNGKey(episode_seed)
-            rng, reset_rng = jax.random.split(rng)
-            state = reset(reset_rng)
-            timestep = 0
-            previous_command = None
-
-    serialized = "".join(
-        json.dumps(record, sort_keys=True) + "\n" for record in records
-    )
-    config.output.parent.mkdir(parents=True, exist_ok=True)
-    config.output.write_text(serialized, encoding="utf-8")
-
-    commands = np.asarray([record["command_velocity"] for record in records])
-    numeric_finite = all(
-        np.isfinite(
-            np.asarray(
-                record["root_position_world"]
-                + record["root_linear_velocity_world"]
-                + record["command_velocity"]
-                + record["joint_position"]
-                + record["joint_velocity"]
+    with JsonlDatasetWriter(config.output) as writer:
+        while writer.count < config.samples:
+            sample_index = writer.count
+            command, maneuver, phase = schedule.command(sample_index)
+            commanded_state = apply_velocity_command(state, command)
+            rng, action_rng = jax.random.split(rng)
+            control = act(commanded_state.obs, action_rng)
+            sample = extract(
+                commanded_state,
+                command,
+                control.normalized_action,
+                control.joint_position_targets,
             )
-        ).all()
-        for record in records
-    )
+            record = locomotion_record(
+                sample,
+                dataset_kind="aggressive_commands",
+                episode=episode,
+                episode_seed=episode_seed,
+                timestep=timestep,
+                state=commanded_state,
+                extra={"maneuver": maneuver, "maneuver_phase": phase},
+            )
+            if starts_upright is None:
+                starts_upright = not record["fallen"]
+            command_array = np.asarray(record["command_velocity"])
+            commands_in_range &= bool(
+                environment_config.lin_vel_x[0]
+                <= command_array[0]
+                <= environment_config.lin_vel_x[1]
+                and environment_config.lin_vel_y[0]
+                <= command_array[1]
+                <= environment_config.lin_vel_y[1]
+                and environment_config.ang_vel_yaw[0]
+                <= command_array[2]
+                <= environment_config.ang_vel_yaw[1]
+            )
+            high_yaw_present |= bool(abs(command_array[2]) >= 1.0)
+            finite_values &= bool(
+                np.isfinite(
+                    np.asarray(
+                        record["root_position_world"]
+                        + record["root_linear_velocity_world"]
+                        + record["command_velocity"]
+                        + record["joint_position"]
+                        + record["joint_velocity"]
+                    )
+                ).all()
+            )
+            no_opponent_fields &= not any(key.startswith("opponent_") for key in record)
+            schema_consistent &= (
+                record["schema_version"] == LOCOMOTION_DATASET_SCHEMA_VERSION
+            )
+            writer.write(record)
+            maneuver_counts[maneuver] += 1
+            phase_counts[f"{maneuver}:{phase}"] += 1
+            if previous_command is not None and not np.array_equal(
+                command_array, previous_command
+            ):
+                command_transitions += 1
+            previous_command = command_array
+
+            state = step(commanded_state, control.normalized_action)
+            timestep += 1
+            if bool(np.asarray(state.done)) and writer.count < config.samples:
+                episode += 1
+                episode_seed = config.seed + episode
+                rng = jax.random.PRNGKey(episode_seed)
+                rng, reset_rng = jax.random.split(rng)
+                state = reset(reset_rng)
+                timestep = 0
+                previous_command = None
+
     all_phases_present = all(
         phase_counts[f"{maneuver}:{phase}"] > 0
         for maneuver in AGGRESSIVE_MANEUVER_NAMES
@@ -195,32 +211,20 @@ def main(config: Config) -> None:
         ),
         "all_phases_present": all_phases_present,
         "checkpoint_loaded": controller.checkpoint_path == config.checkpoint.resolve(),
-        "commands_in_controller_range": bool(
-            np.all(commands[:, 0] >= environment_config.lin_vel_x[0])
-            and np.all(commands[:, 0] <= environment_config.lin_vel_x[1])
-            and np.all(commands[:, 1] >= environment_config.lin_vel_y[0])
-            and np.all(commands[:, 1] <= environment_config.lin_vel_y[1])
-            and np.all(commands[:, 2] >= environment_config.ang_vel_yaw[0])
-            and np.all(commands[:, 2] <= environment_config.ang_vel_yaw[1])
-        ),
-        "exact_sample_budget": len(records) == config.samples,
-        "finite_values": bool(numeric_finite),
+        "commands_in_controller_range": commands_in_range,
+        "exact_sample_budget": writer.count == config.samples,
+        "finite_values": finite_values,
         "flat_terrain": bool(
             np.asarray(
                 environment.mj_model.geom("floor").type == mujoco.mjtGeom.mjGEOM_PLANE
             ).all()
         ),
         "gpu_backend": jax.default_backend() == "gpu",
-        "high_yaw_present": bool(np.any(np.abs(commands[:, 2]) >= 1.0)),
-        "no_opponent_fields": all(
-            not any(key.startswith("opponent_") for key in record) for record in records
-        ),
+        "high_yaw_present": high_yaw_present,
+        "no_opponent_fields": no_opponent_fields,
         "pushes_disabled": not bool(environment_config.push_config.enable),
-        "schema_consistent": all(
-            record["schema_version"] == LOCOMOTION_DATASET_SCHEMA_VERSION
-            for record in records
-        ),
-        "starts_upright": not records[0]["fallen"],
+        "schema_consistent": schema_consistent,
+        "starts_upright": bool(starts_upright),
     }
     manifest = {
         "backend": jax.default_backend(),
@@ -241,11 +245,11 @@ def main(config: Config) -> None:
         "jax_version": jax.__version__,
         "maneuver_counts": dict(maneuver_counts),
         "mujoco_version": version("mujoco"),
-        "output_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
+        "output_sha256": writer.sha256,
         "passed": bool(all(checks.values())),
         "phase_counts": dict(phase_counts),
         "python_version": platform.python_version(),
-        "samples": len(records),
+        "samples": writer.count,
         "schedule_cycle_steps": schedule.cycle_steps,
         "schema_version": LOCOMOTION_DATASET_SCHEMA_VERSION,
         "seed": config.seed,

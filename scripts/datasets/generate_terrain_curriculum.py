@@ -7,7 +7,6 @@ single-agent JSONL schema and a manifest with terrain and curriculum coverage.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import platform
@@ -24,6 +23,7 @@ from motionforge.cli import run_hydra
 from motionforge.controllers import G1LocomotionController
 from motionforge.datasets import (
     LOCOMOTION_DATASET_SCHEMA_VERSION,
+    JsonlDatasetWriter,
     TerrainCurriculum,
     extract_g1_locomotion_sample,
     json_default,
@@ -129,103 +129,106 @@ def main(config: Config) -> None:
     rng = jax.random.PRNGKey(episode_seed)
     rng, reset_rng = jax.random.split(rng)
     state = resets[terrain](reset_rng)
-    records: list[dict] = []
     terrain_counts: Counter[str] = Counter()
     stage_counts: Counter[int] = Counter()
     terminated_episodes = 0
+    commands_in_range = True
+    finite_values = True
+    no_opponent_fields = True
+    schema_consistent = True
+    starts_upright: bool | None = None
 
-    while len(records) < config.samples:
-        command = state.info["command"]
-        rng, action_rng = jax.random.split(rng)
-        control = act(state.obs, action_rng)
-        sample = extracts[terrain](
-            state,
-            command,
-            control.normalized_action,
-            control.joint_position_targets,
-        )
-        record = locomotion_record(
-            sample,
-            dataset_kind="terrain_curriculum",
-            episode=episode,
-            episode_seed=episode_seed,
-            timestep=timestep,
-            state=state,
-            extra={
-                "curriculum_stage": stage,
-                "rough_probability": rough_probability,
-                "terrain_kind": terrain,
-            },
-        )
-        records.append(record)
-        terrain_counts[terrain] += 1
-        stage_counts[stage] += 1
-
-        state = steps[terrain](state, control.normalized_action)
-        timestep += 1
-        terminated = bool(np.asarray(state.done))
-        truncate = timestep >= config.episode_steps
-        if (terminated or truncate) and len(records) < config.samples:
-            terminated_episodes += int(terminated)
-            episode += 1
-            episode_seed = config.seed + episode
-            progress = len(records) / config.samples
-            stage, rough_probability, terrain = curriculum.assignment(
-                episode,
-                progress,
+    with JsonlDatasetWriter(config.output) as writer:
+        while writer.count < config.samples:
+            command = state.info["command"]
+            rng, action_rng = jax.random.split(rng)
+            control = act(state.obs, action_rng)
+            sample = extracts[terrain](
+                state,
+                command,
+                control.normalized_action,
+                control.joint_position_targets,
             )
-            rng = jax.random.PRNGKey(episode_seed)
-            rng, reset_rng = jax.random.split(rng)
-            state = resets[terrain](reset_rng)
-            timestep = 0
-
-    serialized = "".join(
-        json.dumps(record, sort_keys=True) + "\n" for record in records
-    )
-    config.output.parent.mkdir(parents=True, exist_ok=True)
-    config.output.write_text(serialized, encoding="utf-8")
-
-    commands = np.asarray([record["command_velocity"] for record in records])
-    numeric_finite = all(
-        np.isfinite(
-            np.asarray(
-                record["root_position_world"]
-                + record["root_linear_velocity_world"]
-                + record["command_velocity"]
-                + record["joint_position"]
-                + record["joint_velocity"]
+            record = locomotion_record(
+                sample,
+                dataset_kind="terrain_curriculum",
+                episode=episode,
+                episode_seed=episode_seed,
+                timestep=timestep,
+                state=state,
+                extra={
+                    "curriculum_stage": stage,
+                    "rough_probability": rough_probability,
+                    "terrain_kind": terrain,
+                },
             )
-        ).all()
-        for record in records
-    )
+            if starts_upright is None:
+                starts_upright = not record["fallen"]
+            command_array = np.asarray(record["command_velocity"])
+            commands_in_range &= bool(
+                environments["flat"]._config.lin_vel_x[0]
+                <= command_array[0]
+                <= environments["flat"]._config.lin_vel_x[1]
+                and environments["flat"]._config.lin_vel_y[0]
+                <= command_array[1]
+                <= environments["flat"]._config.lin_vel_y[1]
+                and environments["flat"]._config.ang_vel_yaw[0]
+                <= command_array[2]
+                <= environments["flat"]._config.ang_vel_yaw[1]
+            )
+            finite_values &= bool(
+                np.isfinite(
+                    np.asarray(
+                        record["root_position_world"]
+                        + record["root_linear_velocity_world"]
+                        + record["command_velocity"]
+                        + record["joint_position"]
+                        + record["joint_velocity"]
+                    )
+                ).all()
+            )
+            no_opponent_fields &= not any(key.startswith("opponent_") for key in record)
+            schema_consistent &= (
+                record["schema_version"] == LOCOMOTION_DATASET_SCHEMA_VERSION
+            )
+            writer.write(record)
+            terrain_counts[terrain] += 1
+            stage_counts[stage] += 1
+
+            state = steps[terrain](state, control.normalized_action)
+            timestep += 1
+            terminated = bool(np.asarray(state.done))
+            truncate = timestep >= config.episode_steps
+            if (terminated or truncate) and writer.count < config.samples:
+                terminated_episodes += int(terminated)
+                episode += 1
+                episode_seed = config.seed + episode
+                progress = writer.count / config.samples
+                stage, rough_probability, terrain = curriculum.assignment(
+                    episode,
+                    progress,
+                )
+                rng = jax.random.PRNGKey(episode_seed)
+                rng, reset_rng = jax.random.split(rng)
+                state = resets[terrain](reset_rng)
+                timestep = 0
+
     checks = {
         "all_curriculum_stages_present": set(stage_counts)
         == set(range(len(config.rough_probabilities))),
         "both_terrains_present": set(terrain_counts) == {"flat", "rough"},
         "checkpoint_loaded": controller.checkpoint_path == config.checkpoint.resolve(),
-        "commands_in_controller_range": bool(
-            np.all(commands[:, 0] >= environments["flat"]._config.lin_vel_x[0])
-            and np.all(commands[:, 0] <= environments["flat"]._config.lin_vel_x[1])
-            and np.all(commands[:, 1] >= environments["flat"]._config.lin_vel_y[0])
-            and np.all(commands[:, 1] <= environments["flat"]._config.lin_vel_y[1])
-            and np.all(commands[:, 2] >= environments["flat"]._config.ang_vel_yaw[0])
-            and np.all(commands[:, 2] <= environments["flat"]._config.ang_vel_yaw[1])
-        ),
-        "exact_sample_budget": len(records) == config.samples,
-        "finite_values": bool(numeric_finite),
+        "commands_in_controller_range": commands_in_range,
+        "exact_sample_budget": writer.count == config.samples,
+        "finite_values": finite_values,
         "gpu_backend": jax.default_backend() == "gpu",
-        "no_opponent_fields": all(
-            not any(key.startswith("opponent_") for key in record) for record in records
-        ),
+        "no_opponent_fields": no_opponent_fields,
         "pushes_disabled": all(
             not bool(environment._config.push_config.enable)
             for environment in environments.values()
         ),
-        "schema_consistent": all(
-            record["schema_version"] == LOCOMOTION_DATASET_SCHEMA_VERSION
-            for record in records
-        ),
-        "starts_upright": not records[0]["fallen"],
+        "schema_consistent": schema_consistent,
+        "starts_upright": bool(starts_upright),
         "terrain_models": bool(
             np.asarray(
                 environments["flat"].mj_model.geom("floor").type
@@ -253,11 +256,11 @@ def main(config: Config) -> None:
         "experiment": "p6_terrain_curriculum_dataset",
         "jax_version": jax.__version__,
         "mujoco_version": version("mujoco"),
-        "output_sha256": hashlib.sha256(serialized.encode()).hexdigest(),
+        "output_sha256": writer.sha256,
         "passed": bool(all(checks.values())),
         "planned_episodes": math.ceil(config.samples / config.episode_steps),
         "python_version": platform.python_version(),
-        "samples": len(records),
+        "samples": writer.count,
         "schema_version": LOCOMOTION_DATASET_SCHEMA_VERSION,
         "seed": config.seed,
         "stage_counts": dict(stage_counts),

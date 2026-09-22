@@ -10,13 +10,18 @@ from motionforge.datasets.locomotion import (
     G1LocomotionSample,
     extract_g1_locomotion_sample,
 )
-from motionforge.datasets.serialization import json_default, locomotion_record
+from motionforge.datasets.serialization import (
+    JsonlDatasetWriter,
+    json_default,
+    locomotion_record,
+)
 
 __all__ = [
     "AGGRESSIVE_MANEUVER_NAMES",
     "LOCOMOTION_DATASET_SCHEMA_VERSION",
     "AggressiveCommandSchedule",
     "G1LocomotionSample",
+    "JsonlDatasetWriter",
     "TerrainCurriculum",
     "extract_g1_locomotion_sample",
     "json_default",
