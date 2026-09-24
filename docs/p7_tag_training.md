@@ -80,3 +80,19 @@ wrote checkpoint `000000004480`, recorded finite training/evaluation metrics,
 preserved the frozen evader fingerprint, and passed every launcher check. This
 is an integration audit, not evidence that the pursuer has learned TAG; the
 first substantive training run remains the next P7 experiment.
+
+## Initial pursuer pilot
+
+The seed-0 pilot in `logs/p7/training/tag_pursuer_128k_seed0` reached 163,840
+environment steps with finite metrics and four checkpoints. Its training-time
+evaluation briefly reported 62.5% tag success at checkpoint `000000122880`,
+but this did not generalize. The dedicated deterministic evaluator
+`scripts/evaluation/evaluate_tag_pursuer.py` restored that checkpoint and ran
+32 unseen reset seeds (`1000` through `1031`). It produced zero tags and 32
+pursuer boundary exits, with no falls or non-finite states. Evidence is stored
+in `logs/p7/tag_pursuer_122880_heldout_32.json`.
+
+This rejects longer training with the current reward rather than completing
+the pursuer-training milestone. The next P7 iteration should add dense arena
+boundary shaping and repeat the bounded pilot before increasing the training
+budget.
