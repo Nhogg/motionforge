@@ -54,10 +54,29 @@ commands before the environment applies physical command scaling. The critic
 receives the same nine-value observation but shares no parameters with the
 actor.
 
-Evidence: `logs/p7/tag_pursuer_environment_a.json` and
-`logs/p7/tag_pursuer_networks_a.json`. The environment audit passed on the GPU
+Evidence: `logs/p7/tag_pursuer_environment_wrapped_a.json` and
+`logs/p7/tag_pursuer_networks_b.json`. The environment audit passed on the GPU
 backend, including nine-value clock-free observations, exact action scaling,
 five-update command holding, finite integrated physics, independent reward
-fixtures, and timeout truncation semantics. The network audit initialized and
-executed finite batched inference with the expected shapes and bounded sampled
-actions. The actor has 18,566 parameters and the separate critic has 17,921.
+fixtures, timeout truncation semantics, batched wrapper bookkeeping, and
+MJX-Warp-safe selective auto-reset. The network audit initialized and executed
+finite batched inference with the expected shapes and bounded sampled actions.
+The actor has 18,566 parameters and the separate critic has 17,921.
+
+`scripts/training/train_tag_pursuer.py` is the reproducible PPO entry point. It
+records the frozen evader specification and fingerprint, resolved locomotion
+checkpoint, reward/environment configuration, network architecture,
+dependencies, repository state, device list, PPO parameters, JSONL progress,
+checkpoints, summary checks, and optional W&B scalar metrics. Its custom Brax
+episode wrapper preserves task timeout truncations so PPO can bootstrap them;
+all resettable controller memory lives in pipeline state to prevent leakage
+between auto-reset episodes. The auto-reset wrapper uses MJX `Data.where`
+through a per-environment map because generic tree selection corrupts Warp's
+non-batched contact metadata.
+
+The end-to-end GPU smoke run is recorded under
+`logs/p7/training/tag_pursuer_smoke_f`. It completed 4,480 environment steps,
+wrote checkpoint `000000004480`, recorded finite training/evaluation metrics,
+preserved the frozen evader fingerprint, and passed every launcher check. This
+is an integration audit, not evidence that the pursuer has learned TAG; the
+first substantive training run remains the next P7 experiment.

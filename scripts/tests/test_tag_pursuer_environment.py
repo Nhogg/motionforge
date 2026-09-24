@@ -19,6 +19,7 @@ from motionforge.envs import (
     TagPursuerEnvironment,
     pursuer_action_to_command,
     pursuer_reward,
+    wrap_tag_pursuer_for_training,
 )
 
 
@@ -62,17 +63,40 @@ def main(config: Config) -> None:
     action = jp.asarray([1.5, -2.0, 0.25])
     expected_command = jp.asarray([1.0, -0.5, 0.25])
     next_state = step(state, action)
-    next_state.pipeline_state.data.qpos.block_until_ready()
+    next_state.pipeline_state.tag_state.data.qpos.block_until_ready()
 
-    timeout_pipeline = state.pipeline_state.replace(
+    timeout_tag_state = state.pipeline_state.tag_state.replace(
         step_count=jp.asarray(
             environment.tag_environment.timeout_config.maximum_steps - 1,
             dtype=jp.int32,
         )
     )
-    timeout_state = state.replace(pipeline_state=timeout_pipeline)
+    timeout_state = state.replace(
+        pipeline_state=state.pipeline_state.replace(tag_state=timeout_tag_state)
+    )
     timed_out = step(timeout_state, jp.zeros(3))
-    timed_out.pipeline_state.data.qpos.block_until_ready()
+    timed_out.pipeline_state.tag_state.data.qpos.block_until_ready()
+
+    wrapped = wrap_tag_pursuer_for_training(
+        environment,
+        episode_length=environment.tag_environment.timeout_config.maximum_steps,
+    )
+    batch_keys = jax.random.split(jax.random.PRNGKey(config.seed + 1), 2)
+    wrapped_state = jax.jit(wrapped.reset)(batch_keys)
+    near_timeout_tag_state = wrapped_state.pipeline_state.tag_state.replace(
+        step_count=jp.full(
+            (2,),
+            environment.tag_environment.timeout_config.maximum_steps - 1,
+            dtype=jp.int32,
+        )
+    )
+    wrapped_state = wrapped_state.replace(
+        pipeline_state=wrapped_state.pipeline_state.replace(
+            tag_state=near_timeout_tag_state
+        )
+    )
+    wrapped_next = jax.jit(wrapped.step)(wrapped_state, jp.zeros((2, 3)))
+    wrapped_next.pipeline_state.tag_state.data.qpos.block_until_ready()
 
     zero_command = jp.zeros(3)
     tag_terms = pursuer_reward(
@@ -131,7 +155,7 @@ def main(config: Config) -> None:
         "action_size": environment.action_size == 3,
         "backend_gpu": jax.default_backend() == "gpu",
         "command_held_for_action_repeat": (
-            int(np.asarray(next_state.pipeline_state.step_count))
+            int(np.asarray(next_state.pipeline_state.tag_state.step_count))
             == config.action_repeat
         ),
         "evader_failure_not_rewarded": bool(
@@ -139,8 +163,10 @@ def main(config: Config) -> None:
             and np.isclose(np.asarray(evader_failure_terms.tag), 0.0)
         ),
         "finite_step": bool(
-            np.isfinite(np.asarray(next_state.pipeline_state.data.qpos)).all()
-            and np.isfinite(np.asarray(next_state.pipeline_state.data.qvel)).all()
+            np.isfinite(np.asarray(next_state.pipeline_state.tag_state.data.qpos)).all()
+            and np.isfinite(
+                np.asarray(next_state.pipeline_state.tag_state.data.qvel)
+            ).all()
             and np.isfinite(next_obs).all()
             and np.isfinite(metric_values).all()
             and np.isfinite(np.asarray(next_state.reward))
@@ -174,9 +200,29 @@ def main(config: Config) -> None:
         ),
         "timeout_done": bool(np.asarray(timed_out.done)),
         "timeout_is_truncation": bool(np.asarray(timed_out.info["truncation"])),
-        "timeout_stops_remaining_repeats": (
-            int(np.asarray(timed_out.pipeline_state.step_count))
+        "timeout_remains_sticky_through_repeat": (
+            int(np.asarray(timed_out.pipeline_state.tag_state.step_count))
             == environment.tag_environment.timeout_config.maximum_steps
+            + config.action_repeat
+            - 1
+        ),
+        "wrapped_autoreset_preserves_done": bool(np.asarray(wrapped_next.done).all()),
+        "wrapped_autoreset_resets_pipeline": bool(
+            (np.asarray(wrapped_next.pipeline_state.tag_state.step_count) == 0).all()
+        ),
+        "wrapped_timeout_is_truncation": bool(
+            np.asarray(wrapped_next.info["truncation"]).all()
+            and np.asarray(wrapped_next.info["time_out"]).all()
+        ),
+        "wrapper_bookkeeping_preserved": all(
+            key in wrapped_next.info
+            for key in (
+                "episode_done",
+                "episode_metrics",
+                "steps",
+                "time_out",
+                "truncation",
+            )
         ),
     }
     result = {

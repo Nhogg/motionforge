@@ -45,11 +45,15 @@ from motionforge.envs.tag_observations import (
 )
 from motionforge.envs.tag_pursuer import (
     PursuerRewardTerms,
+    TagAutoResetWrapper,
+    TagEpisodeWrapper,
     TagPursuerConfig,
     TagPursuerEnvironment,
+    TagPursuerPipelineState,
     pursuer_action_to_command,
     pursuer_observation,
     pursuer_reward,
+    wrap_tag_pursuer_for_training,
 )
 from motionforge.envs.tag_reset import (
     AgentResetLayout,
@@ -97,6 +101,7 @@ __all__ = [
     "PursuerRewardTerms",
     "RelativePlanarObservation",
     "TagAgent",
+    "TagAutoResetWrapper",
     "TagContactLayout",
     "TagContactObservation",
     "TagEnvironmentConfig",
@@ -104,9 +109,11 @@ __all__ = [
     "TagEnvironmentObservation",
     "TagEnvironmentState",
     "TagEnvironmentTermination",
+    "TagEpisodeWrapper",
     "TagObservationLayout",
     "TagPursuerConfig",
     "TagPursuerEnvironment",
+    "TagPursuerPipelineState",
     "TagResetConfig",
     "TagResetLayout",
     "TagResetState",
@@ -133,4 +140,5 @@ __all__ = [
     "relative_planar_observation",
     "sample_tag_reset",
     "world_planar_to_heading",
+    "wrap_tag_pursuer_for_training",
 ]

@@ -14,6 +14,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jp
 from brax.envs.base import Env, State
+from brax.envs.wrappers import training as brax_training
 from flax import struct
 
 from motionforge.controllers import (
@@ -74,6 +75,18 @@ class PursuerRewardTerms:
     pursuer_fall: jax.Array
     pursuer_out_of_bounds: jax.Array
     total: jax.Array
+
+
+@struct.dataclass
+class TagPursuerPipelineState:
+    """All physical and controller memory that must reset between episodes."""
+
+    tag_state: object
+    distance: jax.Array
+    last_actions: jax.Array
+    phases: jax.Array
+    previous_command: jax.Array
+    rng: jax.Array
 
 
 def pursuer_action_to_command(action: jax.Array) -> jax.Array:
@@ -216,18 +229,22 @@ class TagPursuerEnvironment(Env):
         distance = jp.linalg.norm(
             tag_state.observation.relative_position[self.pursuer_index]
         )
+        pipeline_state = TagPursuerPipelineState(
+            tag_state=tag_state,
+            distance=distance,
+            last_actions=jp.zeros((2, 29), dtype=jp.float32),
+            phases=jp.asarray([[0.0, jp.pi], [0.0, jp.pi]]),
+            previous_command=previous_command,
+            rng=rollout_rng,
+        )
         return State(
-            pipeline_state=tag_state,
+            pipeline_state=pipeline_state,
             obs=self._observation(tag_state, previous_command),
             reward=jp.zeros((), dtype=jp.float32),
             done=jp.zeros((), dtype=jp.float32),
             metrics=self._zero_metrics(),
             info={
-                "distance": distance,
-                "last_actions": jp.zeros((2, 29), dtype=jp.float32),
-                "phases": jp.asarray([[0.0, jp.pi], [0.0, jp.pi]]),
-                "previous_command": previous_command,
-                "rng": rollout_rng,
+                "time_out": jp.zeros((), dtype=jp.float32),
                 "truncation": jp.zeros((), dtype=jp.float32),
             },
         )
@@ -250,10 +267,9 @@ class TagPursuerEnvironment(Env):
 
     def step(self, state: State, action: jax.Array) -> State:
         command = pursuer_action_to_command(action)
+        pipeline = state.pipeline_state
 
         def locomotion_step(carry, _):
-            tag_state = carry[0]
-
             def advance(active_carry):
                 active_state, active_actions, active_phases, active_rng = active_carry
                 evader_command = self.evader.command(active_state.observation)
@@ -290,21 +306,15 @@ class TagPursuerEnvironment(Env):
                 )
                 return next_state, next_actions, next_phases, active_rng
 
-            next_carry = jax.lax.cond(
-                tag_state.done,
-                lambda unchanged: unchanged,
-                advance,
-                carry,
-            )
-            return next_carry, None
+            return advance(carry), None
 
         tag_state, last_actions, phases, rng = jax.lax.scan(
             locomotion_step,
             (
-                state.pipeline_state,
-                state.info["last_actions"],
-                state.info["phases"],
-                state.info["rng"],
+                pipeline.tag_state,
+                pipeline.last_actions,
+                pipeline.phases,
+                pipeline.rng,
             ),
             xs=None,
             length=self.config.action_repeat,
@@ -313,37 +323,180 @@ class TagPursuerEnvironment(Env):
             tag_state.observation.relative_position[self.pursuer_index]
         )
         reward = pursuer_reward(
-            previous_distance=state.info["distance"],
+            previous_distance=pipeline.distance,
             current_distance=distance,
-            previous_command=state.info["previous_command"],
+            previous_command=pipeline.previous_command,
             current_command=command,
             termination=tag_state.termination,
             pursuer_index=self.pursuer_index,
             config=self.config,
         )
-        metrics = {
-            "distance": distance,
-            "reward/command_change": reward.command_change,
-            "reward/progress": reward.progress,
-            "reward/proximity": reward.proximity,
-            "reward/pursuer_fall": reward.pursuer_fall,
-            "reward/pursuer_out_of_bounds": reward.pursuer_out_of_bounds,
-            "reward/step": reward.step,
-            "reward/tag": reward.tag,
-            "tagged": tag_state.termination.tagged.astype(jp.float32),
-        }
+        metrics = dict(state.metrics)
+        metrics.update(
+            {
+                "distance": distance,
+                "reward/command_change": reward.command_change,
+                "reward/progress": reward.progress,
+                "reward/proximity": reward.proximity,
+                "reward/pursuer_fall": reward.pursuer_fall,
+                "reward/pursuer_out_of_bounds": reward.pursuer_out_of_bounds,
+                "reward/step": reward.step,
+                "reward/tag": reward.tag,
+                "tagged": tag_state.termination.tagged.astype(jp.float32),
+            }
+        )
+        next_pipeline = pipeline.replace(
+            tag_state=tag_state,
+            distance=distance,
+            last_actions=last_actions,
+            phases=phases,
+            previous_command=command,
+            rng=rng,
+        )
+        info = dict(state.info)
+        info["truncation"] = tag_state.termination.timed_out.astype(jp.float32)
+        info["time_out"] = tag_state.termination.timed_out.astype(jp.float32)
         return state.replace(
-            pipeline_state=tag_state,
+            pipeline_state=next_pipeline,
             obs=self._observation(tag_state, command),
             reward=reward.total,
             done=tag_state.done.astype(jp.float32),
             metrics=metrics,
-            info={
-                "distance": distance,
-                "last_actions": last_actions,
-                "phases": phases,
-                "previous_command": command,
-                "rng": rng,
-                "truncation": tag_state.termination.timed_out.astype(jp.float32),
-            },
+            info=info,
         )
+
+
+class TagEpisodeWrapper(brax_training.Wrapper):
+    """Brax episode accounting that preserves task-provided truncations."""
+
+    def __init__(self, env: Env, episode_length: int, action_repeat: int) -> None:
+        super().__init__(env)
+        self.episode_length = episode_length
+        self.action_repeat = action_repeat
+
+    def reset(self, rng: jax.Array) -> State:
+        state = self.env.reset(rng)
+        state.info["steps"] = jp.zeros(rng.shape[:-1])
+        state.info["episode_done"] = jp.zeros(rng.shape[:-1])
+        episode_metrics = {
+            "sum_reward": jp.zeros(rng.shape[:-1]),
+            "length": jp.zeros(rng.shape[:-1]),
+        }
+        episode_metrics.update(
+            {name: jp.zeros(rng.shape[:-1]) for name in state.metrics}
+        )
+        state.info["episode_metrics"] = episode_metrics
+        return state
+
+    def step(self, state: State, action: jax.Array) -> State:
+        def repeated_step(current_state, _):
+            next_state = self.env.step(current_state, action)
+            return next_state, next_state.reward
+
+        state, rewards = jax.lax.scan(
+            repeated_step,
+            state,
+            xs=None,
+            length=self.action_repeat,
+        )
+        state = state.replace(reward=jp.sum(rewards, axis=0))
+        steps = state.info["steps"] + self.action_repeat
+        horizon = jp.asarray(self.episode_length, dtype=jp.int32)
+        horizon_reached = steps >= horizon
+        task_done = state.done
+        horizon_truncation = horizon_reached & ~task_done.astype(bool)
+        truncation = jp.maximum(
+            state.info["truncation"], horizon_truncation.astype(jp.float32)
+        )
+        done = jp.where(horizon_reached, jp.ones_like(task_done), task_done)
+        state.info["truncation"] = truncation
+        state.info["time_out"] = truncation
+        state.info["steps"] = steps
+
+        previous_done = state.info["episode_done"]
+        state.info["episode_metrics"]["sum_reward"] *= 1 - previous_done
+        state.info["episode_metrics"]["sum_reward"] += jp.sum(rewards, axis=0)
+        state.info["episode_metrics"]["length"] *= 1 - previous_done
+        state.info["episode_metrics"]["length"] += self.action_repeat
+        for name in state.info["episode_metrics"]:
+            if name in {"sum_reward", "length"}:
+                continue
+            state.info["episode_metrics"][name] *= 1 - previous_done
+            state.info["episode_metrics"][name] += state.metrics[name]
+        state.info["episode_done"] = done
+        return state.replace(done=done)
+
+
+class TagAutoResetWrapper(brax_training.Wrapper):
+    """Auto-reset wrapper that merges MJX-Warp data with ``Data.where``."""
+
+    def reset(self, rng: jax.Array) -> State:
+        state = self.env.reset(rng)
+        state.info["first_pipeline_state"] = state.pipeline_state
+        state.info["first_obs"] = state.obs
+        return state
+
+    def step(self, state: State, action: jax.Array) -> State:
+        if "steps" in state.info:
+            state.info["steps"] = jp.where(
+                state.done, jp.zeros_like(state.info["steps"]), state.info["steps"]
+            )
+        state = state.replace(done=jp.zeros_like(state.done))
+        state = self.env.step(state, action)
+        reset_pipeline = state.info["first_pipeline_state"]
+        current_pipeline = state.pipeline_state
+        done = state.done.astype(bool)
+
+        def select(reset_value, current_value):
+            mask = done.reshape(done.shape + (1,) * (current_value.ndim - done.ndim))
+            return jp.where(mask, reset_value, current_value)
+
+        reset_tag = reset_pipeline.tag_state
+        current_tag = current_pipeline.tag_state
+        tag_state = current_tag.replace(
+            data=jax.vmap(
+                lambda current, reset, terminal: current.where(terminal, reset)
+            )(current_tag.data, reset_tag.data, done),
+            observation=jax.tree.map(
+                select, reset_tag.observation, current_tag.observation
+            ),
+            diagnostics=jax.tree.map(
+                select, reset_tag.diagnostics, current_tag.diagnostics
+            ),
+            termination=jax.tree.map(
+                select, reset_tag.termination, current_tag.termination
+            ),
+            rng=select(reset_tag.rng, current_tag.rng),
+            step_count=select(reset_tag.step_count, current_tag.step_count),
+            fall_counts=select(reset_tag.fall_counts, current_tag.fall_counts),
+            done=select(reset_tag.done, current_tag.done),
+        )
+        pipeline_state = current_pipeline.replace(
+            tag_state=tag_state,
+            distance=select(reset_pipeline.distance, current_pipeline.distance),
+            last_actions=select(
+                reset_pipeline.last_actions, current_pipeline.last_actions
+            ),
+            phases=select(reset_pipeline.phases, current_pipeline.phases),
+            previous_command=select(
+                reset_pipeline.previous_command, current_pipeline.previous_command
+            ),
+            rng=select(reset_pipeline.rng, current_pipeline.rng),
+        )
+        obs_mask = done.reshape(done.shape + (1,) * (state.obs.ndim - done.ndim))
+        obs = jp.where(obs_mask, state.info["first_obs"], state.obs)
+        return state.replace(pipeline_state=pipeline_state, obs=obs)
+
+
+def wrap_tag_pursuer_for_training(
+    env: Env,
+    episode_length: int = 200,
+    action_repeat: int = 1,
+    randomization_fn=None,
+) -> Env:
+    """Vectorize and auto-reset while preserving timeout bootstrapping."""
+    if randomization_fn is not None:
+        raise ValueError("Tag pursuer training does not support domain randomization")
+    wrapped = brax_training.VmapWrapper(env)
+    wrapped = TagEpisodeWrapper(wrapped, episode_length, action_repeat)
+    return TagAutoResetWrapper(wrapped)
