@@ -126,3 +126,31 @@ the same spawn geometry on every episode. The next repair should sample a fresh
 reproducible reset state after every terminal episode, then repeat this pilot
 and held-out evaluation before changing the network or increasing the training
 budget.
+
+## Fresh-reset experiment
+
+The training wrapper now owns a separate per-environment PRNG stream and draws
+a new reset state after every terminal episode. Reset selection still uses MJX
+`Data.where` for Warp-safe batched state merging. Identical initial seeds replay
+the same reset sequence, while consecutive episodes no longer reuse a cached
+spawn geometry. The GPU audit is recorded in
+`logs/p7/tag_pursuer_environment_fresh_reset_a.json`.
+
+The matched seed-0 pilot in
+`logs/p7/training/tag_pursuer_fresh_reset_128k_seed0` reached 163,840
+environment steps with finite metrics and four checkpoints. Checkpoint
+`000000081920` was selected because its fixed 16-environment evaluation had
+100% tag success. On the same 32 held-out seeds used by the earlier pilots, it
+produced zero tags and 32 pursuer boundary exits. Its mean minimum separation
+was 1.987 meters, essentially unchanged from the 2-meter initial separation,
+and its mean episode length was 84.22 high-level decisions. Evidence is stored
+in `logs/p7/tag_pursuer_fresh_reset_81920_heldout_32.json`.
+
+This rejects cached auto-reset geometry as the primary cause of the evaluation
+gap. Longer training is not justified yet. The next P7 diagnostic should audit
+the fixed Brax evaluator and standalone held-out evaluator end to end using the
+same checkpoint and explicit reset keys, including normalized observations and
+deterministic actions. That comparison must establish why a policy reported as
+successful by the training evaluator barely reduces separation under the
+standalone evaluator before another reward, architecture, or training-budget
+change is attempted.

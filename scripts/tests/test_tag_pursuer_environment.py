@@ -83,6 +83,9 @@ def main(config: Config) -> None:
     )
     batch_keys = jax.random.split(jax.random.PRNGKey(config.seed + 1), 2)
     wrapped_state = jax.jit(wrapped.reset)(batch_keys)
+    initial_wrapped_qpos = np.asarray(
+        wrapped_state.pipeline_state.tag_state.data.qpos
+    ).copy()
     near_timeout_tag_state = wrapped_state.pipeline_state.tag_state.replace(
         step_count=jp.full(
             (2,),
@@ -97,6 +100,24 @@ def main(config: Config) -> None:
     )
     wrapped_next = jax.jit(wrapped.step)(wrapped_state, jp.zeros((2, 3)))
     wrapped_next.pipeline_state.tag_state.data.qpos.block_until_ready()
+
+    repeated_wrapped_state = jax.jit(wrapped.reset)(batch_keys)
+    repeated_near_timeout = repeated_wrapped_state.pipeline_state.tag_state.replace(
+        step_count=jp.full(
+            (2,),
+            environment.tag_environment.timeout_config.maximum_steps - 1,
+            dtype=jp.int32,
+        )
+    )
+    repeated_wrapped_state = repeated_wrapped_state.replace(
+        pipeline_state=repeated_wrapped_state.pipeline_state.replace(
+            tag_state=repeated_near_timeout
+        )
+    )
+    repeated_wrapped_next = jax.jit(wrapped.step)(
+        repeated_wrapped_state, jp.zeros((2, 3))
+    )
+    repeated_wrapped_next.pipeline_state.tag_state.data.qpos.block_until_ready()
 
     zero_command = jp.zeros(3)
     tag_terms = pursuer_reward(
@@ -229,6 +250,18 @@ def main(config: Config) -> None:
         "wrapped_autoreset_resets_pipeline": bool(
             (np.asarray(wrapped_next.pipeline_state.tag_state.step_count) == 0).all()
         ),
+        "wrapped_autoreset_samples_fresh_state": bool(
+            not np.allclose(
+                np.asarray(wrapped_next.pipeline_state.tag_state.data.qpos),
+                initial_wrapped_qpos,
+            )
+        ),
+        "wrapped_autoreset_is_reproducible": bool(
+            np.allclose(
+                np.asarray(wrapped_next.pipeline_state.tag_state.data.qpos),
+                np.asarray(repeated_wrapped_next.pipeline_state.tag_state.data.qpos),
+            )
+        ),
         "wrapped_timeout_is_truncation": bool(
             np.asarray(wrapped_next.info["truncation"]).all()
             and np.asarray(wrapped_next.info["time_out"]).all()
@@ -238,6 +271,7 @@ def main(config: Config) -> None:
             for key in (
                 "episode_done",
                 "episode_metrics",
+                "autoreset_rng",
                 "steps",
                 "time_out",
                 "truncation",

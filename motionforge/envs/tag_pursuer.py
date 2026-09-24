@@ -458,12 +458,17 @@ class TagEpisodeWrapper(brax_training.Wrapper):
 
 
 class TagAutoResetWrapper(brax_training.Wrapper):
-    """Auto-reset wrapper that merges MJX-Warp data with ``Data.where``."""
+    """Auto-reset with fresh seeded states and MJX-Warp-safe data merging."""
+
+    @staticmethod
+    def _split_keys(rng: jax.Array) -> tuple[jax.Array, jax.Array]:
+        split = jax.vmap(jax.random.split)(rng)
+        return split[:, 0], split[:, 1]
 
     def reset(self, rng: jax.Array) -> State:
-        state = self.env.reset(rng)
-        state.info["first_pipeline_state"] = state.pipeline_state
-        state.info["first_obs"] = state.obs
+        reset_rng, autoreset_rng = self._split_keys(rng)
+        state = self.env.reset(reset_rng)
+        state.info["autoreset_rng"] = autoreset_rng
         return state
 
     def step(self, state: State, action: jax.Array) -> State:
@@ -471,9 +476,12 @@ class TagAutoResetWrapper(brax_training.Wrapper):
             state.info["steps"] = jp.where(
                 state.done, jp.zeros_like(state.info["steps"]), state.info["steps"]
             )
+        autoreset_rng, reset_rng = self._split_keys(state.info["autoreset_rng"])
         state = state.replace(done=jp.zeros_like(state.done))
         state = self.env.step(state, action)
-        reset_pipeline = state.info["first_pipeline_state"]
+        reset_state = self.env.reset(reset_rng)
+        state.info["autoreset_rng"] = autoreset_rng
+        reset_pipeline = reset_state.pipeline_state
         current_pipeline = state.pipeline_state
         done = state.done.astype(bool)
 
@@ -514,7 +522,7 @@ class TagAutoResetWrapper(brax_training.Wrapper):
             rng=select(reset_pipeline.rng, current_pipeline.rng),
         )
         obs_mask = done.reshape(done.shape + (1,) * (state.obs.ndim - done.ndim))
-        obs = jp.where(obs_mask, state.info["first_obs"], state.obs)
+        obs = jp.where(obs_mask, reset_state.obs, state.obs)
         return state.replace(pipeline_state=pipeline_state, obs=obs)
 
 
