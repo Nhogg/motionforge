@@ -43,6 +43,8 @@ class TagPursuerConfig:
     proximity_reward_scale: float = 0.02
     step_penalty: float = 0.002
     command_change_penalty_scale: float = 0.01
+    boundary_margin: float = 1.0
+    boundary_penalty_scale: float = 1.0
     tag_reward: float = 10.0
     pursuer_fall_penalty: float = 10.0
     pursuer_out_of_bounds_penalty: float = 10.0
@@ -52,11 +54,14 @@ class TagPursuerConfig:
             raise ValueError("action_repeat must be positive")
         if self.relative_velocity_scale <= 0.0:
             raise ValueError("relative_velocity_scale must be positive")
+        if self.boundary_margin <= 0.0:
+            raise ValueError("boundary_margin must be positive")
         for name in (
             "progress_reward_scale",
             "proximity_reward_scale",
             "step_penalty",
             "command_change_penalty_scale",
+            "boundary_penalty_scale",
             "tag_reward",
             "pursuer_fall_penalty",
             "pursuer_out_of_bounds_penalty",
@@ -71,6 +76,7 @@ class PursuerRewardTerms:
     proximity: jax.Array
     step: jax.Array
     command_change: jax.Array
+    boundary: jax.Array
     tag: jax.Array
     pursuer_fall: jax.Array
     pursuer_out_of_bounds: jax.Array
@@ -126,17 +132,31 @@ def pursuer_reward(
     current_distance: jax.Array,
     previous_command: jax.Array,
     current_command: jax.Array,
+    pursuer_planar_position: jax.Array,
+    arena_half_extent: float,
     termination: TagEnvironmentTermination,
     pursuer_index: int,
     config: TagPursuerConfig,
 ) -> PursuerRewardTerms:
     """Compute independently logged high-level pursuer reward terms."""
+    if pursuer_planar_position.shape != (2,):
+        raise ValueError("pursuer_planar_position must have shape (2,)")
+    if config.boundary_margin > arena_half_extent:
+        raise ValueError("boundary_margin must not exceed arena_half_extent")
     progress = config.progress_reward_scale * (previous_distance - current_distance)
     proximity = config.proximity_reward_scale * jp.exp(-current_distance)
     step = jp.asarray(-config.step_penalty, dtype=jp.float32)
     command_change = -config.command_change_penalty_scale * jp.sum(
         jp.square(current_command - previous_command)
     )
+    safe_half_extent = arena_half_extent - config.boundary_margin
+    boundary_intrusion = jp.clip(
+        (jp.max(jp.abs(pursuer_planar_position)) - safe_half_extent)
+        / config.boundary_margin,
+        0.0,
+        1.0,
+    )
+    boundary = -config.boundary_penalty_scale * jp.square(boundary_intrusion)
     tag = config.tag_reward * termination.tagged.astype(jp.float32)
     pursuer_fall = -config.pursuer_fall_penalty * termination.fallen[
         pursuer_index
@@ -150,6 +170,7 @@ def pursuer_reward(
         + proximity
         + step
         + command_change
+        + boundary
         + tag
         + pursuer_fall
         + pursuer_out_of_bounds
@@ -159,6 +180,7 @@ def pursuer_reward(
         proximity=proximity,
         step=step,
         command_change=command_change,
+        boundary=boundary,
         tag=tag,
         pursuer_fall=pursuer_fall,
         pursuer_out_of_bounds=pursuer_out_of_bounds,
@@ -178,6 +200,8 @@ class TagPursuerEnvironment(Env):
     ) -> None:
         self.tag_environment = TwoG1TagEnvironment(tag_config)
         self.config = pursuer_config or TagPursuerConfig()
+        if self.config.boundary_margin > self.tag_environment.config.arena_half_extent:
+            raise ValueError("boundary_margin must not exceed arena_half_extent")
         self.pursuer_index = self.tag_environment.roles.by_role(TagRole.PURSUER).index
         evader_index = self.tag_environment.roles.by_role(TagRole.EVADER).index
         self.evader = FrozenScriptedEvader(agent_index=evader_index)
@@ -255,6 +279,7 @@ class TagPursuerEnvironment(Env):
             for name in (
                 "distance",
                 "reward/command_change",
+                "reward/boundary",
                 "reward/progress",
                 "reward/proximity",
                 "reward/pursuer_fall",
@@ -327,6 +352,10 @@ class TagPursuerEnvironment(Env):
             current_distance=distance,
             previous_command=pipeline.previous_command,
             current_command=command,
+            pursuer_planar_position=tag_state.diagnostics.planar_position[
+                self.pursuer_index
+            ],
+            arena_half_extent=self.tag_environment.config.arena_half_extent,
             termination=tag_state.termination,
             pursuer_index=self.pursuer_index,
             config=self.config,
@@ -336,6 +365,7 @@ class TagPursuerEnvironment(Env):
             {
                 "distance": distance,
                 "reward/command_change": reward.command_change,
+                "reward/boundary": reward.boundary,
                 "reward/progress": reward.progress,
                 "reward/proximity": reward.proximity,
                 "reward/pursuer_fall": reward.pursuer_fall,

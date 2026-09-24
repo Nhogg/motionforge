@@ -96,3 +96,33 @@ This rejects longer training with the current reward rather than completing
 the pursuer-training milestone. The next P7 iteration should add dense arena
 boundary shaping and repeat the bounded pilot before increasing the training
 budget.
+
+The repair adds a quadratic boundary-margin penalty without changing the
+observation, action, network, opponent, or PPO configuration. The penalty is
+zero throughout the central 6-by-6-meter square, rises smoothly through the
+outer one-meter margin, and reaches `-1.0` per high-level decision at the
+4-meter arena edge. The existing `-10.0` terminal boundary penalty remains in
+place. This gives PPO advance warning before an otherwise sparse boundary
+failure while preserving unrestricted pursuit through most of the arena.
+
+The matched seed-0 boundary pilot is stored under
+`logs/p7/training/tag_pursuer_boundary_128k_seed0`. It reached 163,840
+environment steps and repeatedly achieved 100% tag success with no boundary
+exits on the fixed training-time evaluator. That apparent improvement did not
+transfer to unseen resets. Deterministic evaluation of both checkpoint
+`000000081920` and the final checkpoint `000000163840` on 32 held-out seeds
+produced zero tags and 32 pursuer boundary exits. The final checkpoint's mean
+minimum separation was 1.490 meters and its mean episode length was 67.97
+high-level decisions. Evidence is stored in
+`logs/p7/tag_pursuer_boundary_81920_heldout_32.json` and
+`logs/p7/tag_pursuer_boundary_163840_heldout_32.json`.
+
+This rejects boundary-penalty strength as the immediate bottleneck: the policy
+can optimize the fixed evaluator but does not learn a state-conditioned
+boundary response that generalizes. The next bounded P7 experiment should
+address reset coverage. The current auto-reset path returns each vectorized
+environment to its cached initial pipeline state, so an environment slot sees
+the same spawn geometry on every episode. The next repair should sample a fresh
+reproducible reset state after every terminal episode, then repeat this pilot
+and held-out evaluation before changing the network or increasing the training
+budget.

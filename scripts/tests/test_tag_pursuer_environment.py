@@ -104,6 +104,8 @@ def main(config: Config) -> None:
         current_distance=jp.asarray(1.0),
         previous_command=zero_command,
         current_command=zero_command,
+        pursuer_planar_position=zero_command[:2],
+        arena_half_extent=tag_config.arena_half_extent,
         termination=termination(tagged=True),
         pursuer_index=0,
         config=pursuer_config,
@@ -113,6 +115,8 @@ def main(config: Config) -> None:
         current_distance=jp.asarray(1.0),
         previous_command=zero_command,
         current_command=zero_command,
+        pursuer_planar_position=zero_command[:2],
+        arena_half_extent=tag_config.arena_half_extent,
         termination=termination(fallen=(True, False)),
         pursuer_index=0,
         config=pursuer_config,
@@ -122,6 +126,8 @@ def main(config: Config) -> None:
         current_distance=jp.asarray(1.0),
         previous_command=zero_command,
         current_command=zero_command,
+        pursuer_planar_position=jp.asarray([3.5, 0.0]),
+        arena_half_extent=tag_config.arena_half_extent,
         termination=termination(out_of_bounds=(True, False)),
         pursuer_index=0,
         config=pursuer_config,
@@ -131,6 +137,8 @@ def main(config: Config) -> None:
         current_distance=jp.asarray(1.0),
         previous_command=zero_command,
         current_command=zero_command,
+        pursuer_planar_position=zero_command[:2],
+        arena_half_extent=tag_config.arena_half_extent,
         termination=termination(fallen=(False, True)),
         pursuer_index=0,
         config=pursuer_config,
@@ -140,6 +148,8 @@ def main(config: Config) -> None:
         current_distance=jp.asarray(1.5),
         previous_command=zero_command,
         current_command=jp.ones(3),
+        pursuer_planar_position=zero_command[:2],
+        arena_half_extent=tag_config.arena_half_extent,
         termination=termination(),
         pursuer_index=0,
         config=pursuer_config,
@@ -181,6 +191,15 @@ def main(config: Config) -> None:
                 np.asarray(bounds_terms.pursuer_out_of_bounds),
                 -pursuer_config.pursuer_out_of_bounds_penalty,
             )
+        ),
+        "reward_dense_boundary_penalty": bool(
+            np.isclose(
+                np.asarray(bounds_terms.boundary),
+                -0.25 * pursuer_config.boundary_penalty_scale,
+            )
+        ),
+        "reward_no_boundary_penalty_inside_margin": bool(
+            np.isclose(np.asarray(progress_terms.boundary), 0.0)
         ),
         "reward_command_change_penalty": bool(
             np.isclose(
