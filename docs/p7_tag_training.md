@@ -154,3 +154,52 @@ deterministic actions. That comparison must establish why a policy reported as
 successful by the training evaluator barely reduces separation under the
 standalone evaluator before another reward, architecture, or training-budget
 change is attempted.
+
+## Deterministic evaluation and accepted pursuer
+
+The parity audit found that Brax PPO's training evaluator was using its default
+stochastic policy while the standalone evaluator correctly used the
+deterministic policy mean. Wrapped and standalone observations, normalization,
+and deterministic actions match exactly for identical reset keys; evidence is
+stored in `logs/p7/tag_pursuer_evaluator_parity_a.json`. Training now sets
+`deterministic_eval=true` explicitly, so checkpoint selection measures the
+deployable policy rather than favorable exploration noise.
+
+Two matched 128K diagnostics confirmed the mechanism. Reducing only the
+entropy coefficient to `0.001`, and then initializing the action standard
+deviation at `0.2` with zero entropy cost, did not work: the learned standard
+deviation returned to approximately `0.9` and every deterministic evaluation
+failed. For the tanh-normal Brax policy, the initial-noise setting does not
+constrain the learned scale.
+
+The accepted actor therefore learns only the three action means and appends a
+fixed tanh-normal exploration standard deviation of `0.2`. This preserves
+controlled stochastic exploration during PPO rollouts but prevents variance
+from becoming a substitute for a useful deterministic policy. The network
+audit verifies the exact fixed scale in
+`logs/p7/tag_pursuer_networks_fixed_noise_a.json`. A matched 128K pilot became
+safe but did not yet tag: all 32 held-out episodes timed out, with mean minimum
+separation improving to 1.739 meters. This justified increasing training time
+without another reward change.
+
+The accepted seed-0 run is
+`logs/p7/training/tag_pursuer_fixed_noise_1m_seed0`. It reached 1,146,880
+environment steps with finite metrics and eight checkpoints. Deterministic tag
+success first appeared at checkpoint `000000430080`, temporarily regressed,
+and returned at the final checkpoint `000001146880`; this makes checkpoint
+selection necessary even with fixed exploration. The final fixed evaluator
+reported 100% tags, zero failures, and a mean episode length of 51 decisions.
+
+The final checkpoint then tagged the frozen scripted evader on all 32 held-out
+reset seeds (`1000` through `1031`) with zero falls, boundary exits, or
+timeouts. Mean tag time was 51.78 high-level decisions, mean minimum separation
+was 0.312 meters, and mean cumulative reward was 13.60. The accepted
+machine-readable report is
+`logs/p7/tag_pursuer_fixed_noise_1146880_heldout_32_b.json`. The evaluator's
+repeatability check compares terminal outcome rather than exact terminal step,
+because GPU contact resolution can move an otherwise identical tag by one
+simulation step. The standalone evaluator resolves the fixed-noise network
+contract from the run manifest beside the checkpoint unless explicitly
+overridden. These results complete flat-ground pursuer training and
+consistent pursuit verification for P7; the next phase-order item is freezing
+this pursuer and training an evader.

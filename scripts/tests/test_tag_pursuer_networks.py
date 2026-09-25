@@ -36,15 +36,23 @@ def main(config: Config) -> None:
     if config.batch_size <= 0:
         raise ValueError("batch_size must be positive")
     networks = make_tag_pursuer_ppo_networks()
+    fixed_noise_std = 0.2
+    fixed_networks = make_tag_pursuer_ppo_networks(
+        fixed_noise_std=fixed_noise_std
+    )
     policy_key, value_key, action_key = jax.random.split(
         jax.random.PRNGKey(config.seed), 3
     )
     policy_parameters = networks.policy_network.init(policy_key)
+    fixed_policy_parameters = fixed_networks.policy_network.init(policy_key)
     value_parameters = networks.value_network.init(value_key)
     observations = jp.zeros(
         (config.batch_size, TAG_PURSUER_OBSERVATION_SIZE), dtype=jp.float32
     )
     policy_logits = networks.policy_network.apply(None, policy_parameters, observations)
+    fixed_policy_logits = fixed_networks.policy_network.apply(
+        None, fixed_policy_parameters, observations
+    )
     values = networks.value_network.apply(None, value_parameters, observations)
     inference = ppo_networks.make_inference_fn(networks)(
         (None, policy_parameters, value_parameters), deterministic=False
@@ -63,6 +71,12 @@ def main(config: Config) -> None:
         == (config.batch_size, TAG_PURSUER_ACTION_SIZE),
         "actor_and_critic_separate": policy_parameters is not value_parameters,
         "hidden_layers": TAG_PURSUER_HIDDEN_LAYER_SIZES == (128, 128),
+        "fixed_noise_std": bool(
+            np.allclose(
+                np.log1p(np.exp(np.asarray(fixed_policy_logits[..., 3:]))) + 0.001,
+                fixed_noise_std,
+            )
+        ),
         "log_prob_shape": np.asarray(extras["log_prob"]).shape == (config.batch_size,),
         "policy_logits_finite": bool(np.isfinite(logits_host).all()),
         "policy_logits_shape": logits_host.shape

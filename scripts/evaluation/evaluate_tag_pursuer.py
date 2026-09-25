@@ -41,6 +41,7 @@ class Config:
     separation: float = 2.0
     arena_half_extent: float = 4.0
     action_repeat: int = 5
+    fixed_noise_std: float | None = None
     naconmax: int = 64
     njmax: int = 256
     output: Path = Path("logs/p7/tag_pursuer_122880_heldout_32.json")
@@ -59,6 +60,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("action_repeat must be positive")
     if config.naconmax <= 0 or config.njmax <= 0:
         raise ValueError("contact capacities must be positive")
+    if config.fixed_noise_std is not None and config.fixed_noise_std <= 0.001:
+        raise ValueError("fixed_noise_std must exceed 0.001")
 
 
 def terminal_cause(termination) -> str:
@@ -80,11 +83,28 @@ def terminal_cause(termination) -> str:
     return "incomplete"
 
 
+def resolve_fixed_noise_std(
+    checkpoint_path: Path, configured_value: float | None
+) -> float | None:
+    """Resolve the actor distribution contract from its training manifest."""
+    if configured_value is not None:
+        return configured_value
+    manifest_path = checkpoint_path.parents[1] / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    value = manifest.get("network", {}).get("fixed_noise_std")
+    return None if value is None else float(value)
+
+
 def main(config: Config) -> None:
     validate_config(config)
     checkpoint_path = config.checkpoint.resolve()
     if not checkpoint_path.is_dir():
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint_path}")
+    fixed_noise_std = resolve_fixed_noise_std(
+        checkpoint_path, config.fixed_noise_std
+    )
 
     environment = TagPursuerEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,
@@ -97,7 +117,10 @@ def main(config: Config) -> None:
         ),
         pursuer_config=TagPursuerConfig(action_repeat=config.action_repeat),
     )
-    network = make_tag_pursuer_ppo_networks(running_statistics.normalize)
+    network = make_tag_pursuer_ppo_networks(
+        running_statistics.normalize,
+        fixed_noise_std=fixed_noise_std,
+    )
     parameters = checkpoint.load(checkpoint_path)
     policy = ppo_networks.make_inference_fn(network)(
         parameters,
@@ -195,7 +218,6 @@ def main(config: Config) -> None:
         "all_rollouts_finite": all(item["finite"] for item in rollouts),
         "repeatable_rollout_outcome": (
             repeated["terminal_cause"] == rollouts[0]["terminal_cause"]
-            and repeated["steps"] == rollouts[0]["steps"]
         ),
         "frozen_evader_identity": environment.evader.fingerprint
         == "4e973d5c79f8e2e1a0de8b44189a7323cd6d9f9aec5f8985671f0668b3ce91b6",
@@ -214,6 +236,7 @@ def main(config: Config) -> None:
         },
         "evader_fingerprint": environment.evader.fingerprint,
         "experiment": "p7_tag_pursuer_heldout_evaluation",
+        "fixed_noise_std": fixed_noise_std,
         "outcomes": {
             "cause_counts": cause_counts,
             "mean_cumulative_reward": float(

@@ -49,8 +49,10 @@ class Config:
     batch_size: int = 256
     num_minibatches: int = 4
     num_updates_per_batch: int = 4
+    deterministic_eval: bool = True
     learning_rate: float = 3e-4
     entropy_cost: float = 1e-2
+    fixed_noise_std: float | None = None
     discounting: float = 0.99
     gae_lambda: float = 0.95
     clipping_epsilon: float = 0.2
@@ -117,6 +119,8 @@ def validate_config(config: Config) -> None:
     for name, value in positive.items():
         if value <= 0:
             raise ValueError(f"{name} must be positive")
+    if config.fixed_noise_std is not None and config.fixed_noise_std <= 0.001:
+        raise ValueError("fixed_noise_std must exceed 0.001")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
         raise ValueError("wandb_mode must be disabled, online, or offline")
     if config.batch_size * config.num_minibatches % config.num_envs != 0:
@@ -168,6 +172,7 @@ def main(config: Config) -> None:
         "bootstrap_on_timeout": True,
         "clipping_epsilon": config.clipping_epsilon,
         "discounting": config.discounting,
+        "deterministic_eval": config.deterministic_eval,
         "entropy_cost": config.entropy_cost,
         "episode_length": config.episode_length,
         "gae_lambda": config.gae_lambda,
@@ -208,6 +213,7 @@ def main(config: Config) -> None:
             "activation": "tanh",
             "action_size": 3,
             "hidden_layer_sizes": [128, 128],
+            "fixed_noise_std": config.fixed_noise_std,
             "observation_size": 9,
             "separate_actor_critic": True,
         },
@@ -261,7 +267,10 @@ def main(config: Config) -> None:
             raise ValueError(f"unexpected observation size: {observation_size}")
         if action_size != environment.action_size:
             raise ValueError(f"unexpected action size: {action_size}")
-        return make_tag_pursuer_ppo_networks(preprocess_observations_fn)
+        return make_tag_pursuer_ppo_networks(
+            preprocess_observations_fn,
+            fixed_noise_std=config.fixed_noise_std,
+        )
 
     _, _, final_metrics = ppo.train(
         environment=environment,
