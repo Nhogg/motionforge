@@ -284,10 +284,46 @@ velocities, high-level commands, low-level normalized actions and joint
 targets, opponent-relative observations, arena-center observations, separation,
 root stability, near-fall flags, bounds state, tag contacts, and terminal task
 flags. It performs no inference, simulation, host transfer, or serialization;
-those responsibilities remain with the future condition-specific generator.
+those responsibilities remain with the condition-specific generator.
 
 Evidence: `logs/p7/tag_state_extractor_a.json`. The GPU smoke test passed all
 11 checks for exact shapes, command round-trip, finite values, initial
-stability, reset separation, and schema identity. The next step is generating
-small equal-budget learned, scripted, and random-command datasets through this
-single extractor before scaling the comparison.
+stability, reset separation, and schema identity.
+
+## Equal-budget state-distribution comparison
+
+`scripts/datasets/generate_tag_state_distributions.py` compares three command
+sources while holding the two-G1 MJX-Warp simulator, accepted P2 low-level
+controller, reset-seed sequence, 50 Hz control rate, 10 Hz high-level command
+rate, and exact shared-state budget fixed:
+
+- `learned_tag`: the accepted P7 pursuer and evader checkpoints;
+- `scripted_tag`: the frozen direct-pursuit and boundary-aware escape rules;
+- `random_commands`: independent seeded uniform commands within the same
+  `[1.0, 0.5, 1.0]` physical command limits.
+
+Each JSONL row is one post-step shared state containing both agents. The
+associated command, normalized low-level action, and joint target are the
+controls that produced that state. This convention retains terminal contact,
+fall, boundary, and timeout states before an episode reset. The generator
+writes atomically, exposes all checkpoints, seeds, thresholds, and budgets via
+Hydra, hashes every output, and records frozen learned-policy specifications
+in the suite manifest.
+
+The accepted seed-0 comparison is
+`logs/p7/tag_state_distributions_a/manifest.json`, with exactly 1,024 shared
+states per condition and all GPU, finite-value, schema, and equal-budget checks
+passing. No condition produced a fall or near-fall. The learned pair occupied
+a mean separation of 1.392 m and mean planar speed of 0.359 m/s. The scripted
+pair had similar mean separation (1.389 m) but moved faster (0.561 m/s) and
+generated four recorded terminal contact states (0.003906 of samples). Random
+commands did not systematically engage: mean separation increased to 2.360 m
+and mean planar speed was 0.249 m/s. Random commands also produced the largest
+mean angular speed (0.989 rad/s) and joint-speed norm (7.227), versus
+0.784/6.356 for learned and 0.813/6.888 for scripted behavior.
+
+These are descriptive state-occupancy results, not independent confidence
+intervals: adjacent 50 Hz states are temporally correlated, and the fixed
+sample budget gives conditions different episode counts when tags end scripted
+episodes early. The raw, equally sized datasets are retained for later
+distributional analysis. This completes P7 without introducing P8 self-play.

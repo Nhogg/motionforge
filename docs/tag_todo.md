@@ -82,8 +82,8 @@ The aggressive baseline MUST contain hard turns, reversals, braking, lateral mot
 - [x] Freeze the evader as a scripted policy
 - [x] Train the pursuer
 - [x] Verify consistent pursuit success
-- [ ] Freeze the pursuer and train an evader
-- [ ] Compare their state distributions against scripted / random-command locomotion
+- [x] Freeze the pursuer and train an evader
+- [x] Compare their state distributions against scripted / random-command locomotion
 
 # P8 - Introduce self-play
 

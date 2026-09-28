@@ -27,6 +27,14 @@ from motionforge.envs.tag_environment import (
     TagEnvironmentTermination,
     TwoG1TagEnvironment,
 )
+from motionforge.envs.tag_evader import (
+    EvaderRewardTerms,
+    TagEvaderConfig,
+    TagEvaderEnvironment,
+    TagEvaderPipelineState,
+    evader_reward,
+    wrap_tag_evader_for_training,
+)
 from motionforge.envs.tag_fall import (
     AgentFallLayout,
     FallDetectionConfig,
@@ -94,6 +102,7 @@ __all__ = [
     "BoundsObservation",
     "EpisodeTimeoutConfig",
     "EpisodeTimeoutObservation",
+    "EvaderRewardTerms",
     "FallDetectionConfig",
     "FallDetectionLayout",
     "FallObservation",
@@ -110,6 +119,9 @@ __all__ = [
     "TagEnvironmentState",
     "TagEnvironmentTermination",
     "TagEpisodeWrapper",
+    "TagEvaderConfig",
+    "TagEvaderEnvironment",
+    "TagEvaderPipelineState",
     "TagObservationLayout",
     "TagPursuerConfig",
     "TagPursuerEnvironment",
@@ -132,6 +144,7 @@ __all__ = [
     "detect_falls",
     "detect_out_of_bounds",
     "detect_tag_contact",
+    "evader_reward",
     "make_two_g1_data",
     "observe_episode_timeout",
     "pursuer_action_to_command",
@@ -140,5 +153,6 @@ __all__ = [
     "relative_planar_observation",
     "sample_tag_reset",
     "world_planar_to_heading",
+    "wrap_tag_evader_for_training",
     "wrap_tag_pursuer_for_training",
 ]

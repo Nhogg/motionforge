@@ -11,6 +11,7 @@ import jax
 import numpy as np
 
 from motionforge.datasets.locomotion import LOCOMOTION_DATASET_SCHEMA_VERSION
+from motionforge.datasets.tag_state import TAG_STATE_DATASET_SCHEMA_VERSION
 
 
 class JsonlDatasetWriter:
@@ -87,6 +88,60 @@ def locomotion_record(
         "schema_version": LOCOMOTION_DATASET_SCHEMA_VERSION,
         "timestep": timestep,
         "up_alignment": float(host.up_alignment),
+    }
+    if extra is not None:
+        overlap = record.keys() & extra.keys()
+        if overlap:
+            raise ValueError(f"extra fields overlap base record: {sorted(overlap)}")
+        record.update(extra)
+    return record
+
+
+def tag_state_record(
+    sample,
+    *,
+    dataset_kind: str,
+    episode: int,
+    episode_seed: int,
+    timestep: int,
+    state,
+    extra: dict | None = None,
+) -> dict:
+    """Convert one device sample to a JSON-compatible shared TAG record."""
+    host = jax.tree.map(lambda value: np.asarray(value), sample)
+    record = {
+        "agent_distance": float(host.agent_distance),
+        "arena_center_position": host.arena_center_position.tolist(),
+        "command_velocity": host.command_velocity.tolist(),
+        "dataset_kind": dataset_kind,
+        "done": bool(np.asarray(state.done)),
+        "episode": episode,
+        "episode_seed": episode_seed,
+        "fallen": host.fallen.tolist(),
+        "joint_position": host.joint_position.tolist(),
+        "joint_position_target": host.joint_position_target.tolist(),
+        "joint_velocity": host.joint_velocity.tolist(),
+        "near_fall": host.near_fall.tolist(),
+        "normalized_action": host.normalized_action.tolist(),
+        "out_of_bounds": host.out_of_bounds.tolist(),
+        "relative_position": host.relative_position.tolist(),
+        "relative_velocity": host.relative_velocity.tolist(),
+        "root_generalized_angular_velocity": (
+            host.root_generalized_angular_velocity.tolist()
+        ),
+        "root_generalized_linear_velocity": (
+            host.root_generalized_linear_velocity.tolist()
+        ),
+        "root_height": host.root_height.tolist(),
+        "root_orientation_wxyz": host.root_orientation_wxyz.tolist(),
+        "root_position_world": host.root_position_world.tolist(),
+        "schema_version": TAG_STATE_DATASET_SCHEMA_VERSION,
+        "tag_contact": bool(host.tag_contact),
+        "tag_contact_count": int(host.tag_contact_count),
+        "tagged": bool(host.tagged),
+        "timed_out": bool(host.timed_out),
+        "timestep": timestep,
+        "up_alignment": host.up_alignment.tolist(),
     }
     if extra is not None:
         overlap = record.keys() & extra.keys()

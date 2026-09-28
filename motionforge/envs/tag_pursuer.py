@@ -520,6 +520,16 @@ class TagAutoResetWrapper(brax_training.Wrapper):
                 reset_pipeline.previous_command, current_pipeline.previous_command
             ),
             rng=select(reset_pipeline.rng, current_pipeline.rng),
+            **(
+                {
+                    "pursuer_previous_command": select(
+                        reset_pipeline.pursuer_previous_command,
+                        current_pipeline.pursuer_previous_command,
+                    )
+                }
+                if hasattr(current_pipeline, "pursuer_previous_command")
+                else {}
+            ),
         )
         obs_mask = done.reshape(done.shape + (1,) * (state.obs.ndim - done.ndim))
         obs = jp.where(obs_mask, reset_state.obs, state.obs)

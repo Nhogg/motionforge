@@ -1,5 +1,6 @@
 """High-level policies that choose commands for MotionForge controllers."""
 
+from motionforge.policies.tag_learned import FrozenLearnedEvader, FrozenLearnedPursuer
 from motionforge.policies.tag_networks import (
     TAG_PURSUER_ACTION_SIZE,
     TAG_PURSUER_HIDDEN_LAYER_SIZES,
@@ -18,6 +19,8 @@ __all__ = [
     "TAG_PURSUER_ACTION_SIZE",
     "TAG_PURSUER_HIDDEN_LAYER_SIZES",
     "TAG_PURSUER_OBSERVATION_SIZE",
+    "FrozenLearnedEvader",
+    "FrozenLearnedPursuer",
     "FrozenScriptedEvader",
     "ScriptedEvaderConfig",
     "ScriptedPursuerConfig",

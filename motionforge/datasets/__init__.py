@@ -14,16 +14,26 @@ from motionforge.datasets.serialization import (
     JsonlDatasetWriter,
     json_default,
     locomotion_record,
+    tag_state_record,
+)
+from motionforge.datasets.tag_state import (
+    TAG_STATE_DATASET_SCHEMA_VERSION,
+    TagStateSample,
+    extract_tag_state_sample,
 )
 
 __all__ = [
     "AGGRESSIVE_MANEUVER_NAMES",
     "LOCOMOTION_DATASET_SCHEMA_VERSION",
+    "TAG_STATE_DATASET_SCHEMA_VERSION",
     "AggressiveCommandSchedule",
     "G1LocomotionSample",
     "JsonlDatasetWriter",
+    "TagStateSample",
     "TerrainCurriculum",
     "extract_g1_locomotion_sample",
+    "extract_tag_state_sample",
     "json_default",
     "locomotion_record",
+    "tag_state_record",
 ]

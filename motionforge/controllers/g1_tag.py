@@ -7,11 +7,13 @@ combined tag model. It owns no policy parameters, commands, or physics steps.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jp
 
-from motionforge.envs.two_g1 import TwoG1Model
+if TYPE_CHECKING:
+    from motionforge.envs.two_g1 import TwoG1Model
 
 
 @dataclass(frozen=True)
