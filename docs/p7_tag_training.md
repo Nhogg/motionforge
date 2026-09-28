@@ -203,3 +203,91 @@ contract from the run manifest beside the checkpoint unless explicitly
 overridden. These results complete flat-ground pursuer training and
 consistent pursuit verification for P7; the next phase-order item is freezing
 this pursuer and training an evader.
+
+## Frozen learned pursuer and evader environment
+
+The accepted pursuer is restored from checkpoint
+`logs/p7/training/tag_pursuer_fixed_noise_1m_seed0/checkpoints/000001146880`
+as an immutable deterministic opponent. Its versioned specification records
+the agent index, observation contract, fixed action-noise standard deviation,
+and a digest of the checkpoint contents. This prevents an evader experiment
+from silently changing its opponent while retaining the same nominal path.
+
+The initial evader uses the same nine-value local observation contract and
+three normalized velocity-command actions as the pursuer. Its reward reverses
+distance progress, adds a small survival reward, penalizes proximity, abrupt
+command changes, and boundary intrusion, and assigns explicit terminal values:
+timeout is success; tag, evader fall, and evader out-of-bounds are failures.
+Timeout is deliberately a true task terminal rather than a PPO truncation.
+The frozen pursuer receives its own previous-command observation and is
+evaluated once per high-level action, with its command held through the same
+five low-level control updates as the evader command.
+
+Evidence: `logs/p7/tag_frozen_pursuer_a.json` records frozen-opponent
+fingerprint `72c878e5d862537d10095842e96c67b5e8c1c3def93a79549d3f4708cda52663`.
+`logs/p7/tag_evader_environment_a.json` passed all 13 GPU checks, including
+role binding, frozen-pursuer integration, observation memory, reward signs,
+action repeat, finite physics, and batched fresh reset.
+
+The first evader PPO smoke run is
+`logs/p7/training/tag_evader_fixed_noise_128k_seed0`. It reached 143,360
+environment steps with finite metrics, preserved the frozen pursuer
+fingerprint, and maintained the exact `0.2` exploration standard deviation.
+Deterministic evaluation still ended in tags for all 16 environments after 29
+high-level decisions, with no evader falls or boundary exits. This validates
+the training path but is not evidence of learned evasion; the next bounded
+experiment increases training to approximately one million environment steps
+without changing the reward contract.
+
+The one-million-step run is
+`logs/p7/training/tag_evader_fixed_noise_1m_seed0_retry` (W&B run
+`g9drow6d`). It reached 1,146,880 environment steps with finite metrics and
+seven checkpoints while preserving the frozen pursuer identity. Deterministic
+evaluation was non-monotonic: checkpoints `000000327680` and `000000983040`
+timed out the pursuer in all 16 evaluation environments, while intervening
+checkpoints were tagged and the final checkpoint regressed to tags at 194 of
+200 decisions. Checkpoint `000000983040` is therefore the provisional evader
+candidate, but it requires a separate held-out-seed evaluation before the
+freeze-and-train checklist item can be completed. The aborted 32-evaluation-
+environment attempt is retained at
+`logs/p7/training/tag_evader_fixed_noise_1m_seed0`; it was stopped during an
+excessively expensive compile and is not an experiment result.
+
+Independent deterministic held-out evaluation selected checkpoint
+`000000327680`. It timed out the accepted frozen pursuer on all 32 seeds from
+1000 through 1031, with zero tags, falls, boundary exits, or incomplete
+episodes. Mean minimum separation was 0.865 meters and mean cumulative reward
+was 7.36. The later `000000983040` candidate was weaker: it timed out on 31 of
+32 seeds and was tagged on seed 1029. The accepted machine-readable report is
+`logs/p7/tag_evader_327680_heldout_32.json`; the comparison report is
+`logs/p7/tag_evader_983040_heldout_32.json`. The evaluator now requires every
+rollout to time out for its acceptance check. These results complete the P7
+freeze-pursuer-and-train-evader item. The next phase-order item is comparing
+the learned roles' state distributions against scripted and random-command
+locomotion before entering P8 self-play.
+
+For that comparison, the accepted evader is restored through a role-specific
+immutable wrapper rather than being mislabeled as a pursuer merely because the
+two policies share a network shape. Its specification has checkpoint digest
+`a227dbd40b0586fee5b3bf3b6495a2e7c3f3623cf8d4dbe25a13f1664e0bf896` and
+fingerprint `c7c1b38f667afd9d7b455e2a480ecf25b49f8ee635fea869730a0f274bc00399`.
+Evidence: `logs/p7/tag_frozen_evader_learned_a.json`; all ten deterministic,
+immutability, bounds, provenance, and GPU checks passed.
+
+## Shared state-distribution extraction
+
+The final P7 comparison begins from a policy-agnostic raw extraction boundary
+rather than separate learned, scripted, and random-policy log formats.
+`motionforge/datasets/tag_state.py` defines schema version 1 and records both
+agents' root poses, generalized root velocities, joint positions and
+velocities, high-level commands, low-level normalized actions and joint
+targets, opponent-relative observations, arena-center observations, separation,
+root stability, near-fall flags, bounds state, tag contacts, and terminal task
+flags. It performs no inference, simulation, host transfer, or serialization;
+those responsibilities remain with the future condition-specific generator.
+
+Evidence: `logs/p7/tag_state_extractor_a.json`. The GPU smoke test passed all
+11 checks for exact shapes, command round-trip, finite values, initial
+stability, reset separation, and schema identity. The next step is generating
+small equal-budget learned, scripted, and random-command datasets through this
+single extractor before scaling the comparison.
