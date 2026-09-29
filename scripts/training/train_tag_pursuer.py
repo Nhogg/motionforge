@@ -1,4 +1,4 @@
-"""Train the initial P7 high-level pursuer against a frozen scripted evader.
+"""Train a high-level pursuer against a frozen scripted or learned evader.
 
 The launcher owns reproducible PPO configuration, provenance, checkpoints,
 JSONL metrics, summary output, and optional W&B scalar logging. The learned
@@ -39,6 +39,8 @@ class Config:
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
+    evader_checkpoint: Path | None = None
+    evader_fixed_noise_std: float = 0.2
     seed: int = 0
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -121,6 +123,8 @@ def validate_config(config: Config) -> None:
             raise ValueError(f"{name} must be positive")
     if config.fixed_noise_std is not None and config.fixed_noise_std <= 0.001:
         raise ValueError("fixed_noise_std must exceed 0.001")
+    if config.evader_fixed_noise_std <= 0.001:
+        raise ValueError("evader_fixed_noise_std must exceed 0.001")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
         raise ValueError("wandb_mode must be disabled, online, or offline")
     if config.batch_size * config.num_minibatches % config.num_envs != 0:
@@ -150,11 +154,15 @@ def main(config: Config) -> None:
     pursuer_config = TagPursuerConfig(action_repeat=config.action_repeat)
     environment = TagPursuerEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,
+        evader_checkpoint=config.evader_checkpoint,
+        evader_fixed_noise_std=config.evader_fixed_noise_std,
         tag_config=tag_config,
         pursuer_config=pursuer_config,
     )
     evaluation_environment = TagPursuerEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,
+        evader_checkpoint=config.evader_checkpoint,
+        evader_fixed_noise_std=config.evader_fixed_noise_std,
         tag_config=tag_config,
         pursuer_config=pursuer_config,
     )

@@ -30,7 +30,7 @@ from motionforge.envs.tag_environment import (
     TwoG1TagEnvironment,
 )
 from motionforge.envs.tag_roles import TagRole
-from motionforge.policies import FrozenScriptedEvader
+from motionforge.policies import FrozenLearnedEvader, FrozenScriptedEvader
 
 
 @dataclass(frozen=True)
@@ -93,6 +93,7 @@ class TagPursuerPipelineState:
     phases: jax.Array
     previous_command: jax.Array
     rng: jax.Array
+    evader_previous_command: jax.Array
 
 
 def pursuer_action_to_command(action: jax.Array) -> jax.Array:
@@ -195,6 +196,8 @@ class TagPursuerEnvironment(Env):
         self,
         *,
         locomotion_checkpoint: Path,
+        evader_checkpoint: Path | None = None,
+        evader_fixed_noise_std: float = 0.2,
         tag_config: TagEnvironmentConfig | None = None,
         pursuer_config: TagPursuerConfig | None = None,
     ) -> None:
@@ -204,7 +207,14 @@ class TagPursuerEnvironment(Env):
             raise ValueError("boundary_margin must not exceed arena_half_extent")
         self.pursuer_index = self.tag_environment.roles.by_role(TagRole.PURSUER).index
         evader_index = self.tag_environment.roles.by_role(TagRole.EVADER).index
-        self.evader = FrozenScriptedEvader(agent_index=evader_index)
+        if evader_checkpoint is None:
+            self.evader = FrozenScriptedEvader(agent_index=evader_index)
+        else:
+            self.evader = FrozenLearnedEvader(
+                agent_index=evader_index,
+                checkpoint_path=evader_checkpoint,
+                fixed_noise_std=evader_fixed_noise_std,
+            )
 
         source_config = default_config()
         source_config.impl = "warp"
@@ -253,6 +263,7 @@ class TagPursuerEnvironment(Env):
         distance = jp.linalg.norm(
             tag_state.observation.relative_position[self.pursuer_index]
         )
+        evader_previous_command = jp.zeros(3, dtype=jp.float32)
         pipeline_state = TagPursuerPipelineState(
             tag_state=tag_state,
             distance=distance,
@@ -260,6 +271,7 @@ class TagPursuerEnvironment(Env):
             phases=jp.asarray([[0.0, jp.pi], [0.0, jp.pi]]),
             previous_command=previous_command,
             rng=rollout_rng,
+            evader_previous_command=evader_previous_command,
         )
         return State(
             pipeline_state=pipeline_state,
@@ -296,8 +308,24 @@ class TagPursuerEnvironment(Env):
 
         def locomotion_step(carry, _):
             def advance(active_carry):
-                active_state, active_actions, active_phases, active_rng = active_carry
-                evader_command = self.evader.command(active_state.observation)
+                (
+                    active_state,
+                    active_actions,
+                    active_phases,
+                    active_evader_command,
+                    active_rng,
+                ) = active_carry
+                if isinstance(self.evader, FrozenLearnedEvader):
+                    evader_policy_observation = pursuer_observation(
+                        active_state.observation,
+                        self.evader.agent_index,
+                        active_evader_command,
+                        self.tag_environment.config.arena_half_extent,
+                        self.config.relative_velocity_scale,
+                    )
+                    evader_command = self.evader.command(evader_policy_observation)
+                else:
+                    evader_command = self.evader.command(active_state.observation)
                 commands = jp.zeros((2, 3), dtype=jp.float32)
                 commands = commands.at[self.pursuer_index].set(command)
                 commands = commands.at[self.evader.agent_index].set(evader_command)
@@ -329,16 +357,23 @@ class TagPursuerEnvironment(Env):
                     jp.fmod(active_phases + self.phase_delta + jp.pi, 2.0 * jp.pi)
                     - jp.pi
                 )
-                return next_state, next_actions, next_phases, active_rng
+                return (
+                    next_state,
+                    next_actions,
+                    next_phases,
+                    evader_command,
+                    active_rng,
+                )
 
             return advance(carry), None
 
-        tag_state, last_actions, phases, rng = jax.lax.scan(
+        tag_state, last_actions, phases, evader_previous_command, rng = jax.lax.scan(
             locomotion_step,
             (
                 pipeline.tag_state,
                 pipeline.last_actions,
                 pipeline.phases,
+                pipeline.evader_previous_command,
                 pipeline.rng,
             ),
             xs=None,
@@ -382,6 +417,7 @@ class TagPursuerEnvironment(Env):
             phases=phases,
             previous_command=command,
             rng=rng,
+            evader_previous_command=evader_previous_command,
         )
         info = dict(state.info)
         info["truncation"] = tag_state.termination.timed_out.astype(jp.float32)

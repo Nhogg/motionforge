@@ -37,6 +37,7 @@ class Config:
 def main(config: Config) -> None:
     environment = TagPursuerEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,
+        evader_checkpoint=config.checkpoint,
         tag_config=TagEnvironmentConfig(pursuer_index=0),
         pursuer_config=TagPursuerConfig(),
     )
@@ -65,6 +66,8 @@ def main(config: Config) -> None:
     command = jax.jit(opponent.command)(evader_observation)
     repeated_command = jax.jit(opponent.command)(evader_observation)
     command_host = np.asarray(command)
+    next_state = jax.jit(environment.step)(state, np.zeros(3, dtype=np.float32))
+    next_state.pipeline_state.tag_state.data.qpos.block_until_ready()
 
     immutable = False
     try:
@@ -87,6 +90,24 @@ def main(config: Config) -> None:
             np.all(np.abs(command_host) <= np.asarray([1.0, 0.5, 1.0]))
         ),
         "immutable": immutable,
+        "environment_uses_learned_evader": isinstance(
+            environment.evader, FrozenLearnedEvader
+        ),
+        "environment_resets_evader_command_memory": bool(
+            np.array_equal(
+                np.asarray(state.pipeline_state.evader_previous_command),
+                np.zeros(3, dtype=np.float32),
+            )
+        ),
+        "environment_tracks_evader_command": bool(
+            np.isfinite(
+                np.asarray(next_state.pipeline_state.evader_previous_command)
+            ).all()
+            and np.asarray(
+                next_state.pipeline_state.evader_previous_command
+            ).shape
+            == (3,)
+        ),
         "same_checkpoint_same_fingerprint": (
             opponent.fingerprint == same_opponent.fingerprint
         ),
