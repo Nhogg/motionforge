@@ -138,3 +138,36 @@ execution bug rather than evidence that the evader objective was inadequate.
 The superseding rollout is
 `logs/p8/videos/tag_generation1_control_rate_fixed_seed1000.mp4`. It records a
 complete 20-second evasion with no fall or boundary exit.
+
+## Corrected generation-two round
+
+The first full round after the learned-opponent control-rate correction is
+recorded in
+`logs/p8/rounds/round_0002_corrected_a/round_manifest.json`. Starting from the
+corrected generation-one snapshots, both roles completed 143,360 environment
+steps with finite metrics. Deterministic historical-opponent sampling selected
+generation-zero evader `evader_g0000_a227dbd40b05` for the pursuer update and
+generation-zero pursuer `pursuer_g0000_976aeb081d66` for the evader update.
+The resulting digest-verified snapshots are
+`pursuer_g0002_8415fb5f6f0c` and `evader_g0002_135f9fec082c`.
+
+The corresponding held-out population matrix is
+`logs/p8/tag_population_matrix_generation2_a.json`. It evaluates all nine
+generation-zero through generation-two pairings on seeds 1000--1003. The
+pursuer win rates, with rows denoting pursuer generation and columns denoting
+evader generation, are:
+
+| pursuer / evader | generation 0 | generation 1 | generation 2 |
+| --- | ---: | ---: | ---: |
+| generation 0 | 0% | 25% | 25% |
+| generation 1 | 0% | 25% | 25% |
+| generation 2 | 100% | 100% | 50% |
+
+The generation-two current matchup is balanced on this small held-out set:
+two tags and two timeouts. The matrix also provides a clear cycling signal.
+The generation-two pursuer defeats both older evaders, while the newer
+evaders retain a strong advantage over both older pursuers. This completes the
+initial cycling/forgetting diagnostic, but four seeds per pairing are not
+enough to distinguish catastrophic forgetting from seed variance or ordinary
+non-transitive improvement. Flat-ground self-play therefore remains under
+evaluation; difficult terrain is not introduced yet.

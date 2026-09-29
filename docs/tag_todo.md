@@ -91,7 +91,7 @@ The aggressive baseline MUST contain hard turns, reversals, braking, lateral mot
 - [x] Save historical policy snapshots
 - [x] Sample current and historical opponents
 - [x] Record win rates against the opponent population
-- [ ] Look for cycling / catastrophic forgetting
+- [x] Look for cycling / catastrophic forgetting
 - [ ] Add increasingly difficult terrain only after flat-ground self-play is stable
 
 # P9 - Uneven / adversarial terrain
