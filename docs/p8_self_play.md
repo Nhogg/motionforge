@@ -64,3 +64,28 @@ selection is returned.
 Selection currently occurs once per training job; per-environment policy
 mixtures are intentionally deferred until job-level alternating self-play is
 validated.
+
+## Alternating round runner
+
+`scripts/self_play/run_tag_self_play_round.py` owns one sequential round. It
+selects an evader, resumes the current pursuer checkpoint, trains and
+snapshots the next pursuer generation, then selects a pursuer, resumes the
+current evader checkpoint, and trains and snapshots the next evader
+generation. The second selection may therefore include the pursuer produced
+earlier in the same round.
+
+Each round writes `round_manifest.json` before executing work and after every
+completed stage. It records exact subprocess arguments, opponent selections,
+result checkpoints, and snapshots. `dry_run=true` validates inputs and emits
+the pursuer half of the plan without modifying the population or launching
+training. Training launchers now expose `restore_checkpoint` explicitly so
+self-play updates an existing policy rather than repeatedly training fresh
+agents.
+
+The first end-to-end smoke round is recorded in
+`logs/p8/rounds/round_0001_smoke_a/round_manifest.json`. Each role completed
+40,960 environment steps and produced a digest-verified generation-one
+snapshot. The four-environment evaluation remained strongly pursuer-favored:
+the pursuer tagged every evader, and the evader timed out in none of its four
+episodes. This validates alternating training and artifact flow, but it is not
+evidence that flat-ground self-play is balanced or stable.

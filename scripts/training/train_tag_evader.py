@@ -42,6 +42,7 @@ class Config:
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
+    restore_checkpoint: Path | None = None
     seed: int = 0
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -127,6 +128,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("fixed_noise_std must exceed 0.001")
     if config.pursuer_fixed_noise_std <= 0.001:
         raise ValueError("pursuer_fixed_noise_std must exceed 0.001")
+    if config.restore_checkpoint is not None and not config.restore_checkpoint.is_dir():
+        raise FileNotFoundError(
+            f"restore checkpoint does not exist: {config.restore_checkpoint}"
+        )
     if config.wandb_mode not in {"disabled", "online", "offline"}:
         raise ValueError("wandb_mode must be disabled, online, or offline")
     if config.batch_size * config.num_minibatches % config.num_envs != 0:
@@ -289,6 +294,11 @@ def main(config: Config) -> None:
         num_eval_envs=config.num_eval_envs,
         progress_fn=progress,
         save_checkpoint_path=checkpoint_dir.as_posix(),
+        restore_checkpoint_path=(
+            None
+            if config.restore_checkpoint is None
+            else config.restore_checkpoint.resolve().as_posix()
+        ),
         seed=config.seed,
         vision=False,
         wrap_env_fn=wrap_tag_evader_for_training,
