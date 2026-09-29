@@ -171,3 +171,22 @@ initial cycling/forgetting diagnostic, but four seeds per pairing are not
 enough to distinguish catastrophic forgetting from seed variance or ordinary
 non-transitive improvement. Flat-ground self-play therefore remains under
 evaluation; difficult terrain is not introduced yet.
+
+### Flat-ground stability gate
+
+The larger held-out evaluation
+`logs/p8/tag_population_matrix_generation2_heldout16_a.json` repeats the full
+three-by-three population matrix on seeds 2000--2015. All 144 rollouts were
+finite and reached a defined terminal outcome. There were no pursuer or evader
+falls, no boundary exits, and no incomplete episodes.
+
+The generation-two current matchup again produced an exactly even outcome:
+eight tags and eight timeouts. Generation-two pursuer win rates against
+evader generations zero through two were 100%, 100%, and 50%, respectively;
+generation-two evader win rates against pursuer generations zero through two
+were 87.5%, 75%, and 50%. The agreement between the original four-seed result
+and this independent sixteen-seed result, together with the absence of
+physical failures, is the flat-ground stability gate for beginning the first
+terrain curriculum stage. P9 should therefore start with slopes only and must
+re-establish finite simulation, physical survival, and matchup outcomes before
+adding low-frequency heightfields, bumps, gaps, or steps.
