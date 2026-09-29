@@ -88,7 +88,7 @@ The aggressive baseline MUST contain hard turns, reversals, braking, lateral mot
 # P8 - Introduce self-play
 
 - [ ] Train pursuer and evader against one another
-- [ ] Save historical policy snapshots
+- [x] Save historical policy snapshots
 - [ ] Sample current and historical opponents
 - [ ] Record win rates against the opponent population
 - [ ] Look for cycling / catastrophic forgetting

@@ -27,3 +27,22 @@ uv run scripts/training/train_tag_pursuer.py \
 This is an alternating frozen-opponent training primitive, not complete
 self-play. Historical snapshot creation, opponent-population sampling, and
 population win-rate evaluation remain later P8 objectives.
+
+## Historical policy snapshots
+
+`scripts/self_play/save_tag_policy_snapshot.py` copies a trained checkpoint
+into `checkpoints/<role>_g<generation>_<digest-prefix>` beneath a population
+directory. `population.json` records the complete digest, role, generation,
+seed, fixed policy noise, source checkpoint, and relative copied checkpoint.
+The command rejects an existing role/generation and verifies the copied digest
+before publishing it, so a later training run cannot mutate historical policy
+evidence through a shared path.
+
+The initial accepted P7 pursuer and evader can be registered as generation
+zero. This registry deliberately does not yet select opponents; sampling is
+the next independent P8 component.
+
+Generation-zero evidence is stored in `logs/p8/population/population.json`.
+It contains copied and digest-verified versions of the accepted P7 pursuer and
+evader checkpoints. The implementation audit is recorded at
+`logs/p8/tag_policy_population_a.json`.
