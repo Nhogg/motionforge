@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import asdict, dataclass
@@ -25,6 +26,27 @@ class PolicySnapshot:
     fixed_noise_std: float
     seed: int
     source_checkpoint: str
+
+
+@dataclass(frozen=True)
+class OpponentSelection:
+    """The exact current or historical opponent selected for one training job."""
+
+    role: str
+    source: str
+    generation: int
+    checkpoint: str
+    checkpoint_digest: str
+    fixed_noise_std: float
+    snapshot_id: str | None
+    seed: int
+    current_probability: float
+
+
+def _uniform_draw(*parts: object) -> float:
+    encoded = ":".join(str(part) for part in parts).encode()
+    value = int.from_bytes(hashlib.sha256(encoded).digest()[:8], "big")
+    return value / float(1 << 64)
 
 
 def _load_registry(path: Path) -> dict:
@@ -110,3 +132,82 @@ def save_policy_snapshot(
     registry["snapshots"].sort(key=lambda item: (item["generation"], item["role"]))
     _write_registry(registry_path, registry)
     return snapshot
+
+
+def select_opponent(
+    *,
+    population_dir: Path,
+    current_checkpoint: Path,
+    role: str,
+    current_generation: int,
+    current_fixed_noise_std: float,
+    seed: int,
+    current_probability: float = 0.5,
+) -> OpponentSelection:
+    """Deterministically select a current or historical opponent for one job."""
+    if role not in _VALID_ROLES:
+        raise ValueError(f"role must be one of {sorted(_VALID_ROLES)}")
+    if current_generation < 0:
+        raise ValueError("current_generation must be nonnegative")
+    if current_fixed_noise_std <= 0.001:
+        raise ValueError("current_fixed_noise_std must exceed 0.001")
+    if seed < 0:
+        raise ValueError("seed must be nonnegative")
+    if not 0.0 <= current_probability <= 1.0:
+        raise ValueError("current_probability must be in [0, 1]")
+
+    population_dir = population_dir.resolve()
+    current_checkpoint = current_checkpoint.resolve()
+    if not current_checkpoint.is_dir():
+        raise FileNotFoundError(
+            f"current checkpoint does not exist: {current_checkpoint}"
+        )
+    current_digest = checkpoint_digest(current_checkpoint)
+    registry = _load_registry(population_dir / "population.json")
+    historical = [
+        item
+        for item in registry["snapshots"]
+        if item["role"] == role and item["checkpoint_digest"] != current_digest
+    ]
+    historical.sort(key=lambda item: (item["generation"], item["snapshot_id"]))
+
+    choose_current = not historical or _uniform_draw(
+        "current", role, current_generation, seed
+    ) < current_probability
+    if choose_current:
+        return OpponentSelection(
+            role=role,
+            source="current",
+            generation=current_generation,
+            checkpoint=str(current_checkpoint),
+            checkpoint_digest=current_digest,
+            fixed_noise_std=current_fixed_noise_std,
+            snapshot_id=None,
+            seed=seed,
+            current_probability=current_probability,
+        )
+
+    index = min(
+        int(
+            _uniform_draw("historical", role, current_generation, seed)
+            * len(historical)
+        ),
+        len(historical) - 1,
+    )
+    selected = historical[index]
+    checkpoint = population_dir / selected["checkpoint"]
+    if not checkpoint.is_dir():
+        raise FileNotFoundError(f"historical checkpoint does not exist: {checkpoint}")
+    if checkpoint_digest(checkpoint) != selected["checkpoint_digest"]:
+        raise RuntimeError(f"historical checkpoint digest mismatch: {checkpoint}")
+    return OpponentSelection(
+        role=role,
+        source="historical",
+        generation=selected["generation"],
+        checkpoint=str(checkpoint),
+        checkpoint_digest=selected["checkpoint_digest"],
+        fixed_noise_std=selected["fixed_noise_std"],
+        snapshot_id=selected["snapshot_id"],
+        seed=seed,
+        current_probability=current_probability,
+    )

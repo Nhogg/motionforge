@@ -46,3 +46,21 @@ Generation-zero evidence is stored in `logs/p8/population/population.json`.
 It contains copied and digest-verified versions of the accepted P7 pursuer and
 evader checkpoints. The implementation audit is recorded at
 `logs/p8/tag_policy_population_a.json`.
+
+## Deterministic opponent selection
+
+`select_opponent` chooses between an explicit current checkpoint and the
+historical snapshots for the requested opponent role. `current_probability`
+controls the current-versus-history draw; a second deterministic draw selects
+within the generation-sorted historical pool. Both draws are derived from a
+SHA-256 hash of the role, current generation, and experiment seed rather than
+process-global random state.
+
+The returned record contains the exact checkpoint, digest, generation, policy
+noise, source category, selection seed, and snapshot ID. The standalone Hydra
+command `scripts/self_play/select_tag_opponent.py` writes that record to JSON.
+Historical checkpoint contents are rehashed against the registry before a
+selection is returned.
+Selection currently occurs once per training job; per-environment policy
+mixtures are intentionally deferred until job-level alternating self-play is
+validated.
