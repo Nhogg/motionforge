@@ -90,7 +90,7 @@ The aggressive baseline MUST contain hard turns, reversals, braking, lateral mot
 - [x] Train pursuer and evader against one another
 - [x] Save historical policy snapshots
 - [x] Sample current and historical opponents
-- [ ] Record win rates against the opponent population
+- [x] Record win rates against the opponent population
 - [ ] Look for cycling / catastrophic forgetting
 - [ ] Add increasingly difficult terrain only after flat-ground self-play is stable
 

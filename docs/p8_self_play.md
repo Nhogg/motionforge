@@ -89,3 +89,23 @@ snapshot. The four-environment evaluation remained strongly pursuer-favored:
 the pursuer tagged every evader, and the evader timed out in none of its four
 episodes. This validates alternating training and artifact flow, but it is not
 evidence that flat-ground self-play is balanced or stable.
+
+## Population evaluation and rendering
+
+`scripts/evaluation/evaluate_tag_population.py` evaluates the Cartesian
+product of registered pursuer and evader snapshots on identical reset seeds.
+It records terminal causes, pursuer and evader win rates, snapshot identities,
+and generation indices for every matchup. Tags and evader failures count as
+pursuer wins; timeouts and pursuer failures count as evader wins.
+
+`scripts/evaluation/render_tag_learned_matchup.py` restores one learned policy
+for each role and renders their integrated rollout to MP4 with a JSON sidecar.
+The pursuer is red, the evader is blue, and frames are captured at the 10 Hz
+high-level policy rate.
+
+The first matrix is stored at `logs/p8/tag_population_matrix_a.json` and uses
+four held-out seeds for each of the four generation-zero/generation-one
+matchups. Generation-one versus generation-one ended in four tags and zero
+timeouts. The corresponding seed-1000 video is
+`logs/p8/videos/tag_generation1_seed1000.mp4`; it ends in a tag at 2.9 seconds
+without either agent falling or leaving the arena.

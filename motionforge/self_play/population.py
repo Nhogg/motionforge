@@ -69,6 +69,22 @@ def _write_registry(path: Path, registry: dict) -> None:
     temporary_path.replace(path)
 
 
+def load_policy_snapshots(
+    population_dir: Path, *, role: str | None = None
+) -> tuple[PolicySnapshot, ...]:
+    """Load generation-sorted snapshots, optionally filtered by role."""
+    if role is not None and role not in _VALID_ROLES:
+        raise ValueError(f"role must be one of {sorted(_VALID_ROLES)}")
+    population_dir = population_dir.resolve()
+    registry = _load_registry(population_dir / "population.json")
+    snapshots = tuple(
+        PolicySnapshot(**item)
+        for item in registry["snapshots"]
+        if role is None or item["role"] == role
+    )
+    return tuple(sorted(snapshots, key=lambda item: (item.generation, item.role)))
+
+
 def save_policy_snapshot(
     *,
     population_dir: Path,
