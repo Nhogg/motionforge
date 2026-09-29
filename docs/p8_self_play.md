@@ -109,3 +109,32 @@ matchups. Generation-one versus generation-one ended in four tags and zero
 timeouts. The corresponding seed-1000 video is
 `logs/p8/videos/tag_generation1_seed1000.mp4`; it ends in a tag at 2.9 seconds
 without either agent falling or leaving the arena.
+
+### Learned-opponent control-rate correction
+
+The first generation-one smoke round and matrix exposed a control-rate error
+in the newly added learned-evader path. `TagPursuerEnvironment` evaluated the
+evader policy inside each of five 50 Hz locomotion substeps, although that
+policy was trained and observed at the 10 Hz high-level rate. The original P7
+evader evaluator held each command for all five substeps. The environment now
+computes one learned evader command per high-level step, holds it through the
+locomotion scan, and records that exact command as policy memory. A regression
+check compares the held command against direct deterministic inference.
+
+Consequently, `round_0001_smoke_a`, `tag_population_matrix_a.json`, and its
+first video are retained as debugging evidence but must not be interpreted as
+valid self-play performance. A corrected matrix and render supersede them.
+
+The corrected four-seed matrix is
+`logs/p8/tag_population_matrix_control_rate_fixed_a.json`. Generation-zero
+evader versus either pursuer timed out all four episodes. Generation-one
+evader versus generation-zero pursuer was tagged in all four episodes, while
+generation-one versus generation-one produced three timeouts and one tag.
+Thus the corrected current matchup is evader-favored (75% versus 25%), but
+both outcomes occur and the original accepted evader behavior is recovered.
+No reward change was made because the apparent 0% evasion rate was an
+execution bug rather than evidence that the evader objective was inadequate.
+
+The superseding rollout is
+`logs/p8/videos/tag_generation1_control_rate_fixed_seed1000.mp4`. It records a
+complete 20-second evasion with no fall or boundary exit.

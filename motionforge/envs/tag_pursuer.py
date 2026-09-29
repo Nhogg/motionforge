@@ -305,6 +305,17 @@ class TagPursuerEnvironment(Env):
     def step(self, state: State, action: jax.Array) -> State:
         command = pursuer_action_to_command(action)
         pipeline = state.pipeline_state
+        if isinstance(self.evader, FrozenLearnedEvader):
+            evader_policy_observation = pursuer_observation(
+                pipeline.tag_state.observation,
+                self.evader.agent_index,
+                pipeline.evader_previous_command,
+                self.tag_environment.config.arena_half_extent,
+                self.config.relative_velocity_scale,
+            )
+            learned_evader_command = self.evader.command(evader_policy_observation)
+        else:
+            learned_evader_command = jp.zeros(3, dtype=jp.float32)
 
         def locomotion_step(carry, _):
             def advance(active_carry):
@@ -316,14 +327,7 @@ class TagPursuerEnvironment(Env):
                     active_rng,
                 ) = active_carry
                 if isinstance(self.evader, FrozenLearnedEvader):
-                    evader_policy_observation = pursuer_observation(
-                        active_state.observation,
-                        self.evader.agent_index,
-                        active_evader_command,
-                        self.tag_environment.config.arena_half_extent,
-                        self.config.relative_velocity_scale,
-                    )
-                    evader_command = self.evader.command(evader_policy_observation)
+                    evader_command = learned_evader_command
                 else:
                     evader_command = self.evader.command(active_state.observation)
                 commands = jp.zeros((2, 3), dtype=jp.float32)

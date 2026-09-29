@@ -100,13 +100,10 @@ def main(config: Config) -> None:
             )
         ),
         "environment_tracks_evader_command": bool(
-            np.isfinite(
-                np.asarray(next_state.pipeline_state.evader_previous_command)
-            ).all()
-            and np.asarray(
-                next_state.pipeline_state.evader_previous_command
-            ).shape
-            == (3,)
+            np.array_equal(
+                np.asarray(next_state.pipeline_state.evader_previous_command),
+                command_host,
+            )
         ),
         "same_checkpoint_same_fingerprint": (
             opponent.fingerprint == same_opponent.fingerprint
