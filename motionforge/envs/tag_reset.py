@@ -7,6 +7,7 @@ the arena origin. It returns arrays for direct insertion into MJX-Warp data.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -19,10 +20,13 @@ from motionforge.envs.two_g1 import TwoG1Model
 @dataclass(frozen=True)
 class TagResetConfig:
     separation: float = 2.0
+    slope_degrees: float = 0.0
 
     def __post_init__(self) -> None:
         if self.separation <= 0.0:
             raise ValueError("separation must be positive")
+        if not math.isfinite(self.slope_degrees) or abs(self.slope_degrees) > 30.0:
+            raise ValueError("slope_degrees must be finite and within [-30, 30]")
 
 
 _DEFAULT_TAG_RESET_CONFIG = TagResetConfig()
@@ -113,6 +117,10 @@ def sample_tag_reset(
         qpos = qpos.at[root_start : root_start + 2].set(
             planar_positions[agent_index]
         )
+        terrain_height = -jp.tan(jp.deg2rad(config.slope_degrees)) * (
+            planar_positions[agent_index, 0]
+        )
+        qpos = qpos.at[root_start + 2].add(terrain_height)
         qpos = qpos.at[root_start + 3 : root_start + 7].set(root_quaternion)
 
     return TagResetState(

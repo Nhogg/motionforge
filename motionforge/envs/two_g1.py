@@ -2,13 +2,14 @@
 
 Author: Nathan Hogg <nathanhogg1223@gmail.com>
 Description:
-    Compose two namespace-isolated Unitree G1 robots on one flat arena.
+    Compose two namespace-isolated Unitree G1 robots on one planar arena.
 
     Model reuses MuJoCo Playground's pinned G1 MJCF and Menagerie assets.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,17 +43,21 @@ class TwoG1Model:
 
 
 def build_two_g1_model(
-    timestep: float = 0.002, enable_inter_agent_collision: bool = False
+    timestep: float = 0.002,
+    enable_inter_agent_collision: bool = False,
+    slope_degrees: float = 0.0,
 ) -> TwoG1Model:
-    """Compile two prefixed G1 models and one shared flat floor."""
+    """Compile two prefixed G1 models and one shared planar floor."""
     if timestep <= 0.0:
         raise ValueError("timestep must be positive")
+    if not math.isfinite(slope_degrees) or abs(slope_degrees) > 30.0:
+        raise ValueError("slope_degrees must be finite and within [-30, 30]")
 
     assets = base.get_assets()
     robot_path = str(g1_constants.ROOT_PATH / "xmls" / "g1_mjx_feetonly.xml")
 
     arena = mujoco.MjSpec()
-    arena.modelname = "motionforge_two_g1_flat"
+    arena.modelname = "motionforge_two_g1_planar"
     arena.option.timestep = timestep
     arena.option.iterations = 3
     arena.option.ls_iterations = 5
@@ -61,6 +66,12 @@ def build_two_g1_model(
         name="floor",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[0.0, 0.0, 0.01],
+        quat=[
+            math.cos(math.radians(slope_degrees) / 2.0),
+            0.0,
+            math.sin(math.radians(slope_degrees) / 2.0),
+            0.0,
+        ],
     )
 
     prefixes = ("agent0/", "agent1/")

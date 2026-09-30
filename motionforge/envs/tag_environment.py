@@ -64,6 +64,7 @@ class TagEnvironmentConfig:
     episode_duration: float = 20.0
     separation: float = 2.0
     arena_half_extent: float = 4.0
+    slope_degrees: float = 0.0
     minimum_root_height: float = 0.45
     minimum_up_alignment: float = 0.50
     fall_persistence_steps: int = 5
@@ -89,7 +90,10 @@ class TagEnvironmentConfig:
         if self.njmax <= 0:
             raise ValueError("njmax must be positive")
 
-        TagResetConfig(separation=self.separation)
+        TagResetConfig(
+            separation=self.separation,
+            slope_degrees=self.slope_degrees,
+        )
         BoundsDetectionConfig(arena_half_extent=self.arena_half_extent)
         FallDetectionConfig(
             minimum_root_height=self.minimum_root_height,
@@ -169,6 +173,7 @@ class TwoG1TagEnvironment:
         self.model_bundle: TwoG1Model = build_two_g1_model(
             timestep=config.simulation_timestep,
             enable_inter_agent_collision=True,
+            slope_degrees=config.slope_degrees,
         )
         native_data = make_two_g1_data(
             self.model_bundle,
@@ -200,6 +205,7 @@ class TwoG1TagEnvironment:
 
         self.reset_config = TagResetConfig(
             separation=config.separation,
+            slope_degrees=config.slope_degrees,
         )
         self.fall_config = FallDetectionConfig(
             minimum_root_height=config.minimum_root_height,

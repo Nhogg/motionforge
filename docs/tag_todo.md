@@ -98,7 +98,7 @@ The aggressive baseline MUST contain hard turns, reversals, braking, lateral mot
 
 Start simple:
 
-- [ ] slopes
+- [x] slopes
 - [ ] low-frequency heightfields
 - [ ] bumps
 - [ ] gaps / steps
