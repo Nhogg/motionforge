@@ -1,9 +1,9 @@
-"""Evaluate every registered pursuer against every registered evader.
+"""Evaluate registered pursuer and evader population matchups.
 
 The headless GPU evaluation restores immutable self-play snapshots, runs the
 same reset seeds for every matchup, and writes per-rollout terminal causes plus
-a generation-indexed win-rate matrix to JSON. It does not mutate the policy
-population.
+a generation-indexed win-rate matrix to JSON. Optional generation filters
+support targeted terrain evaluation. It does not mutate the policy population.
 """
 
 from __future__ import annotations
@@ -38,6 +38,9 @@ class Config:
     episode_duration: float = 20.0
     separation: float = 2.0
     arena_half_extent: float = 4.0
+    slope_degrees: float = 0.0
+    pursuer_generation: int | None = None
+    evader_generation: int | None = None
     action_repeat: int = 5
     naconmax: int = 64
     njmax: int = 256
@@ -65,11 +68,27 @@ def _terminal_cause(termination) -> str:
 def main(config: Config) -> None:
     if config.seeds <= 0 or config.episode_duration <= 0.0:
         raise ValueError("seeds and episode_duration must be positive")
+    if config.pursuer_generation is not None and config.pursuer_generation < 0:
+        raise ValueError("pursuer_generation must be nonnegative")
+    if config.evader_generation is not None and config.evader_generation < 0:
+        raise ValueError("evader_generation must be nonnegative")
     population_dir = config.population_dir.resolve()
     pursuers = load_policy_snapshots(population_dir, role="pursuer")
     evaders = load_policy_snapshots(population_dir, role="evader")
+    if config.pursuer_generation is not None:
+        pursuers = [
+            item
+            for item in pursuers
+            if item.generation == config.pursuer_generation
+        ]
+    if config.evader_generation is not None:
+        evaders = [
+            item
+            for item in evaders
+            if item.generation == config.evader_generation
+        ]
     if not pursuers or not evaders:
-        raise ValueError("population must contain pursuer and evader snapshots")
+        raise ValueError("generation filters must match pursuer and evader snapshots")
 
     maximum_steps = round(
         config.episode_duration / (0.02 * config.action_repeat)
@@ -89,6 +108,7 @@ def main(config: Config) -> None:
                 episode_duration=config.episode_duration,
                 separation=config.separation,
                 arena_half_extent=config.arena_half_extent,
+                slope_degrees=config.slope_degrees,
                 naconmax=config.naconmax,
                 njmax=config.njmax,
             ),

@@ -23,3 +23,30 @@ termination across ten control steps. The existing flat-terrain and
 deterministic-reset tests also pass unchanged. This validates the slope model
 primitive only; learned-policy slope evaluation and a difficulty curriculum
 must precede low-frequency heightfields.
+
+## Frozen-policy slope sweep
+
+The population evaluator now accepts `pursuer_generation`,
+`evader_generation`, and `slope_degrees` Hydra overrides. Its defaults still
+evaluate every registered pairing on flat ground, while the filters permit a
+targeted terrain test without recomputing the historical matrix.
+
+The first generation-two sweep used identical seeds 3000--3003 at -10, -5,
+0, 5, and 10 degrees. The five machine-readable results are stored as
+`logs/p9/tag_generation2_slope_{m10,m5,flat,p5,p10}_a.json`. Every rollout
+remained finite, loaded the requested immutable snapshots, and reached a
+defined terminal outcome. Outcomes were:
+
+| slope | tags | timeouts | pursuer falls | evader falls |
+| ---: | ---: | ---: | ---: | ---: |
+| -10 degrees | 3 | 0 | 1 | 0 |
+| -5 degrees | 4 | 0 | 0 | 0 |
+| 0 degrees | 1 | 3 | 0 | 0 |
+| 5 degrees | 3 | 0 | 0 | 1 |
+| 10 degrees | 0 | 0 | 2 | 2 |
+
+These results do not establish slope robustness. Even five degrees changes
+the flat-trained matchup qualitatively, and ten degrees causes physical
+failure in every rollout. The next P9 experiment must expose slope selection
+to training and begin with a symmetric low-angle curriculum. Heightfields,
+bumps, gaps, and steps remain deferred.
