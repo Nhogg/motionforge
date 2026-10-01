@@ -88,3 +88,43 @@ still small, and the +2.5-degree boundary exit should remain visible in later
 evaluations. The next curriculum increment may test symmetric 5-degree rounds;
 heightfields remain premature until those policies avoid the failures seen in
 the frozen generation-two 5-degree sweep.
+
+## Five-degree curriculum failure
+
+The next symmetric pair increased the fixed slopes to +5 and -5 degrees:
+
+- `logs/p9/rounds/round_0005_slope_p5_a` produced
+  `pursuer_g0005_a6d0a7ee10a0` and `evader_g0005_8b515adb7d49`.
+- `logs/p9/rounds/round_0006_slope_m5_a` produced
+  `pursuer_g0006_f2af84d41440` and `evader_g0006_3eee5003ed52`.
+
+All four role updates completed 143,360 environment steps with finite
+training metrics and verified opponent identities. That infrastructure result
+must not be confused with policy success. The generation-six training
+evaluations already contained one pursuer fall and one evader fall at -5
+degrees.
+
+A held-out sweep on seeds 6000--6003 rejected generation six as a robust
+endpoint:
+
+| slope | tags | timeouts | pursuer failures | evader failures |
+| ---: | ---: | ---: | ---: | ---: |
+| -5 degrees | 0 | 0 | 1 fall | 3 falls |
+| -2.5 degrees | 0 | 0 | 0 | 4 boundary exits |
+| 0 degrees | 0 | 0 | 0 | 4 boundary exits |
+| 2.5 degrees | 2 | 0 | 0 | 2 boundary exits |
+| 5 degrees | 2 | 0 | 0 | 1 fall, 1 boundary exit |
+
+The artifacts are
+`logs/p9/tag_generation6_slope_{m5,m2p5,flat,p2p5,p5}_a.json`. No episode
+timed out, flat-ground balance was lost, and every -5-degree episode ended in
+a fall. This is evidence of curriculum-induced gameplay and physical
+regression, not successful adaptation.
+
+Fixed-slope rounds remain useful controlled experiments, but sequentially
+training one slope per job permits last-stage forgetting. Generation six is
+retained as negative evidence and must not replace generation four as the
+accepted slope policy. Before increasing difficulty or adding heightfields,
+training must mix flat and signed slopes within one optimization run, or use
+an equivalent replay schedule that repeatedly revisits all accepted terrain
+stages.
