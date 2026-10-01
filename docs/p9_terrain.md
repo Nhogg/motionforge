@@ -228,3 +228,19 @@ fall and boundary-exit returns are strictly lower than an isolated tag return.
 runner constructs the intended evader training command. These checks validate
 the reward contract only; a new held-out experiment is still required before
 accepting a policy trained with it.
+
+### Isolated evader reward repair
+
+`logs/p9/training/evader_e4_reward_repair_1m_seed10` restored accepted E4,
+froze accepted P4, and trained only the evader for 1,064,960 actual steps on
+the per-reset three-slope mixture. The training revision was clean and the
+launcher recorded the 10-point tag penalty, 25-point fall and boundary-exit
+penalties, and 10-point timeout reward. Its final 32-episode evaluation
+contained 16 tags, 2 evader falls, 14 evader boundary exits, and no timeouts.
+The stronger terminal penalties reduced falling but did not by themselves
+produce successful evasion or eliminate boundary exploitation.
+
+The standalone evader evaluator now exposes `slope_degrees`, allowing this
+unregistered repair checkpoint to be audited at fixed angles without adding a
+rejected candidate to the self-play population. Fixed-angle held-out results
+remain required before the repair is accepted or rejected conclusively.

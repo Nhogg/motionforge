@@ -44,6 +44,7 @@ class Config:
     episode_duration: float = 20.0
     separation: float = 2.0
     arena_half_extent: float = 4.0
+    slope_degrees: float = 0.0
     action_repeat: int = 5
     fixed_noise_std: float | None = None
     naconmax: int = 64
@@ -117,6 +118,7 @@ def main(config: Config) -> None:
             episode_duration=config.episode_duration,
             separation=config.separation,
             arena_half_extent=config.arena_half_extent,
+            slope_degrees=config.slope_degrees,
             naconmax=config.naconmax,
             njmax=config.njmax,
         ),
