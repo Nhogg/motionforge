@@ -286,3 +286,41 @@ self-play. `logs/p9/tag_evader_boundary_velocity_reward_a.json` verifies the
 directional reward semantics and integrated GPU step, while
 `logs/p9/tag_self_play_boundary_velocity_a.json` verifies command forwarding.
 No policy trained with this term has yet been accepted.
+
+### Isolated dense-boundary repair experiment
+
+`logs/p9/training/evader_e4_boundary_repair_1m_seed11` restored accepted E4,
+froze accepted P4, and trained only the evader for 1,064,960 actual steps on
+the per-reset {-5, 0, +5}-degree slope mixture. It retained the ordered
+terminal rewards from the preceding repair and enabled the dense outward
+boundary-velocity penalty at scale 5. The final 32-episode training evaluation
+was finite, but every episode ended in a tag after 43 steps. The mean dense
+boundary-velocity reward contribution was -1.334 per episode, confirming that
+the signal was active; the policy nevertheless collapsed against the training
+evaluation batch.
+
+The fixed-angle audit used held-out seeds 11000--11015 against accepted P4:
+
+| slope | tags | timeouts | pursuer failures | evader failures |
+| ---: | ---: | ---: | ---: | ---: |
+| -5 degrees | 0 | 2 | 5 falls | 4 falls, 5 boundary exits |
+| -2.5 degrees | 0 | 1 | 2 boundary exits | 13 boundary exits |
+| 0 degrees | 0 | 0 | 0 | 16 boundary exits |
+| 2.5 degrees | 2 | 1 | 0 | 13 boundary exits |
+| 5 degrees | 3 | 1 | 3 falls | 2 falls, 7 boundary exits |
+
+The artifacts are
+`logs/p9/tag_evader_boundary_repair_{m5,m2p5,flat,p2p5,p5}_heldout16_a.json`.
+All 80 rollouts were finite and completed, and the repeated first-seed outcome
+check passed at all five angles. Only 5 of 80 episodes timed out successfully;
+54 ended in an evader boundary exit and 6 in an evader fall. The term changes
+the optimization signal but does not prevent the learned policy from driving
+outward, and its scale-5 result is worse than the preceding reward-only repair
+on flat terrain.
+
+This checkpoint is rejected and remains outside the self-play population.
+Generation four remains the accepted terrain policy. Further attempts should
+not merely increase the dense penalty or extend this failed checkpoint. The
+next repair should make boundary safety part of command selection, for example
+by projecting unsafe outward planar commands near an edge, and must keep that
+mechanism modular and independently tested before another training run.
