@@ -35,6 +35,10 @@ class Config:
     current_opponent_probability: float = 0.5
     slope_degrees: float = 0.0
     slope_curriculum_degrees: float = 0.0
+    evader_timeout_reward: float = 10.0
+    evader_tag_penalty: float = 10.0
+    evader_fall_penalty: float = 25.0
+    evader_out_of_bounds_penalty: float = 25.0
     fixed_noise_std: float = 0.2
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -64,7 +68,7 @@ def _training_command(
     config: Config,
     seed: int,
 ) -> list[str]:
-    return [
+    command = [
         sys.executable,
         script,
         f"locomotion_checkpoint={config.locomotion_checkpoint}",
@@ -83,6 +87,17 @@ def _training_command(
         f"wandb_group=p8_self_play_round_{config.round_index:04d}",
         f"output_dir={output_dir}",
     ]
+    if script.endswith("train_tag_evader.py"):
+        command.extend(
+            [
+                f"timeout_reward={config.evader_timeout_reward}",
+                f"tag_penalty={config.evader_tag_penalty}",
+                f"evader_fall_penalty={config.evader_fall_penalty}",
+                "evader_out_of_bounds_penalty="
+                f"{config.evader_out_of_bounds_penalty}",
+            ]
+        )
+    return command
 
 
 def _final_checkpoint(training_dir: Path) -> Path:
@@ -128,6 +143,12 @@ def main(config: Config) -> None:
         raise ValueError("current_evader_generation must precede round_index")
     if config.num_timesteps <= 0 or config.num_envs <= 0:
         raise ValueError("training sizes must be positive")
+    if config.evader_fall_penalty <= config.evader_tag_penalty:
+        raise ValueError("evader_fall_penalty must exceed evader_tag_penalty")
+    if config.evader_out_of_bounds_penalty <= config.evader_tag_penalty:
+        raise ValueError(
+            "evader_out_of_bounds_penalty must exceed evader_tag_penalty"
+        )
     if config.output_dir.exists():
         raise FileExistsError(f"output directory already exists: {config.output_dir}")
 

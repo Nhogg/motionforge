@@ -207,3 +207,24 @@ produce valid evasion. Generation eight is rejected, and generation four
 remains the accepted checkpoint. Before further terrain training, the evader
 objective or termination handling must be changed so falls and boundary exits
 cannot serve as successful tag avoidance.
+
+### Evader terminal-outcome ordering
+
+The original evader reward assigned a penalty of 10 to being tagged, falling,
+and leaving the arena. A failure could therefore tie a tag before considering
+shaping terms, while moving toward the boundary could also collect positive
+separation reward. This made intentional early termination a competitive
+strategy.
+
+The default fall and out-of-bounds penalties are now 25, while the tag penalty
+and timeout reward remain 10. The evader training launcher exposes all four
+values as Hydra fields, and the self-play round forwards and records them in
+its manifest. Both launchers reject configurations in which either failure
+penalty does not strictly exceed the tag penalty.
+
+`logs/p9/tag_evader_failure_ordering_a.json` verifies on GPU that isolated
+fall and boundary-exit returns are strictly lower than an isolated tag return.
+`logs/p9/tag_self_play_failure_penalties_a.json` verifies that the self-play
+runner constructs the intended evader training command. These checks validate
+the reward contract only; a new held-out experiment is still required before
+accepting a policy trained with it.

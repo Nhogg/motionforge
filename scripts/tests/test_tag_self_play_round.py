@@ -11,6 +11,7 @@ from pathlib import Path
 from motionforge.cli import run_hydra
 from motionforge.self_play import save_policy_snapshot
 from scripts.self_play.run_tag_self_play_round import Config as RoundConfig
+from scripts.self_play.run_tag_self_play_round import _training_command
 from scripts.self_play.run_tag_self_play_round import main as run_round
 
 
@@ -51,19 +52,29 @@ def main(config: Config) -> None:
         )
         round_dir = root / "round"
         registry_before = (population / "population.json").read_bytes()
-        run_round(
-            RoundConfig(
-                population_dir=population,
-                current_pursuer_checkpoint=pursuer,
-                current_evader_checkpoint=evader,
-                current_pursuer_generation=0,
-                current_evader_generation=0,
-                locomotion_checkpoint=locomotion,
-                round_index=1,
-                slope_curriculum_degrees=5.0,
-                output_dir=round_dir,
-                dry_run=True,
-            )
+        round_config = RoundConfig(
+            population_dir=population,
+            current_pursuer_checkpoint=pursuer,
+            current_evader_checkpoint=evader,
+            current_pursuer_generation=0,
+            current_evader_generation=0,
+            locomotion_checkpoint=locomotion,
+            round_index=1,
+            slope_curriculum_degrees=5.0,
+            output_dir=round_dir,
+            dry_run=True,
+        )
+        run_round(round_config)
+        evader_command = _training_command(
+            script="scripts/training/train_tag_evader.py",
+            output_dir=round_dir / "evader_training",
+            restore_checkpoint=evader,
+            opponent_name="pursuer_checkpoint",
+            opponent_checkpoint=str(pursuer),
+            opponent_noise_name="pursuer_fixed_noise_std",
+            opponent_noise=0.2,
+            config=round_config,
+            seed=1,
         )
         manifest = json.loads(
             (round_dir / "round_manifest.json").read_text(encoding="utf-8")
@@ -82,6 +93,11 @@ def main(config: Config) -> None:
             ),
             "slope_curriculum_planned": (
                 "slope_curriculum_degrees=5.0" in command
+            ),
+            "evader_failure_penalties_planned": (
+                "tag_penalty=10.0" in evader_command
+                and "evader_fall_penalty=25.0" in evader_command
+                and "evader_out_of_bounds_penalty=25.0" in evader_command
             ),
             "training_not_started": not (round_dir / "pursuer_training").exists(),
         }

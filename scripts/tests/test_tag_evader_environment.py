@@ -100,6 +100,39 @@ def main(config: Config) -> None:
         evader_index=environment.evader_index,
         config=evader_config,
     )
+    tag_terms = evader_reward(
+        previous_distance=jp.asarray(1.0),
+        current_distance=jp.asarray(1.0),
+        previous_command=zero,
+        current_command=zero,
+        evader_planar_position=zero[:2],
+        arena_half_extent=tag_config.arena_half_extent,
+        termination=termination(tagged=True),
+        evader_index=environment.evader_index,
+        config=evader_config,
+    )
+    fall_terms = evader_reward(
+        previous_distance=jp.asarray(1.0),
+        current_distance=jp.asarray(1.0),
+        previous_command=zero,
+        current_command=zero,
+        evader_planar_position=zero[:2],
+        arena_half_extent=tag_config.arena_half_extent,
+        termination=termination(fallen=(False, True)),
+        evader_index=environment.evader_index,
+        config=evader_config,
+    )
+    out_of_bounds_terms = evader_reward(
+        previous_distance=jp.asarray(1.0),
+        current_distance=jp.asarray(1.0),
+        previous_command=zero,
+        current_command=zero,
+        evader_planar_position=zero[:2],
+        arena_half_extent=tag_config.arena_half_extent,
+        termination=termination(out_of_bounds=(False, True)),
+        evader_index=environment.evader_index,
+        config=evader_config,
+    )
 
     next_obs = np.asarray(next_state.obs)
     checks = {
@@ -136,6 +169,11 @@ def main(config: Config) -> None:
                 np.asarray(failure_terms.evader_out_of_bounds),
                 -evader_config.evader_out_of_bounds_penalty,
             )
+        ),
+        "reward_failures_worse_than_tag": bool(
+            np.asarray(fall_terms.total) < np.asarray(tag_terms.total)
+            and np.asarray(out_of_bounds_terms.total)
+            < np.asarray(tag_terms.total)
         ),
         "reward_separation": bool(
             np.isclose(np.asarray(failure_terms.separation), 1.0)

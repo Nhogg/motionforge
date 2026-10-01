@@ -68,6 +68,10 @@ class Config:
     arena_half_extent: float = 4.0
     slope_degrees: float = 0.0
     slope_curriculum_degrees: float = 0.0
+    timeout_reward: float = 10.0
+    tag_penalty: float = 10.0
+    evader_fall_penalty: float = 25.0
+    evader_out_of_bounds_penalty: float = 25.0
     naconmax_per_env: int = 64
     njmax: int = 256
     wandb_mode: str = "disabled"
@@ -122,10 +126,18 @@ def validate_config(config: Config) -> None:
         "num_updates_per_batch": config.num_updates_per_batch,
         "learning_rate": config.learning_rate,
         "action_repeat": config.action_repeat,
+        "timeout_reward": config.timeout_reward,
+        "tag_penalty": config.tag_penalty,
+        "evader_fall_penalty": config.evader_fall_penalty,
+        "evader_out_of_bounds_penalty": config.evader_out_of_bounds_penalty,
     }
     for name, value in positive.items():
         if value <= 0:
             raise ValueError(f"{name} must be positive")
+    if config.evader_fall_penalty <= config.tag_penalty:
+        raise ValueError("evader_fall_penalty must exceed tag_penalty")
+    if config.evader_out_of_bounds_penalty <= config.tag_penalty:
+        raise ValueError("evader_out_of_bounds_penalty must exceed tag_penalty")
     if config.fixed_noise_std is not None and config.fixed_noise_std <= 0.001:
         raise ValueError("fixed_noise_std must exceed 0.001")
     if config.pursuer_fixed_noise_std <= 0.001:
@@ -162,7 +174,13 @@ def main(config: Config) -> None:
         naconmax=config.naconmax_per_env * max(config.num_envs, config.num_eval_envs),
         njmax=config.njmax,
     )
-    evader_config = TagEvaderConfig(action_repeat=config.action_repeat)
+    evader_config = TagEvaderConfig(
+        action_repeat=config.action_repeat,
+        timeout_reward=config.timeout_reward,
+        tag_penalty=config.tag_penalty,
+        evader_fall_penalty=config.evader_fall_penalty,
+        evader_out_of_bounds_penalty=config.evader_out_of_bounds_penalty,
+    )
     environment = TagEvaderEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,
         pursuer_checkpoint=config.pursuer_checkpoint,

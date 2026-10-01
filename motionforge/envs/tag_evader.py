@@ -50,8 +50,8 @@ class TagEvaderConfig:
     boundary_penalty_scale: float = 1.0
     timeout_reward: float = 10.0
     tag_penalty: float = 10.0
-    evader_fall_penalty: float = 10.0
-    evader_out_of_bounds_penalty: float = 10.0
+    evader_fall_penalty: float = 25.0
+    evader_out_of_bounds_penalty: float = 25.0
 
     def __post_init__(self) -> None:
         if self.action_repeat <= 0:
