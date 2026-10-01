@@ -50,3 +50,41 @@ the flat-trained matchup qualitatively, and ten degrees causes physical
 failure in every rollout. The next P9 experiment must expose slope selection
 to training and begin with a symmetric low-angle curriculum. Heightfields,
 bumps, gaps, and steps remain deferred.
+
+## Symmetric low-angle self-play curriculum
+
+Slope orientation is part of the compiled MuJoCo model and cannot be changed
+independently for each reset in one vectorized training job. The curriculum is
+therefore scheduled at the self-play-round level. Both TAG training launchers
+accept `slope_degrees`, and the alternating round runner forwards and records
+that value in each role's command and round manifest. Flat terrain remains the
+zero-degree default.
+
+The first symmetric curriculum resumed generation two for two successive
+rounds with the same requested budget of 131,072 steps per role:
+
+- `logs/p9/rounds/round_0003_slope_p2p5_a` trained at +2.5 degrees and
+  produced `pursuer_g0003_96b3a8320265` and
+  `evader_g0003_576712741c6e`.
+- `logs/p9/rounds/round_0004_slope_m2p5_a` resumed generation three at -2.5
+  degrees and produced `pursuer_g0004_0b6630f65965` and
+  `evader_g0004_46a096665267`.
+
+Every role update completed 143,360 actual environment steps, recorded finite
+metrics, verified its frozen opponent identity, and published a digest-checked
+snapshot. A fresh four-seed retention evaluation on seeds 4000--4003 then
+tested the generation-four pairing at both trained slopes and on flat ground:
+
+| slope | tags | timeouts | boundary exits | falls | pursuer / evader wins |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| -2.5 degrees | 2 | 2 | 0 | 0 | 50% / 50% |
+| 0 degrees | 2 | 2 | 0 | 0 | 50% / 50% |
+| 2.5 degrees | 1 | 2 | 1 evader | 0 | 50% / 50% |
+
+The artifacts are
+`logs/p9/tag_generation4_slope_{m2p5,flat,p2p5}_a.json`. This establishes
+initial low-angle retention without loss of flat-ground balance. The sample is
+still small, and the +2.5-degree boundary exit should remain visible in later
+evaluations. The next curriculum increment may test symmetric 5-degree rounds;
+heightfields remain premature until those policies avoid the failures seen in
+the frozen generation-two 5-degree sweep.

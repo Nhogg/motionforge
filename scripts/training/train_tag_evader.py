@@ -66,6 +66,7 @@ class Config:
     episode_duration: float = 20.0
     separation: float = 2.0
     arena_half_extent: float = 4.0
+    slope_degrees: float = 0.0
     naconmax_per_env: int = 64
     njmax: int = 256
     wandb_mode: str = "disabled"
@@ -155,6 +156,7 @@ def main(config: Config) -> None:
         episode_duration=config.episode_duration,
         separation=config.separation,
         arena_half_extent=config.arena_half_extent,
+        slope_degrees=config.slope_degrees,
         naconmax=config.naconmax_per_env * max(config.num_envs, config.num_eval_envs),
         njmax=config.njmax,
     )

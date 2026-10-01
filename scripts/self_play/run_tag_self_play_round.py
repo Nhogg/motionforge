@@ -31,6 +31,7 @@ class Config:
     round_index: int = 1
     seed: int = 0
     current_opponent_probability: float = 0.5
+    slope_degrees: float = 0.0
     fixed_noise_std: float = 0.2
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -68,6 +69,7 @@ def _training_command(
         f"{opponent_name}={opponent_checkpoint}",
         f"{opponent_noise_name}={opponent_noise}",
         f"fixed_noise_std={config.fixed_noise_std}",
+        f"slope_degrees={config.slope_degrees}",
         f"num_timesteps={config.num_timesteps}",
         f"num_envs={config.num_envs}",
         f"num_eval_envs={config.num_eval_envs}",
