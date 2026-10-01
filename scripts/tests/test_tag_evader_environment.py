@@ -80,6 +80,7 @@ def main(config: Config) -> None:
         previous_command=zero,
         current_command=zero,
         evader_planar_position=zero[:2],
+        evader_planar_velocity=zero[:2],
         arena_half_extent=tag_config.arena_half_extent,
         termination=termination(timed_out=True),
         evader_index=environment.evader_index,
@@ -91,6 +92,7 @@ def main(config: Config) -> None:
         previous_command=zero,
         current_command=zero,
         evader_planar_position=jp.asarray([3.5, 0.0]),
+        evader_planar_velocity=zero[:2],
         arena_half_extent=tag_config.arena_half_extent,
         termination=termination(
             tagged=True,
@@ -106,6 +108,7 @@ def main(config: Config) -> None:
         previous_command=zero,
         current_command=zero,
         evader_planar_position=zero[:2],
+        evader_planar_velocity=zero[:2],
         arena_half_extent=tag_config.arena_half_extent,
         termination=termination(tagged=True),
         evader_index=environment.evader_index,
@@ -117,6 +120,7 @@ def main(config: Config) -> None:
         previous_command=zero,
         current_command=zero,
         evader_planar_position=zero[:2],
+        evader_planar_velocity=zero[:2],
         arena_half_extent=tag_config.arena_half_extent,
         termination=termination(fallen=(False, True)),
         evader_index=environment.evader_index,
@@ -128,8 +132,33 @@ def main(config: Config) -> None:
         previous_command=zero,
         current_command=zero,
         evader_planar_position=zero[:2],
+        evader_planar_velocity=zero[:2],
         arena_half_extent=tag_config.arena_half_extent,
         termination=termination(out_of_bounds=(False, True)),
+        evader_index=environment.evader_index,
+        config=evader_config,
+    )
+    outward_terms = evader_reward(
+        previous_distance=jp.asarray(1.0),
+        current_distance=jp.asarray(1.0),
+        previous_command=zero,
+        current_command=zero,
+        evader_planar_position=jp.asarray([3.5, 0.0]),
+        evader_planar_velocity=jp.asarray([1.0, 0.0]),
+        arena_half_extent=tag_config.arena_half_extent,
+        termination=termination(),
+        evader_index=environment.evader_index,
+        config=evader_config,
+    )
+    inward_terms = evader_reward(
+        previous_distance=jp.asarray(1.0),
+        current_distance=jp.asarray(1.0),
+        previous_command=zero,
+        current_command=zero,
+        evader_planar_position=jp.asarray([3.5, 0.0]),
+        evader_planar_velocity=jp.asarray([-1.0, 0.0]),
+        arena_half_extent=tag_config.arena_half_extent,
+        termination=termination(),
         evader_index=environment.evader_index,
         config=evader_config,
     )
@@ -158,6 +187,17 @@ def main(config: Config) -> None:
         ),
         "reward_boundary_penalty": bool(
             np.isclose(np.asarray(failure_terms.boundary), -0.25)
+        ),
+        "reward_boundary_outward_velocity": bool(
+            np.isclose(
+                np.asarray(outward_terms.boundary_outward_velocity),
+                -0.5
+                * evader_config.boundary_outward_velocity_penalty_scale,
+            )
+            and np.isclose(
+                np.asarray(inward_terms.boundary_outward_velocity),
+                0.0,
+            )
         ),
         "reward_evader_failure_penalties": bool(
             np.isclose(np.asarray(failure_terms.tag), -evader_config.tag_penalty)

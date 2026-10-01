@@ -98,6 +98,8 @@ def main(config: Config) -> None:
                 "tag_penalty=10.0" in evader_command
                 and "evader_fall_penalty=25.0" in evader_command
                 and "evader_out_of_bounds_penalty=25.0" in evader_command
+                and "boundary_outward_velocity_penalty_scale=5.0"
+                in evader_command
             ),
             "training_not_started": not (round_dir / "pursuer_training").exists(),
         }

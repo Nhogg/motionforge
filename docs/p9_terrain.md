@@ -267,3 +267,22 @@ dominated by boundary exits. The checkpoint is rejected and remains outside
 the self-play population. The next repair should add a denser boundary-control
 signal or constrain commands near the arena edge rather than merely increasing
 the terminal penalty again.
+
+### Dense outward-boundary velocity penalty
+
+The evader reward now adds a separately logged dense term inside the existing
+one-meter boundary margin. For each planar axis it multiplies normalized edge
+intrusion by the positive component of velocity pointing away from the arena
+center, sums the two axes, and applies a default scale of 5. Motion in the safe
+interior, tangential motion, and inward motion receive no penalty from this
+term. The existing position-based boundary penalty and terminal failure
+penalties remain unchanged.
+
+The scale is exposed as the Hydra field
+`boundary_outward_velocity_penalty_scale` in the evader trainer and as
+`evader_boundary_outward_velocity_penalty_scale` in the self-play round. It is
+therefore recorded in training manifests and forwarded reproducibly during
+self-play. `logs/p9/tag_evader_boundary_velocity_reward_a.json` verifies the
+directional reward semantics and integrated GPU step, while
+`logs/p9/tag_self_play_boundary_velocity_a.json` verifies command forwarding.
+No policy trained with this term has yet been accepted.

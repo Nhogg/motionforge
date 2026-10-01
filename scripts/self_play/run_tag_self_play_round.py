@@ -39,6 +39,7 @@ class Config:
     evader_tag_penalty: float = 10.0
     evader_fall_penalty: float = 25.0
     evader_out_of_bounds_penalty: float = 25.0
+    evader_boundary_outward_velocity_penalty_scale: float = 5.0
     fixed_noise_std: float = 0.2
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -95,6 +96,8 @@ def _training_command(
                 f"evader_fall_penalty={config.evader_fall_penalty}",
                 "evader_out_of_bounds_penalty="
                 f"{config.evader_out_of_bounds_penalty}",
+                "boundary_outward_velocity_penalty_scale="
+                f"{config.evader_boundary_outward_velocity_penalty_scale}",
             ]
         )
     return command
@@ -148,6 +151,10 @@ def main(config: Config) -> None:
     if config.evader_out_of_bounds_penalty <= config.evader_tag_penalty:
         raise ValueError(
             "evader_out_of_bounds_penalty must exceed evader_tag_penalty"
+        )
+    if config.evader_boundary_outward_velocity_penalty_scale < 0.0:
+        raise ValueError(
+            "evader_boundary_outward_velocity_penalty_scale must be nonnegative"
         )
     if config.output_dir.exists():
         raise FileExistsError(f"output directory already exists: {config.output_dir}")

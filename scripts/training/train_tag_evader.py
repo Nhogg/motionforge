@@ -72,6 +72,7 @@ class Config:
     tag_penalty: float = 10.0
     evader_fall_penalty: float = 25.0
     evader_out_of_bounds_penalty: float = 25.0
+    boundary_outward_velocity_penalty_scale: float = 5.0
     naconmax_per_env: int = 64
     njmax: int = 256
     wandb_mode: str = "disabled"
@@ -138,6 +139,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("evader_fall_penalty must exceed tag_penalty")
     if config.evader_out_of_bounds_penalty <= config.tag_penalty:
         raise ValueError("evader_out_of_bounds_penalty must exceed tag_penalty")
+    if config.boundary_outward_velocity_penalty_scale < 0.0:
+        raise ValueError(
+            "boundary_outward_velocity_penalty_scale must be nonnegative"
+        )
     if config.fixed_noise_std is not None and config.fixed_noise_std <= 0.001:
         raise ValueError("fixed_noise_std must exceed 0.001")
     if config.pursuer_fixed_noise_std <= 0.001:
@@ -180,6 +185,9 @@ def main(config: Config) -> None:
         tag_penalty=config.tag_penalty,
         evader_fall_penalty=config.evader_fall_penalty,
         evader_out_of_bounds_penalty=config.evader_out_of_bounds_penalty,
+        boundary_outward_velocity_penalty_scale=(
+            config.boundary_outward_velocity_penalty_scale
+        ),
     )
     environment = TagEvaderEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,

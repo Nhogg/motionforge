@@ -48,6 +48,7 @@ class TagEvaderConfig:
     command_change_penalty_scale: float = 0.01
     boundary_margin: float = 1.0
     boundary_penalty_scale: float = 1.0
+    boundary_outward_velocity_penalty_scale: float = 5.0
     timeout_reward: float = 10.0
     tag_penalty: float = 10.0
     evader_fall_penalty: float = 25.0
@@ -66,6 +67,7 @@ class TagEvaderConfig:
             "survival_reward",
             "command_change_penalty_scale",
             "boundary_penalty_scale",
+            "boundary_outward_velocity_penalty_scale",
             "timeout_reward",
             "tag_penalty",
             "evader_fall_penalty",
@@ -82,6 +84,7 @@ class EvaderRewardTerms:
     survival: jax.Array
     command_change: jax.Array
     boundary: jax.Array
+    boundary_outward_velocity: jax.Array
     timeout: jax.Array
     tag: jax.Array
     evader_fall: jax.Array
@@ -109,6 +112,7 @@ def evader_reward(
     previous_command: jax.Array,
     current_command: jax.Array,
     evader_planar_position: jax.Array,
+    evader_planar_velocity: jax.Array,
     arena_half_extent: float,
     termination: TagEnvironmentTermination,
     evader_index: int,
@@ -117,6 +121,8 @@ def evader_reward(
     """Compute independently logged high-level evader reward terms."""
     if evader_planar_position.shape != (2,):
         raise ValueError("evader_planar_position must have shape (2,)")
+    if evader_planar_velocity.shape != (2,):
+        raise ValueError("evader_planar_velocity must have shape (2,)")
     if config.boundary_margin > arena_half_extent:
         raise ValueError("boundary_margin must not exceed arena_half_extent")
     separation = config.separation_reward_scale * (current_distance - previous_distance)
@@ -133,6 +139,20 @@ def evader_reward(
         1.0,
     )
     boundary = -config.boundary_penalty_scale * jp.square(intrusion)
+    axis_intrusion = jp.clip(
+        (jp.abs(evader_planar_position) - safe_half_extent)
+        / config.boundary_margin,
+        0.0,
+        1.0,
+    )
+    outward_velocity = jp.maximum(
+        jp.sign(evader_planar_position) * evader_planar_velocity,
+        0.0,
+    )
+    boundary_outward_velocity = (
+        -config.boundary_outward_velocity_penalty_scale
+        * jp.sum(axis_intrusion * outward_velocity)
+    )
     timeout = config.timeout_reward * termination.timed_out.astype(jp.float32)
     tag = -config.tag_penalty * termination.tagged.astype(jp.float32)
     evader_fall = -config.evader_fall_penalty * termination.fallen[
@@ -148,6 +168,7 @@ def evader_reward(
         + survival
         + command_change
         + boundary
+        + boundary_outward_velocity
         + timeout
         + tag
         + evader_fall
@@ -159,6 +180,7 @@ def evader_reward(
         survival=survival,
         command_change=command_change,
         boundary=boundary,
+        boundary_outward_velocity=boundary_outward_velocity,
         timeout=timeout,
         tag=tag,
         evader_fall=evader_fall,
@@ -235,6 +257,7 @@ class TagEvaderEnvironment(Env):
             for name in (
                 "distance",
                 "reward/boundary",
+                "reward/boundary_outward_velocity",
                 "reward/command_change",
                 "reward/evader_fall",
                 "reward/evader_out_of_bounds",
@@ -336,6 +359,11 @@ class TagEvaderEnvironment(Env):
             evader_planar_position=tag_state.diagnostics.planar_position[
                 self.evader_index
             ],
+            evader_planar_velocity=tag_state.data.sensordata[
+                self.tag_environment.observation_layout.agents[
+                    self.evader_index
+                ].global_velocity_sensor_slice
+            ][:2],
             arena_half_extent=self.tag_environment.config.arena_half_extent,
             termination=tag_state.termination,
             evader_index=self.evader_index,
@@ -346,6 +374,9 @@ class TagEvaderEnvironment(Env):
             {
                 "distance": distance,
                 "reward/boundary": reward.boundary,
+                "reward/boundary_outward_velocity": (
+                    reward.boundary_outward_velocity
+                ),
                 "reward/command_change": reward.command_change,
                 "reward/evader_fall": reward.evader_fall,
                 "reward/evader_out_of_bounds": reward.evader_out_of_bounds,
