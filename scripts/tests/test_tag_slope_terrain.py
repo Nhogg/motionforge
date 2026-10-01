@@ -15,7 +15,6 @@ from importlib.metadata import version
 from pathlib import Path
 
 import jax
-import mujoco
 import numpy as np
 
 from motionforge.cli import run_hydra
@@ -57,12 +56,7 @@ def main(config: Config) -> None:
         [math.sin(slope_radians), 0.0, math.cos(slope_radians)]
     )
     floor_id = environment.model_bundle.model.geom("floor").id
-    floor_rotation = np.empty(9, dtype=np.float64)
-    mujoco.mju_quat2Mat(
-        floor_rotation,
-        environment.model_bundle.model.geom_quat[floor_id],
-    )
-    floor_rotation = floor_rotation.reshape(3, 3)
+    floor_rotation = np.asarray(state.data.geom_xmat[floor_id]).reshape(3, 3)
     floor_normal = floor_rotation[:, 2]
     initial_clearances = []
     for agent in environment.model_bundle.agents:

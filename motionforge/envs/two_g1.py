@@ -40,6 +40,7 @@ class G1ModelLayout:
 class TwoG1Model:
     model: mujoco.MjModel
     agents: tuple[G1ModelLayout, G1ModelLayout]
+    terrain_mocap_id: int
 
 
 def build_two_g1_model(
@@ -62,16 +63,18 @@ def build_two_g1_model(
     arena.option.iterations = 3
     arena.option.ls_iterations = 5
 
-    arena.worldbody.add_geom(
+    terrain = arena.worldbody.add_body(name="terrain")
+    terrain.mocap = True
+    terrain.quat = [
+        math.cos(math.radians(slope_degrees) / 2.0),
+        0.0,
+        math.sin(math.radians(slope_degrees) / 2.0),
+        0.0,
+    ]
+    terrain.add_geom(
         name="floor",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[0.0, 0.0, 0.01],
-        quat=[
-            math.cos(math.radians(slope_degrees) / 2.0),
-            0.0,
-            math.sin(math.radians(slope_degrees) / 2.0),
-            0.0,
-        ],
     )
 
     prefixes = ("agent0/", "agent1/")
@@ -124,7 +127,16 @@ def build_two_g1_model(
             )
         )
 
-    return TwoG1Model(model=model, agents=tuple(layouts))
+    terrain_body_id = model.body("terrain").id
+    terrain_mocap_id = int(model.body_mocapid[terrain_body_id])
+    if terrain_mocap_id < 0:
+        raise RuntimeError("terrain body must be kinematic mocap")
+
+    return TwoG1Model(
+        model=model,
+        agents=tuple(layouts),
+        terrain_mocap_id=terrain_mocap_id,
+    )
 
 
 def make_two_g1_data(

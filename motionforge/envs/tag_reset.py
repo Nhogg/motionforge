@@ -21,12 +21,21 @@ from motionforge.envs.two_g1 import TwoG1Model
 class TagResetConfig:
     separation: float = 2.0
     slope_degrees: float = 0.0
+    slope_curriculum_degrees: float = 0.0
 
     def __post_init__(self) -> None:
         if self.separation <= 0.0:
             raise ValueError("separation must be positive")
         if not math.isfinite(self.slope_degrees) or abs(self.slope_degrees) > 30.0:
             raise ValueError("slope_degrees must be finite and within [-30, 30]")
+        if (
+            not math.isfinite(self.slope_curriculum_degrees)
+            or self.slope_curriculum_degrees < 0.0
+            or self.slope_curriculum_degrees > 30.0
+        ):
+            raise ValueError("slope_curriculum_degrees must lie within [0, 30]")
+        if self.slope_degrees != 0.0 and self.slope_curriculum_degrees != 0.0:
+            raise ValueError("fixed slope and slope curriculum are mutually exclusive")
 
 
 _DEFAULT_TAG_RESET_CONFIG = TagResetConfig()
@@ -49,6 +58,8 @@ class TagResetState(NamedTuple):
     spawn_angle: jax.Array
     planar_positions: jax.Array
     headings: jax.Array
+    slope_degrees: jax.Array
+    floor_quaternion: jax.Array
 
 
 def build_tag_reset_layout(model_bundle: TwoG1Model) -> TagResetLayout:
@@ -103,6 +114,27 @@ def sample_tag_reset(
         ]
     )
 
+    if config.slope_curriculum_degrees > 0.0:
+        terrain_index = jax.random.randint(
+            jax.random.fold_in(key, 1),
+            shape=(),
+            minval=0,
+            maxval=3,
+        )
+        slope_degrees = jp.asarray(
+            [
+                -config.slope_curriculum_degrees,
+                0.0,
+                config.slope_curriculum_degrees,
+            ]
+        )[terrain_index]
+    else:
+        slope_degrees = jp.asarray(config.slope_degrees)
+    half_slope = 0.5 * jp.deg2rad(slope_degrees)
+    floor_quaternion = jp.asarray(
+        [jp.cos(half_slope), 0.0, jp.sin(half_slope), 0.0]
+    )
+
     for agent_index, agent in enumerate(layout.agents):
         root_start = agent.root_qpos_start
         half_heading = 0.5 * headings[agent_index]
@@ -117,7 +149,7 @@ def sample_tag_reset(
         qpos = qpos.at[root_start : root_start + 2].set(
             planar_positions[agent_index]
         )
-        terrain_height = -jp.tan(jp.deg2rad(config.slope_degrees)) * (
+        terrain_height = -jp.tan(jp.deg2rad(slope_degrees)) * (
             planar_positions[agent_index, 0]
         )
         qpos = qpos.at[root_start + 2].add(terrain_height)
@@ -129,4 +161,6 @@ def sample_tag_reset(
         spawn_angle=spawn_angle,
         planar_positions=planar_positions,
         headings=headings,
+        slope_degrees=slope_degrees,
+        floor_quaternion=floor_quaternion,
     )

@@ -56,9 +56,11 @@ def main(config: Config) -> None:
                 population_dir=population,
                 current_pursuer_checkpoint=pursuer,
                 current_evader_checkpoint=evader,
+                current_pursuer_generation=0,
+                current_evader_generation=0,
                 locomotion_checkpoint=locomotion,
                 round_index=1,
-                slope_degrees=2.5,
+                slope_curriculum_degrees=5.0,
                 output_dir=round_dir,
                 dry_run=True,
             )
@@ -78,7 +80,9 @@ def main(config: Config) -> None:
             "restore_checkpoint_planned": any(
                 item == f"restore_checkpoint={pursuer.resolve()}" for item in command
             ),
-            "slope_planned": "slope_degrees=2.5" in command,
+            "slope_curriculum_planned": (
+                "slope_curriculum_degrees=5.0" in command
+            ),
             "training_not_started": not (round_dir / "pursuer_training").exists(),
         }
 

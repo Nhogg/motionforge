@@ -65,6 +65,7 @@ class Config:
     separation: float = 2.0
     arena_half_extent: float = 4.0
     slope_degrees: float = 0.0
+    slope_curriculum_degrees: float = 0.0
     naconmax_per_env: int = 64
     njmax: int = 256
     wandb_mode: str = "disabled"
@@ -155,6 +156,7 @@ def main(config: Config) -> None:
         separation=config.separation,
         arena_half_extent=config.arena_half_extent,
         slope_degrees=config.slope_degrees,
+        slope_curriculum_degrees=config.slope_curriculum_degrees,
         naconmax=config.naconmax_per_env * max(config.num_envs, config.num_eval_envs),
         njmax=config.njmax,
     )

@@ -25,6 +25,8 @@ class Config:
     population_dir: Path = Path("logs/p8/population")
     current_pursuer_checkpoint: Path = Path("???")
     current_evader_checkpoint: Path = Path("???")
+    current_pursuer_generation: int | None = None
+    current_evader_generation: int | None = None
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
@@ -32,6 +34,7 @@ class Config:
     seed: int = 0
     current_opponent_probability: float = 0.5
     slope_degrees: float = 0.0
+    slope_curriculum_degrees: float = 0.0
     fixed_noise_std: float = 0.2
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -70,6 +73,7 @@ def _training_command(
         f"{opponent_noise_name}={opponent_noise}",
         f"fixed_noise_std={config.fixed_noise_std}",
         f"slope_degrees={config.slope_degrees}",
+        f"slope_curriculum_degrees={config.slope_curriculum_degrees}",
         f"num_timesteps={config.num_timesteps}",
         f"num_envs={config.num_envs}",
         f"num_eval_envs={config.num_eval_envs}",
@@ -108,6 +112,20 @@ def main(config: Config) -> None:
         raise ValueError("round_index must be positive")
     if config.seed < 0:
         raise ValueError("seed must be nonnegative")
+    pursuer_generation = (
+        config.round_index - 1
+        if config.current_pursuer_generation is None
+        else config.current_pursuer_generation
+    )
+    evader_generation = (
+        config.round_index - 1
+        if config.current_evader_generation is None
+        else config.current_evader_generation
+    )
+    if not 0 <= pursuer_generation < config.round_index:
+        raise ValueError("current_pursuer_generation must precede round_index")
+    if not 0 <= evader_generation < config.round_index:
+        raise ValueError("current_evader_generation must precede round_index")
     if config.num_timesteps <= 0 or config.num_envs <= 0:
         raise ValueError("training sizes must be positive")
     if config.output_dir.exists():
@@ -123,7 +141,7 @@ def main(config: Config) -> None:
         population_dir=config.population_dir,
         current_checkpoint=evader_checkpoint,
         role="evader",
-        current_generation=config.round_index - 1,
+        current_generation=evader_generation,
         current_fixed_noise_std=config.fixed_noise_std,
         current_probability=config.current_opponent_probability,
         seed=config.seed,

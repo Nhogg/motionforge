@@ -128,3 +128,51 @@ accepted slope policy. Before increasing difficulty or adding heightfields,
 training must mix flat and signed slopes within one optimization run, or use
 an equivalent replay schedule that repeatedly revisits all accepted terrain
 stages.
+
+## Per-reset mixed-slope terrain
+
+The shared plane now belongs to a kinematic MuJoCo mocap body. Its orientation
+is therefore part of each environment's MJX data rather than immutable model
+data. `slope_curriculum_degrees=5` samples one of -5, 0, or +5 degrees from
+the explicit JAX reset key, updates the floor quaternion, and adjusts both
+agents' root heights to preserve terrain-relative clearance. Fixed
+`slope_degrees` remains available for controlled evaluation, and the fixed and
+curriculum modes are mutually exclusive.
+
+Both role trainers and the self-play round runner expose and record the new
+curriculum setting. The runner also accepts explicit restore-generation
+metadata, allowing a repair branch to resume an older accepted checkpoint
+without falsely labeling it as the immediately preceding generation.
+
+`scripts/tests/test_tag_slope_curriculum.py` records its accepted audit at
+`logs/p9/tag_slope_curriculum_a.json`. Across seeds 0--11 it observed every
+terrain choice, reproduced the first reset exactly, retained equal 0.755-meter
+root clearances, and produced finite GPU states. Flat, fixed-slope,
+deterministic-reset, and self-play-plan regressions also passed.
+
+### First mixed-slope repair round
+
+`logs/p9/rounds/round_0007_mixed_slope5_repair_a` resumed accepted generation
+four, not failed generation six, and trained both roles for 143,360 actual
+steps with the three-way mixed slope sampler. It produced
+`pursuer_g0007_b2f55d147420` and `evader_g0007_d1c4ef996307`. Training metrics
+were finite and checkpoint/opponent identities passed, but the evader
+evaluation still contained falls and no timeouts.
+
+The held-out fixed-angle evaluation on seeds 7000--7003 confirmed that this
+single short repair round was insufficient:
+
+| slope | tags | timeouts | pursuer failures | evader failures |
+| ---: | ---: | ---: | ---: | ---: |
+| -5 degrees | 0 | 0 | 1 fall | 3 falls |
+| -2.5 degrees | 0 | 1 | 0 | 3 boundary exits |
+| 0 degrees | 0 | 0 | 0 | 4 boundary exits |
+| 2.5 degrees | 0 | 0 | 0 | 4 boundary exits |
+| 5 degrees | 0 | 0 | 2 falls | 1 fall, 1 boundary exit |
+
+These results are stored in
+`logs/p9/tag_generation7_mixed_slope_{m5,m2p5,flat,p2p5,p5}_a.json`.
+Per-reset terrain mixing fixes the exposure architecture, but generation seven
+is not an accepted policy. Generation four remains the accepted checkpoint.
+The next repair should use a larger optimization budget and current opponents
+instead of adding terrain complexity.

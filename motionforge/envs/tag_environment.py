@@ -65,6 +65,7 @@ class TagEnvironmentConfig:
     separation: float = 2.0
     arena_half_extent: float = 4.0
     slope_degrees: float = 0.0
+    slope_curriculum_degrees: float = 0.0
     minimum_root_height: float = 0.45
     minimum_up_alignment: float = 0.50
     fall_persistence_steps: int = 5
@@ -93,6 +94,7 @@ class TagEnvironmentConfig:
         TagResetConfig(
             separation=self.separation,
             slope_degrees=self.slope_degrees,
+            slope_curriculum_degrees=self.slope_curriculum_degrees,
         )
         BoundsDetectionConfig(arena_half_extent=self.arena_half_extent)
         FallDetectionConfig(
@@ -206,6 +208,7 @@ class TwoG1TagEnvironment:
         self.reset_config = TagResetConfig(
             separation=config.separation,
             slope_degrees=config.slope_degrees,
+            slope_curriculum_degrees=config.slope_curriculum_degrees,
         )
         self.fall_config = FallDetectionConfig(
             minimum_root_height=config.minimum_root_height,
@@ -299,6 +302,9 @@ class TwoG1TagEnvironment:
         data = self.template_data.replace(
             qpos=sampled.qpos,
             qvel=sampled.qvel,
+            mocap_quat=self.template_data.mocap_quat.at[
+                self.model_bundle.terrain_mocap_id
+            ].set(sampled.floor_quaternion),
         )
         data = mjx.forward(self.model, data)
         step_count = jp.zeros((), dtype=jp.int32)
