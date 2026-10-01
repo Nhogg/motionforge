@@ -244,3 +244,26 @@ The standalone evader evaluator now exposes `slope_degrees`, allowing this
 unregistered repair checkpoint to be audited at fixed angles without adding a
 rejected candidate to the self-play population. Fixed-angle held-out results
 remain required before the repair is accepted or rejected conclusively.
+
+The fixed-angle audit used seeds 10000--10015 against accepted P4:
+
+| slope | tags | timeouts | pursuer failures | evader failures |
+| ---: | ---: | ---: | ---: | ---: |
+| -5 degrees | 2 | 2 | 6 falls | 3 falls, 3 boundary exits |
+| -2.5 degrees | 2 | 2 | 2 boundary exits | 10 boundary exits |
+| 0 degrees | 0 | 10 | 0 | 6 boundary exits |
+| 2.5 degrees | 0 | 2 | 0 | 14 boundary exits |
+| 5 degrees | 1 | 0 | 2 falls | 7 falls, 6 boundary exits |
+
+The artifacts are
+`logs/p9/tag_evader_reward_repair_{m5,m2p5,flat,p2p5,p5}_heldout16_a.json`.
+All 80 rollouts were finite and completed. The repeated first-seed outcome
+check passed at four angles but failed on flat terrain, so the flat artifact
+also records an outcome-level repeatability warning near a terminal boundary.
+
+The reward repair produced genuine flat-ground evasion and sharply reduced
+falls near zero slope, but it did not generalize across terrain and remains
+dominated by boundary exits. The checkpoint is rejected and remains outside
+the self-play population. The next repair should add a denser boundary-control
+signal or constrain commands near the arena edge rather than merely increasing
+the terminal penalty again.
