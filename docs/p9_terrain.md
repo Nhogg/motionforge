@@ -176,3 +176,34 @@ Per-reset terrain mixing fixes the exposure architecture, but generation seven
 is not an accepted policy. Generation four remains the accepted checkpoint.
 The next repair should use a larger optimization budget and current opponents
 instead of adding terrain complexity.
+
+### Longer mixed-slope repair round
+
+`logs/p9/rounds/round_0008_mixed_slope5_repair_1m` repeated the repair from
+accepted generation four with `current_opponent_probability=1.0` and
+1,048,576 requested steps per role. Each role completed 1,064,960 actual
+steps. The round passed its infrastructure checks and published
+`pursuer_g0008_db6ee1b3ba8e` and `evader_g0008_8c97d32756ad`. The pursuer's
+final training evaluation tagged all 32 opponents without falling or leaving
+the arena. The evader's final evaluation, however, produced only one tag in
+32 episodes and no timeouts; 12 episodes ended in an evader fall and 17 ended
+at the boundary. Avoiding a tag by terminating the episode is therefore still
+the dominant evader behavior.
+
+Held-out fixed-angle evaluation used seeds 8000--8015 at every slope:
+
+| slope | tags | timeouts | pursuer failures | evader failures |
+| ---: | ---: | ---: | ---: | ---: |
+| -5 degrees | 0 | 0 | 1 fall, 5 boundary exits | 8 falls, 2 boundary exits |
+| -2.5 degrees | 3 | 0 | 0 | 13 boundary exits |
+| 0 degrees | 0 | 0 | 0 | 16 boundary exits |
+| 2.5 degrees | 0 | 0 | 0 | 16 boundary exits |
+| 5 degrees | 3 | 0 | 3 falls, 1 boundary exit | 6 falls, 3 boundary exits |
+
+The evaluation artifacts are
+`logs/p9/tag_generation8_mixed_slope_{m5,m2p5,flat,p2p5,p5}_a.json`.
+Increasing the optimization budget alone did not repair terrain robustness or
+produce valid evasion. Generation eight is rejected, and generation four
+remains the accepted checkpoint. Before further terrain training, the evader
+objective or termination handling must be changed so falls and boundary exits
+cannot serve as successful tag avoidance.
