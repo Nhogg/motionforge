@@ -73,6 +73,7 @@ class Config:
     evader_fall_penalty: float = 25.0
     evader_out_of_bounds_penalty: float = 25.0
     boundary_outward_velocity_penalty_scale: float = 5.0
+    boundary_command_safety_enabled: bool = False
     naconmax_per_env: int = 64
     njmax: int = 256
     wandb_mode: str = "disabled"
@@ -188,6 +189,7 @@ def main(config: Config) -> None:
         boundary_outward_velocity_penalty_scale=(
             config.boundary_outward_velocity_penalty_scale
         ),
+        boundary_command_safety_enabled=config.boundary_command_safety_enabled,
     )
     environment = TagEvaderEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,

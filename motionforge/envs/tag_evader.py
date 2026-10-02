@@ -19,6 +19,7 @@ from motionforge.controllers import (
     G1LocomotionController,
     build_g1_tag_policy_observation_layout,
     g1_tag_policy_observation,
+    project_boundary_safe_command,
 )
 from motionforge.envs.g1_standing import G1StandingJoystick, default_config
 from motionforge.envs.tag_environment import (
@@ -49,6 +50,7 @@ class TagEvaderConfig:
     boundary_margin: float = 1.0
     boundary_penalty_scale: float = 1.0
     boundary_outward_velocity_penalty_scale: float = 5.0
+    boundary_command_safety_enabled: bool = False
     timeout_reward: float = 10.0
     tag_penalty: float = 10.0
     evader_fall_penalty: float = 25.0
@@ -256,6 +258,7 @@ class TagEvaderEnvironment(Env):
             name: jp.zeros((), dtype=jp.float32)
             for name in (
                 "distance",
+                "command/safety_correction",
                 "reward/boundary",
                 "reward/boundary_outward_velocity",
                 "reward/command_change",
@@ -300,8 +303,28 @@ class TagEvaderEnvironment(Env):
         )
 
     def step(self, state: State, action: jax.Array) -> State:
-        evader_command = pursuer_action_to_command(action)
         pipeline = state.pipeline_state
+        raw_evader_command = pursuer_action_to_command(action)
+        evader_layout = self.tag_environment.observation_layout.agents[
+            self.evader_index
+        ]
+        quaternion_start = evader_layout.root_qpos_start + 3
+        evader_root_quaternion = pipeline.tag_state.data.qpos[
+            quaternion_start : quaternion_start + 4
+        ]
+        if self.config.boundary_command_safety_enabled:
+            evader_command = project_boundary_safe_command(
+                raw_evader_command,
+                pipeline.tag_state.diagnostics.planar_position[self.evader_index],
+                evader_root_quaternion,
+                arena_half_extent=self.tag_environment.config.arena_half_extent,
+                boundary_margin=self.config.boundary_margin,
+            )
+        else:
+            evader_command = raw_evader_command
+        safety_correction = jp.linalg.norm(
+            evader_command[:2] - raw_evader_command[:2]
+        )
         pursuer_observation_value = self._agent_observation(
             pipeline.tag_state,
             self.pursuer.agent_index,
@@ -372,6 +395,7 @@ class TagEvaderEnvironment(Env):
         metrics = dict(state.metrics)
         metrics.update(
             {
+                "command/safety_correction": safety_correction,
                 "distance": distance,
                 "reward/boundary": reward.boundary,
                 "reward/boundary_outward_velocity": (

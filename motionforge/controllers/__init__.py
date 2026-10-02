@@ -12,6 +12,11 @@ from motionforge.controllers.g1_tag import (
     build_g1_tag_policy_observation_layout,
     g1_tag_policy_observation,
 )
+from motionforge.controllers.tag_command_safety import (
+    heading_planar_to_world,
+    project_boundary_safe_command,
+    world_planar_to_heading,
+)
 
 __all__ = [
     "G1ControlOutput",
@@ -22,4 +27,7 @@ __all__ = [
     "apply_velocity_command",
     "build_g1_tag_policy_observation_layout",
     "g1_tag_policy_observation",
+    "heading_planar_to_world",
+    "project_boundary_safe_command",
+    "world_planar_to_heading",
 ]

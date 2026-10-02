@@ -12,6 +12,7 @@ import jax.numpy as jp
 import numpy as np
 
 from motionforge.cli import run_hydra
+from motionforge.controllers import project_boundary_safe_command
 from motionforge.envs import (
     TagEnvironmentConfig,
     TagEnvironmentTermination,
@@ -53,7 +54,7 @@ def termination(
 
 def main(config: Config) -> None:
     tag_config = TagEnvironmentConfig(pursuer_index=0)
-    evader_config = TagEvaderConfig()
+    evader_config = TagEvaderConfig(boundary_command_safety_enabled=True)
     environment = TagEvaderEnvironment(
         locomotion_checkpoint=config.locomotion_checkpoint,
         pursuer_checkpoint=config.pursuer_checkpoint,
@@ -162,11 +163,66 @@ def main(config: Config) -> None:
         evader_index=environment.evader_index,
         config=evader_config,
     )
+    identity_quaternion = jp.asarray([1.0, 0.0, 0.0, 0.0])
+    outward_command = project_boundary_safe_command(
+        jp.asarray([1.0, 0.25, 0.3]),
+        jp.asarray([3.5, 0.0]),
+        identity_quaternion,
+        arena_half_extent=4.0,
+        boundary_margin=1.0,
+    )
+    inward_command = project_boundary_safe_command(
+        jp.asarray([-1.0, 0.25, 0.3]),
+        jp.asarray([3.5, 0.0]),
+        identity_quaternion,
+        arena_half_extent=4.0,
+        boundary_margin=1.0,
+    )
+    corner_command = project_boundary_safe_command(
+        jp.asarray([1.0, -0.4, 0.3]),
+        jp.asarray([3.5, -3.5]),
+        identity_quaternion,
+        arena_half_extent=4.0,
+        boundary_margin=1.0,
+    )
+    half_sqrt_two = np.sqrt(0.5)
+    rotated_command = project_boundary_safe_command(
+        jp.asarray([0.0, -1.0, 0.3]),
+        jp.asarray([3.5, 0.0]),
+        jp.asarray([half_sqrt_two, 0.0, 0.0, half_sqrt_two]),
+        arena_half_extent=4.0,
+        boundary_margin=1.0,
+    )
+    interior_command = project_boundary_safe_command(
+        jp.asarray([1.0, -0.4, 0.3]),
+        jp.asarray([2.0, -2.0]),
+        identity_quaternion,
+        arena_half_extent=4.0,
+        boundary_margin=1.0,
+    )
 
     next_obs = np.asarray(next_state.obs)
     checks = {
         "action_size": environment.action_size == 3,
         "backend_gpu": jax.default_backend() == "gpu",
+        "boundary_command_corner_axes_projected": bool(
+            np.allclose(np.asarray(corner_command), [0.5, -0.2, 0.3])
+        ),
+        "boundary_command_heading_frame_respected": bool(
+            np.allclose(np.asarray(rotated_command), [0.0, -0.5, 0.3], atol=1e-6)
+        ),
+        "boundary_command_interior_unchanged": bool(
+            np.allclose(np.asarray(interior_command), [1.0, -0.4, 0.3])
+        ),
+        "boundary_command_inward_and_tangent_preserved": bool(
+            np.allclose(np.asarray(inward_command), [-1.0, 0.25, 0.3])
+        ),
+        "boundary_command_outward_projected": bool(
+            np.allclose(np.asarray(outward_command), [0.5, 0.25, 0.3])
+        ),
+        "boundary_command_step_metric_finite": bool(
+            np.isfinite(np.asarray(next_state.metrics["command/safety_correction"]))
+        ),
         "evader_role_bound": environment.evader_index == 1,
         "finite_step": bool(
             np.isfinite(np.asarray(next_state.pipeline_state.tag_state.data.qpos)).all()

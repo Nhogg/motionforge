@@ -61,6 +61,7 @@ def main(config: Config) -> None:
             locomotion_checkpoint=locomotion,
             round_index=1,
             slope_curriculum_degrees=5.0,
+            evader_boundary_command_safety_enabled=True,
             output_dir=round_dir,
             dry_run=True,
         )
@@ -100,6 +101,7 @@ def main(config: Config) -> None:
                 and "evader_out_of_bounds_penalty=25.0" in evader_command
                 and "boundary_outward_velocity_penalty_scale=5.0"
                 in evader_command
+                and "boundary_command_safety_enabled=True" in evader_command
             ),
             "training_not_started": not (round_dir / "pursuer_training").exists(),
         }

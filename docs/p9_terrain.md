@@ -324,3 +324,32 @@ not merely increase the dense penalty or extend this failed checkpoint. The
 next repair should make boundary safety part of command selection, for example
 by projecting unsafe outward planar commands near an edge, and must keep that
 mechanism modular and independently tested before another training run.
+
+### Boundary-aware command projection
+
+`motionforge.controllers.tag_command_safety` now provides a stateless,
+JAX-compatible projection between a high-level policy and the locomotion
+controller. It rotates the policy's heading-frame planar command into the
+world frame and treats the two axes of the square arena independently. Within
+the existing boundary margin, only velocity pointing farther outward is
+attenuated linearly: it is unchanged at the inner edge of the margin and zero
+at the arena edge. Inward and edge-tangential velocity are preserved, as is
+the yaw-rate command. The projected planar command is then rotated back into
+the agent heading frame.
+
+The evader environment applies this filter only when
+`boundary_command_safety_enabled=true`; the default is false so accepted and
+historical policies retain their original execution contract. The magnitude
+of each intervention is exposed as `command/safety_correction`. The evader
+training launcher exposes the same Hydra field, and the self-play runner
+forwards it through
+`evader_boundary_command_safety_enabled`, preserving the setting in manifests
+and commands.
+
+`logs/p9/tag_evader_boundary_command_safety_a.json` verifies the pure
+projection semantics for interior, outward, inward, tangential, corner, and
+rotated-heading cases and exercises an enabled GPU environment step.
+`logs/p9/tag_self_play_boundary_command_safety_a.json` verifies self-play
+command forwarding without launching training. Both audits pass. This is an
+infrastructure result only: no checkpoint using command projection has been
+trained or accepted yet.

@@ -40,6 +40,7 @@ class Config:
     evader_fall_penalty: float = 25.0
     evader_out_of_bounds_penalty: float = 25.0
     evader_boundary_outward_velocity_penalty_scale: float = 5.0
+    evader_boundary_command_safety_enabled: bool = False
     fixed_noise_std: float = 0.2
     num_timesteps: int = 131_072
     num_envs: int = 128
@@ -98,6 +99,8 @@ def _training_command(
                 f"{config.evader_out_of_bounds_penalty}",
                 "boundary_outward_velocity_penalty_scale="
                 f"{config.evader_boundary_outward_velocity_penalty_scale}",
+                "boundary_command_safety_enabled="
+                f"{config.evader_boundary_command_safety_enabled}",
             ]
         )
     return command
