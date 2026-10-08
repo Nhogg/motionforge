@@ -12,6 +12,7 @@ from motionforge.models.hierarchical import (
     LocomotionNormalization,
     LocomotionObservation,
     LocomotionOutput,
+    StrategyModule,
     StrategyObservation,
     StrategyOutput,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "LocomotionNormalization",
     "LocomotionObservation",
     "LocomotionOutput",
+    "StrategyModule",
     "StrategyObservation",
     "StrategyOutput",
     "load_p2_checkpoint",
