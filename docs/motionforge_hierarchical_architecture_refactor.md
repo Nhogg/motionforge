@@ -697,23 +697,24 @@ Add tests for the frequency relationship.
 
 Refactor responsibilities so environment layers remain clean.
 
-Recommended conceptual structure:
+Required environment inheritance structure:
 
 ```text
-PhysicsEnv
+WarpEnv
     |
     v
-TagTaskEnv
+LeagueEnv
     |
     v
-RolloutRunner
-    |
-    +-- current learner
-    |
-    +-- frozen opponent selected by LeagueManager
+MultiAgentTaskEnv
 ```
 
-## PhysicsEnv owns
+Do not create a separate parallel task-environment hierarchy for non-league
+training. Evaluation, scripted play, and fixed-opponent training use the same
+``MultiAgentTaskEnv`` with a league configured for the required fixed or
+scripted opponent.
+
+## WarpEnv owns
 
 ```text
 MuJoCo/MJX state
@@ -725,16 +726,37 @@ terrain geometry
 robot state extraction
 ```
 
-PhysicsEnv must not know about:
+WarpEnv must not know about:
 
 ```text
 PPO
 league snapshots
-roles as strategic semantics
 checkpoint ranking
 ```
 
-## TagTaskEnv owns
+## LeagueEnv owns
+
+```text
+League reference
+opponent selection
+snapshot identity
+frozen-opponent lifecycle
+matchup metadata
+```
+
+Conceptually:
+
+```python
+class LeagueEnv(WarpEnv):
+    def __init__(self, ..., league: League):
+        super().__init__(...)
+        self.league = league
+```
+
+LeagueEnv must not own learner optimizer state. It may resolve an immutable
+opponent snapshot, but policy execution remains part of rollout collection.
+
+## MultiAgentTaskEnv owns
 
 ```text
 role assignment
@@ -746,7 +768,7 @@ OOB rules
 termination semantics
 ```
 
-TagTaskEnv should not own optimizer state or checkpoint storage.
+MultiAgentTaskEnv should not own optimizer state or mutable learner weights.
 
 ## RolloutRunner owns
 
@@ -758,7 +780,7 @@ per-role routing
 trajectory collection
 ```
 
-## LeagueManager owns
+## League owns
 
 ```text
 policy snapshots
@@ -769,7 +791,9 @@ best-policy tracking
 scripted opponents
 ```
 
-Do **not** put neural-network weights inside the low-level physics environment.
+Do **not** put neural-network weights inside ``WarpEnv``. Frozen opponent
+snapshots belong to the league layer and trainable learner parameters belong to
+the trainer.
 
 ---
 
@@ -780,7 +804,7 @@ Implement league self-play separately from physics.
 Conceptual interface:
 
 ```python
-class LeagueManager:
+class League:
     def add_snapshot(...): ...
     def sample_opponent(...): ...
     def update_results(...): ...
@@ -905,7 +929,7 @@ current learner theta_t
          +---------------------+
                                |
                                v
-                     LeagueManager.sample()
+                        League.sample()
                                |
                                v
                    frozen opponent theta_k
@@ -1582,7 +1606,7 @@ gait ---------->|                  |
            strategy opt       motor opt
 
 
-                   LeagueManager
+                       League
            +--------+-------+--------+
          recent historical best   scripted
            +--------+-------+--------+
@@ -1597,7 +1621,8 @@ gait ---------->|                  |
 - Do not take the word `head` too literally. The strategic and locomotion sides should each have their own encoder.
 - The modules communicate through the high-level command bottleneck.
 - The stop-gradient separates optimization, not information flow.
-- The league belongs in the trainer/rollout layer, not in the low-level physics environment.
+- The league is attached by ``LeagueEnv`` above the low-level ``WarpEnv``;
+  policy execution and learner updates remain in the rollout/training layer.
 - The initial league mix (`55% recent / 25% historical / 10% best / 10% scripted`) is provisional and must be configurable.
 - The opponent is frozen during a learner PPO collection/update segment.
 - The same role-conditioned learner can act as pursuer or evader.

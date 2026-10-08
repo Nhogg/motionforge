@@ -7,8 +7,8 @@ stop-gradient so a physical locomotion objective cannot update strategy.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import jax
 import jax.numpy as jp
@@ -74,6 +74,17 @@ class LocomotionObservation:
             ),
             axis=-1,
         )
+
+
+@struct.dataclass
+class LocomotionNormalization:
+    """Non-trainable observation statistics restored from locomotion PPO."""
+
+    mean: jax.Array
+    std: jax.Array
+
+    def normalize(self, observation: jax.Array) -> jax.Array:
+        return (observation - self.mean) / self.std
 
 
 @dataclass(frozen=True)
@@ -200,6 +211,7 @@ class HierarchicalPolicy(nn.Module):
         self,
         strategy_observation: StrategyObservation,
         locomotion_observation: LocomotionObservation,
+        locomotion_normalization: LocomotionNormalization | None = None,
     ) -> HierarchicalPolicyOutput:
         strategy_array = strategy_observation.as_array()
         strategy = StrategyModule(
@@ -210,6 +222,8 @@ class HierarchicalPolicy(nn.Module):
 
         motor_command = jax.lax.stop_gradient(strategy.command)
         locomotion_array = locomotion_observation.as_array(motor_command)
+        if locomotion_normalization is not None:
+            locomotion_array = locomotion_normalization.normalize(locomotion_array)
         locomotion = LocomotionModule(
             self.config.locomotion_hidden_layer_sizes,
             name="locomotion",
