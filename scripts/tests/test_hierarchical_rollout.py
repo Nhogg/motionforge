@@ -35,15 +35,15 @@ class Config:
 def main(config: Config) -> None:
     if config.locomotion_steps < 6:
         raise ValueError("locomotion_steps must be at least six")
-    league = FixedLeague(
+    _, p2_parameters = load_p2_checkpoint(config.checkpoint)
+    placeholder_league = FixedLeague(
         LeagueOpponent(
-            opponent_id="scripted/test",
+            opponent_id="initialization-placeholder",
             category="scripted",
-            policy="test-policy-handle",
+            policy=None,
         )
     )
-    environment = MultiAgentTaskEnv(league=league)
-    _, p2_parameters = load_p2_checkpoint(config.checkpoint)
+    environment = MultiAgentTaskEnv(league=placeholder_league)
     runner = HierarchicalRolloutRunner(
         environment,
         p2_locomotion_normalization(p2_parameters[0]),
@@ -52,12 +52,25 @@ def main(config: Config) -> None:
     state = runner.reset(reset_key)
     parameters = runner.initialize_parameters(parameter_key, state)
     parameters = migrate_p2_actor_parameters(parameters, p2_parameters[1])
+    opponent_parameters = jax.tree.map(lambda value: value, parameters)
+    environment.league = FixedLeague(
+        LeagueOpponent(
+            opponent_id="historical/test-0001",
+            category="historical",
+            policy=opponent_parameters,
+        )
+    )
+    segment = runner.start_segment(
+        parameters,
+        seed=config.seed,
+        learner_index=0,
+    )
     step = jax.jit(runner.step)
 
     command_history = []
     action_history = []
     for _ in range(config.locomotion_steps):
-        state = step(parameters, state)
+        state = step(segment, state)
         command_history.append(np.asarray(state.commands))
         action_history.append(np.asarray(state.previous_actions))
     state.environment.physics.data.qpos.block_until_ready()
@@ -105,6 +118,13 @@ def main(config: Config) -> None:
         ),
         "strategy_update_count": int(np.asarray(state.strategy_updates))
         == expected_strategy_updates,
+        "segment_indices": (
+            segment.learner_index == 0 and segment.opponent_index == 1
+        ),
+        "segment_opponent_identity": (
+            segment.opponent_id == "historical/test-0001"
+            and segment.opponent_category == "historical"
+        ),
     }
     result = {
         "backend": jax.default_backend(),

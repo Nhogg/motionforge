@@ -9,6 +9,7 @@ from typing import Any
 import jax
 import jax.numpy as jp
 from flax import struct
+from flax.core import freeze, unfreeze
 
 from motionforge.controllers import build_g1_tag_policy_observation_layout
 from motionforge.envs import (
@@ -19,6 +20,7 @@ from motionforge.envs import (
     role_encodings,
     strategy_observations,
 )
+from motionforge.league import LeagueOpponent
 from motionforge.models import (
     HierarchicalPolicy,
     LocomotionModule,
@@ -71,8 +73,27 @@ class HierarchicalRolloutState:
     strategy_updates: jax.Array
 
 
+@struct.dataclass
+class HierarchicalRolloutSegment:
+    """Parameters and league provenance fixed for one collection segment."""
+
+    learner_parameters: Any
+    opponent_parameters: Any
+    opponent_id: str = struct.field(pytree_node=False)
+    opponent_category: str = struct.field(pytree_node=False)
+    learner_index: int = struct.field(pytree_node=False)
+
+    def __post_init__(self) -> None:
+        if self.learner_index not in (0, 1):
+            raise ValueError("learner_index must be zero or one")
+
+    @property
+    def opponent_index(self) -> int:
+        return 1 - self.learner_index
+
+
 class HierarchicalRolloutRunner:
-    """Execute one shared hierarchy for both agents at fixed temporal rates."""
+    """Execute learner and frozen-opponent hierarchies at fixed temporal rates."""
 
     def __init__(
         self,
@@ -163,9 +184,56 @@ class HierarchicalRolloutRunner:
             self.locomotion_normalization,
         )["params"]
 
+    def start_segment(
+        self,
+        learner_parameters: Any,
+        *,
+        seed: int,
+        learner_index: int,
+    ) -> HierarchicalRolloutSegment:
+        """Select and freeze the two policy trees used for one rollout segment."""
+        opponent = self.environment.sample_opponent(seed=seed)
+        self._validate_opponent(opponent)
+        if jax.tree.structure(learner_parameters) != jax.tree.structure(
+            opponent.policy
+        ):
+            raise ValueError("learner and opponent parameter structures must match")
+        learner_shapes = jax.tree.map(jp.shape, learner_parameters)
+        opponent_shapes = jax.tree.map(jp.shape, opponent.policy)
+        if jax.tree.leaves(learner_shapes) != jax.tree.leaves(opponent_shapes):
+            raise ValueError("learner and opponent parameter shapes must match")
+        if learner_index not in (0, 1):
+            raise ValueError("learner_index must be zero or one")
+        return HierarchicalRolloutSegment(
+            learner_parameters=freeze(unfreeze(learner_parameters)),
+            opponent_parameters=freeze(unfreeze(opponent.policy)),
+            opponent_id=opponent.opponent_id,
+            opponent_category=opponent.category,
+            learner_index=learner_index,
+        )
+
+    @staticmethod
+    def _validate_opponent(opponent: LeagueOpponent) -> None:
+        try:
+            strategy = opponent.policy["strategy"]
+            locomotion = opponent.policy["locomotion"]
+        except (KeyError, TypeError) as error:
+            raise ValueError(
+                "league opponent policy must contain strategy and locomotion parameters"
+            ) from error
+        if not strategy or not locomotion:
+            raise ValueError("league opponent parameter groups must not be empty")
+
+    @staticmethod
+    def _agent_parameters(segment: HierarchicalRolloutSegment) -> Any:
+        """Stack parameter trees in physical agent order for vmapped inference."""
+        ordered = [segment.opponent_parameters, segment.opponent_parameters]
+        ordered[segment.learner_index] = segment.learner_parameters
+        return jax.tree.map(lambda *leaves: jp.stack(leaves), *ordered)
+
     def step(
         self,
-        parameters: Any,
+        segment: HierarchicalRolloutSegment,
         state: HierarchicalRolloutState,
     ) -> HierarchicalRolloutState:
         """Advance exactly one locomotion update and its ten physics steps."""
@@ -179,6 +247,7 @@ class HierarchicalRolloutRunner:
             self.policy.config.strategy_hidden_layer_sizes,
             self.policy.config.command_scale,
         )
+        agent_parameters = self._agent_parameters(segment)
         should_update_strategy = (
             state.locomotion_steps
             % self.config.locomotion_steps_per_strategy_step
@@ -186,8 +255,12 @@ class HierarchicalRolloutRunner:
         )
 
         def update_strategy(_):
-            return strategy_module.apply(
-                {"params": parameters["strategy"]},
+            return jax.vmap(
+                lambda parameters, observation: strategy_module.apply(
+                    {"params": parameters}, observation
+                )
+            )(
+                agent_parameters["strategy"],
                 strategy_observation.as_array(),
             )
 
@@ -214,10 +287,15 @@ class HierarchicalRolloutRunner:
         normalized_locomotion = self.locomotion_normalization.normalize(
             locomotion_observation.as_array(motor_commands)
         )
-        locomotion = LocomotionModule(
+        locomotion_module = LocomotionModule(
             self.policy.config.locomotion_hidden_layer_sizes
-        ).apply(
-            {"params": parameters["locomotion"]},
+        )
+        locomotion = jax.vmap(
+            lambda parameters, observation: locomotion_module.apply(
+                {"params": parameters}, observation
+            )
+        )(
+            agent_parameters["locomotion"],
             normalized_locomotion,
         )
         joint_targets = (
