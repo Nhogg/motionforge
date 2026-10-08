@@ -5,6 +5,12 @@ Author: Nathan Hogg <nathanhogg1223@gmail.com>
 
 from __future__ import annotations
 
+from motionforge.envs.hierarchical_observations import (
+    HierarchicalObservationConfig,
+    locomotion_observations,
+    role_encodings,
+    strategy_observations,
+)
 from motionforge.envs.league import LeagueEnv
 from motionforge.envs.multi_agent_task import (
     MultiAgentTaskConfig,
@@ -117,6 +123,7 @@ __all__ = [
     "FallDetectionLayout",
     "FallObservation",
     "G1ModelLayout",
+    "HierarchicalObservationConfig",
     "LeagueEnv",
     "MultiAgentTaskConfig",
     "MultiAgentTaskDiagnostics",
@@ -165,13 +172,16 @@ __all__ = [
     "detect_out_of_bounds",
     "detect_tag_contact",
     "evader_reward",
+    "locomotion_observations",
     "make_two_g1_data",
     "observe_episode_timeout",
     "pursuer_action_to_command",
     "pursuer_observation",
     "pursuer_reward",
     "relative_planar_observation",
+    "role_encodings",
     "sample_tag_reset",
+    "strategy_observations",
     "world_planar_to_heading",
     "wrap_tag_evader_for_training",
     "wrap_tag_pursuer_for_training",
