@@ -1,5 +1,11 @@
 """Training objectives and update primitives for MotionForge policies."""
 
+from motionforge.training.hierarchical_checkpoint import (
+    CHECKPOINT_SCHEMA,
+    CHECKPOINT_VERSION,
+    load_hierarchical_checkpoint,
+    save_hierarchical_checkpoint,
+)
 from motionforge.training.hierarchical_ppo import (
     PpoLossConfig,
     PpoLossMetrics,
@@ -14,12 +20,16 @@ from motionforge.training.hierarchical_update import (
 )
 
 __all__ = [
+    "CHECKPOINT_SCHEMA",
+    "CHECKPOINT_VERSION",
     "HierarchicalPpoUpdater",
     "HierarchicalTrainState",
     "HierarchicalUpdateConfig",
     "HierarchicalUpdateMetrics",
     "PpoLossConfig",
     "PpoLossMetrics",
+    "load_hierarchical_checkpoint",
     "locomotion_ppo_loss",
+    "save_hierarchical_checkpoint",
     "strategy_ppo_loss",
 ]
