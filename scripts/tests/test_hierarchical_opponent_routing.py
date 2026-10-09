@@ -11,10 +11,10 @@ import jax.numpy as jp
 import numpy as np
 
 from motionforge.cli import run_hydra
-from motionforge.envs import MultiAgentTaskEnv
+from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import LocomotionNormalization
-from motionforge.rollout import HierarchicalRolloutRunner
+from motionforge.rollout import HierarchicalRolloutConfig, HierarchicalRolloutRunner
 
 
 @dataclass
@@ -34,7 +34,8 @@ def main(config: Config) -> None:
     environment = MultiAgentTaskEnv(
         league=FixedLeague(
             LeagueOpponent("placeholder", "scripted", None)
-        )
+        ),
+        config=MultiAgentTaskConfig(pursuer_index=1),
     )
     runner = HierarchicalRolloutRunner(
         environment,
@@ -42,6 +43,7 @@ def main(config: Config) -> None:
             mean=jp.zeros(103, dtype=jp.float32),
             std=jp.ones(103, dtype=jp.float32),
         ),
+        HierarchicalRolloutConfig(learner_pursuer_probability=1.0),
     )
     reset_key, learner_key, opponent_key = jax.random.split(
         jax.random.PRNGKey(config.seed), 3
@@ -53,7 +55,7 @@ def main(config: Config) -> None:
     environment.league = FixedLeague(
         LeagueOpponent("historical/0007", "historical", opponent)
     )
-    segment = runner.start_segment(learner, seed=config.seed, learner_index=1)
+    segment = runner.start_segment(learner, seed=config.seed)
     next_state = jax.jit(runner.step)(segment, state)
     next_state.environment.physics.data.qpos.block_until_ready()
 
@@ -66,12 +68,14 @@ def main(config: Config) -> None:
             np.asarray(next_state.commands[0]), np.asarray(next_state.commands[1])
         ),
         "learner_routed_to_agent1": segment.learner_index == 1,
+        "learner_role_is_pursuer": segment.learner_role == "pursuer",
         "opponent_frozen": _tree_equal(opponent, opponent_before),
         "opponent_identity_fixed": (
             segment.opponent_id == "historical/0007"
             and segment.opponent_category == "historical"
         ),
         "opponent_routed_to_agent0": segment.opponent_index == 0,
+        "opponent_role_is_evader": segment.opponent_role == "evader",
         "rollout_finite": bool(
             np.isfinite(np.asarray(next_state.environment.physics.data.qpos)).all()
         ),

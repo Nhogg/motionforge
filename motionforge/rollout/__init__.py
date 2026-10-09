@@ -5,6 +5,7 @@ from motionforge.rollout.hierarchical import (
     HierarchicalRolloutRunner,
     HierarchicalRolloutSegment,
     HierarchicalRolloutState,
+    sample_learner_is_pursuer,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "HierarchicalRolloutRunner",
     "HierarchicalRolloutSegment",
     "HierarchicalRolloutState",
+    "sample_learner_is_pursuer",
 ]

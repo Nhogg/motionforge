@@ -18,7 +18,7 @@ from motionforge.models import (
     migrate_p2_actor_parameters,
     p2_locomotion_normalization,
 )
-from motionforge.rollout import HierarchicalRolloutRunner
+from motionforge.rollout import HierarchicalRolloutConfig, HierarchicalRolloutRunner
 
 
 @dataclass
@@ -47,6 +47,7 @@ def main(config: Config) -> None:
     runner = HierarchicalRolloutRunner(
         environment,
         p2_locomotion_normalization(p2_parameters[0]),
+        HierarchicalRolloutConfig(learner_pursuer_probability=1.0),
     )
     reset_key, parameter_key = jax.random.split(jax.random.PRNGKey(config.seed))
     state = runner.reset(reset_key)
@@ -63,7 +64,6 @@ def main(config: Config) -> None:
     segment = runner.start_segment(
         parameters,
         seed=config.seed,
-        learner_index=0,
     )
     step = jax.jit(runner.step)
 
@@ -120,6 +120,10 @@ def main(config: Config) -> None:
         == expected_strategy_updates,
         "segment_indices": (
             segment.learner_index == 0 and segment.opponent_index == 1
+        ),
+        "segment_roles": (
+            segment.learner_role == "pursuer"
+            and segment.opponent_role == "evader"
         ),
         "segment_opponent_identity": (
             segment.opponent_id == "historical/test-0001"

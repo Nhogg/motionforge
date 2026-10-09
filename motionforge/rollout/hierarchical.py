@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,6 +31,15 @@ from motionforge.models import (
 )
 
 
+def sample_learner_is_pursuer(*, seed: int, probability: float) -> bool:
+    """Sample a segment role reproducibly without requiring device state."""
+    if seed < 0:
+        raise ValueError("seed must be nonnegative")
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("probability must be in [0, 1]")
+    return random.Random(seed).random() < probability
+
+
 @dataclass(frozen=True)
 class HierarchicalRolloutConfig:
     physics_hz: int = 500
@@ -37,6 +47,7 @@ class HierarchicalRolloutConfig:
     strategy_hz: int = 10
     gait_frequency_hz: float = 1.375
     action_scale: float = 0.5
+    learner_pursuer_probability: float = 0.5
 
     def __post_init__(self) -> None:
         for name in ("physics_hz", "locomotion_hz", "strategy_hz"):
@@ -50,6 +61,8 @@ class HierarchicalRolloutConfig:
             raise ValueError("gait_frequency_hz must be positive")
         if self.action_scale <= 0.0:
             raise ValueError("action_scale must be positive")
+        if not 0.0 <= self.learner_pursuer_probability <= 1.0:
+            raise ValueError("learner_pursuer_probability must be in [0, 1]")
 
     @property
     def locomotion_steps_per_strategy_step(self) -> int:
@@ -82,6 +95,7 @@ class HierarchicalRolloutSegment:
     opponent_id: str = struct.field(pytree_node=False)
     opponent_category: str = struct.field(pytree_node=False)
     learner_index: int = struct.field(pytree_node=False)
+    learner_is_pursuer: bool = struct.field(pytree_node=False)
 
     def __post_init__(self) -> None:
         if self.learner_index not in (0, 1):
@@ -90,6 +104,14 @@ class HierarchicalRolloutSegment:
     @property
     def opponent_index(self) -> int:
         return 1 - self.learner_index
+
+    @property
+    def learner_role(self) -> str:
+        return "pursuer" if self.learner_is_pursuer else "evader"
+
+    @property
+    def opponent_role(self) -> str:
+        return "evader" if self.learner_is_pursuer else "pursuer"
 
 
 class HierarchicalRolloutRunner:
@@ -189,9 +211,14 @@ class HierarchicalRolloutRunner:
         learner_parameters: Any,
         *,
         seed: int,
-        learner_index: int,
     ) -> HierarchicalRolloutSegment:
         """Select and freeze the two policy trees used for one rollout segment."""
+        learner_is_pursuer = self.sample_learner_is_pursuer(seed=seed)
+        learner_index = (
+            self.environment.config.pursuer_index
+            if learner_is_pursuer
+            else 1 - self.environment.config.pursuer_index
+        )
         opponent = self.environment.sample_opponent(seed=seed)
         self._validate_opponent(opponent)
         if jax.tree.structure(learner_parameters) != jax.tree.structure(
@@ -210,6 +237,14 @@ class HierarchicalRolloutRunner:
             opponent_id=opponent.opponent_id,
             opponent_category=opponent.category,
             learner_index=learner_index,
+            learner_is_pursuer=learner_is_pursuer,
+        )
+
+    def sample_learner_is_pursuer(self, *, seed: int) -> bool:
+        """Sample the learner role deterministically at segment granularity."""
+        return sample_learner_is_pursuer(
+            seed=seed,
+            probability=self.config.learner_pursuer_probability,
         )
 
     @staticmethod
