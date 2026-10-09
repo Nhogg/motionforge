@@ -28,6 +28,8 @@ from motionforge.models import (
     LocomotionNormalization,
     StrategyModule,
     StrategyOutput,
+    diagonal_normal_entropy,
+    tanh_normal_sample_and_log_prob,
 )
 
 
@@ -48,6 +50,7 @@ class HierarchicalRolloutConfig:
     gait_frequency_hz: float = 1.375
     action_scale: float = 0.5
     learner_pursuer_probability: float = 0.5
+    stochastic_actions: bool = False
 
     def __post_init__(self) -> None:
         for name in ("physics_hz", "locomotion_hz", "strategy_hz"):
@@ -82,6 +85,11 @@ class HierarchicalRolloutState:
     roles: jax.Array
     strategy_values: jax.Array
     locomotion_values: jax.Array
+    strategy_log_probabilities: jax.Array
+    strategy_entropies: jax.Array
+    locomotion_log_probabilities: jax.Array
+    locomotion_entropies: jax.Array
+    policy_rng: jax.Array
     locomotion_steps: jax.Array
     strategy_updates: jax.Array
 
@@ -167,7 +175,8 @@ class HierarchicalRolloutRunner:
         )
 
     def reset(self, key: jax.Array) -> HierarchicalRolloutState:
-        environment_state = self.environment.reset(key)
+        environment_key, policy_key = jax.random.split(key)
+        environment_state = self.environment.reset(environment_key)
         return HierarchicalRolloutState(
             environment=environment_state,
             commands=jp.zeros((2, 3), dtype=jp.float32),
@@ -176,6 +185,11 @@ class HierarchicalRolloutRunner:
             roles=role_encodings(jp.asarray(self.environment.config.pursuer_index)),
             strategy_values=jp.zeros((2,), dtype=jp.float32),
             locomotion_values=jp.zeros((2,), dtype=jp.float32),
+            strategy_log_probabilities=jp.zeros((2,), dtype=jp.float32),
+            strategy_entropies=jp.zeros((2,), dtype=jp.float32),
+            locomotion_log_probabilities=jp.zeros((2,), dtype=jp.float32),
+            locomotion_entropies=jp.zeros((2,), dtype=jp.float32),
+            policy_rng=policy_key,
             locomotion_steps=jp.zeros((), dtype=jp.int32),
             strategy_updates=jp.zeros((), dtype=jp.int32),
         )
@@ -281,8 +295,14 @@ class HierarchicalRolloutRunner:
         strategy_module = StrategyModule(
             self.policy.config.strategy_hidden_layer_sizes,
             self.policy.config.command_scale,
+            self.policy.config.strategy_initial_log_std,
         )
         agent_parameters = self._agent_parameters(segment)
+        next_policy_key, strategy_key, locomotion_key = jax.random.split(
+            state.policy_rng, 3
+        )
+        strategy_keys = jax.random.split(strategy_key, 2)
+        locomotion_keys = jax.random.split(locomotion_key, 2)
         should_update_strategy = (
             state.locomotion_steps
             % self.config.locomotion_steps_per_strategy_step
@@ -290,7 +310,7 @@ class HierarchicalRolloutRunner:
         )
 
         def update_strategy(_):
-            return jax.vmap(
+            output = jax.vmap(
                 lambda parameters, observation: strategy_module.apply(
                     {"params": parameters}, observation
                 )
@@ -298,14 +318,35 @@ class HierarchicalRolloutRunner:
                 agent_parameters["strategy"],
                 strategy_observation.as_array(),
             )
+            entropy = diagonal_normal_entropy(output.log_std)
+            if not self.config.stochastic_actions:
+                return output, jp.zeros((2,), dtype=jp.float32), entropy
+            command, log_probability = jax.vmap(
+                tanh_normal_sample_and_log_prob
+            )(
+                strategy_keys,
+                output.location,
+                output.log_std,
+                jp.broadcast_to(
+                    jp.asarray(self.policy.config.command_scale),
+                    output.location.shape,
+                ),
+            )
+            return output.replace(command=command), log_probability, entropy
 
         def hold_strategy(_):
-            return StrategyOutput(
-                command=state.commands,
-                value=state.strategy_values,
+            return (
+                StrategyOutput(
+                    location=jp.zeros_like(state.commands),
+                    command=state.commands,
+                    log_std=jp.zeros_like(state.commands),
+                    value=state.strategy_values,
+                ),
+                state.strategy_log_probabilities,
+                state.strategy_entropies,
             )
 
-        strategy = jax.lax.cond(
+        strategy, strategy_log_probability, strategy_entropy = jax.lax.cond(
             should_update_strategy,
             update_strategy,
             hold_strategy,
@@ -323,7 +364,8 @@ class HierarchicalRolloutRunner:
             locomotion_observation.as_array(motor_commands)
         )
         locomotion_module = LocomotionModule(
-            self.policy.config.locomotion_hidden_layer_sizes
+            self.policy.config.locomotion_hidden_layer_sizes,
+            self.policy.config.locomotion_initial_log_std,
         )
         locomotion = jax.vmap(
             lambda parameters, observation: locomotion_module.apply(
@@ -333,6 +375,19 @@ class HierarchicalRolloutRunner:
             agent_parameters["locomotion"],
             normalized_locomotion,
         )
+        locomotion_entropy = diagonal_normal_entropy(locomotion.log_std)
+        if self.config.stochastic_actions:
+            action, locomotion_log_probability = jax.vmap(
+                tanh_normal_sample_and_log_prob
+            )(
+                locomotion_keys,
+                locomotion.location,
+                locomotion.log_std,
+                jp.ones_like(locomotion.location),
+            )
+            locomotion = locomotion.replace(action=action)
+        else:
+            locomotion_log_probability = jp.zeros((2,), dtype=jp.float32)
         joint_targets = (
             self.environment.default_joint_targets
             + locomotion.action * self.config.action_scale
@@ -352,6 +407,11 @@ class HierarchicalRolloutRunner:
             phases=phases,
             strategy_values=strategy.value,
             locomotion_values=locomotion.value,
+            strategy_log_probabilities=strategy_log_probability,
+            strategy_entropies=strategy_entropy,
+            locomotion_log_probabilities=locomotion_log_probability,
+            locomotion_entropies=locomotion_entropy,
+            policy_rng=next_policy_key,
             locomotion_steps=state.locomotion_steps + 1,
             strategy_updates=(
                 state.strategy_updates + should_update_strategy.astype(jp.int32)

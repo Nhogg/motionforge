@@ -56,11 +56,15 @@ class HierarchicalTransition:
     strategy_observation: jax.Array
     strategy_command: jax.Array
     strategy_value: jax.Array
+    strategy_log_probability: jax.Array
+    strategy_entropy: jax.Array
     strategy_reward: jax.Array
     strategy_update: jax.Array
     locomotion_observation: jax.Array
     locomotion_action: jax.Array
     locomotion_value: jax.Array
+    locomotion_log_probability: jax.Array
+    locomotion_entropy: jax.Array
     locomotion_reward: jax.Array
     command_tracking_error: jax.Array
     done: jax.Array
@@ -279,6 +283,10 @@ def collect_hierarchical_transition(
         strategy_observation=previous_strategy,
         strategy_command=command,
         strategy_value=next_state.strategy_values[learner_index],
+        strategy_log_probability=next_state.strategy_log_probabilities[
+            learner_index
+        ],
+        strategy_entropy=next_state.strategy_entropies[learner_index],
         strategy_reward=strategy_reward,
         strategy_update=(
             state.locomotion_steps
@@ -288,6 +296,10 @@ def collect_hierarchical_transition(
         locomotion_observation=motor_observation,
         locomotion_action=next_state.previous_actions[learner_index],
         locomotion_value=next_state.locomotion_values[learner_index],
+        locomotion_log_probability=next_state.locomotion_log_probabilities[
+            learner_index
+        ],
+        locomotion_entropy=next_state.locomotion_entropies[learner_index],
         locomotion_reward=locomotion_reward.total,
         command_tracking_error=command - measured_command,
         done=next_state.environment.done,

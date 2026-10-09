@@ -42,6 +42,8 @@ class StrategyBatch:
     observation: jax.Array
     command: jax.Array
     value: jax.Array
+    log_probability: jax.Array
+    entropy: jax.Array
     reward: jax.Array
     done: jax.Array
     valid: jax.Array
@@ -55,6 +57,8 @@ class LocomotionBatch:
     observation: jax.Array
     action: jax.Array
     value: jax.Array
+    log_probability: jax.Array
+    entropy: jax.Array
     reward: jax.Array
     done: jax.Array
     valid: jax.Array
@@ -133,6 +137,8 @@ def _strategy_batch(
         observation=grouped(transitions.strategy_observation)[:, 0],
         command=grouped(transitions.strategy_command)[:, 0],
         value=grouped(transitions.strategy_value)[:, 0],
+        log_probability=grouped(transitions.strategy_log_probability)[:, 0],
+        entropy=grouped(transitions.strategy_entropy)[:, 0],
         reward=jp.sum(jp.where(grouped_valid, rewards, 0.0), axis=1),
         done=jp.any(grouped_done & grouped_valid, axis=1),
         valid=jp.any(grouped_valid, axis=1),
@@ -181,6 +187,8 @@ def collect_hierarchical_rollout(
         observation=transitions.locomotion_observation,
         action=transitions.locomotion_action,
         value=transitions.locomotion_value,
+        log_probability=transitions.locomotion_log_probability,
+        entropy=transitions.locomotion_entropy,
         reward=jp.where(valid, transitions.locomotion_reward, 0.0),
         done=transitions.done,
         valid=valid,

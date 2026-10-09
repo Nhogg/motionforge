@@ -94,6 +94,8 @@ class HierarchicalPolicyConfig:
     strategy_hidden_layer_sizes: tuple[int, ...] = (128, 128)
     locomotion_hidden_layer_sizes: tuple[int, ...] = (512, 256, 128)
     command_scale: tuple[float, float, float] = (1.0, 0.5, 1.0)
+    strategy_initial_log_std: float = -1.0
+    locomotion_initial_log_std: float = -2.0
 
     def __post_init__(self) -> None:
         if not self.strategy_hidden_layer_sizes:
@@ -112,13 +114,17 @@ class HierarchicalPolicyConfig:
 
 @struct.dataclass
 class StrategyOutput:
+    location: jax.Array
     command: jax.Array
+    log_std: jax.Array
     value: jax.Array
 
 
 @struct.dataclass
 class LocomotionOutput:
+    location: jax.Array
     action: jax.Array
+    log_std: jax.Array
     value: jax.Array
 
 
@@ -141,15 +147,26 @@ class StrategyEncoder(nn.Module):
 
 class StrategyHead(nn.Module):
     command_scale: tuple[float, float, float]
+    initial_log_std: float
 
     @nn.compact
     def __call__(self, features: jax.Array) -> StrategyOutput:
-        command = nn.tanh(
-            nn.Dense(STRATEGY_ACTION_SIZE, name="command")(features)
-        )
+        location = nn.Dense(STRATEGY_ACTION_SIZE, name="command")(features)
+        command = nn.tanh(location)
         command = command * jp.asarray(self.command_scale, dtype=command.dtype)
+        log_std = self.param(
+            "log_std",
+            nn.initializers.constant(self.initial_log_std),
+            (STRATEGY_ACTION_SIZE,),
+        )
+        log_std = jp.broadcast_to(log_std, location.shape)
         value = nn.Dense(1, name="value")(features)[..., 0]
-        return StrategyOutput(command=command, value=value)
+        return StrategyOutput(
+            location=location,
+            command=command,
+            log_std=log_std,
+            value=value,
+        )
 
 
 class LocomotionEncoder(nn.Module):
@@ -164,18 +181,31 @@ class LocomotionEncoder(nn.Module):
 
 
 class MotorHead(nn.Module):
+    initial_log_std: float
+
     @nn.compact
     def __call__(self, features: jax.Array) -> LocomotionOutput:
-        action = nn.tanh(
-            nn.Dense(LOCOMOTION_ACTION_SIZE, name="action")(features)
+        location = nn.Dense(LOCOMOTION_ACTION_SIZE, name="action")(features)
+        action = nn.tanh(location)
+        log_std = self.param(
+            "log_std",
+            nn.initializers.constant(self.initial_log_std),
+            (LOCOMOTION_ACTION_SIZE,),
         )
+        log_std = jp.broadcast_to(log_std, location.shape)
         value = nn.Dense(1, name="value")(features)[..., 0]
-        return LocomotionOutput(action=action, value=value)
+        return LocomotionOutput(
+            location=location,
+            action=action,
+            log_std=log_std,
+            value=value,
+        )
 
 
 class StrategyModule(nn.Module):
     hidden_layer_sizes: Sequence[int]
     command_scale: tuple[float, float, float]
+    initial_log_std: float = -1.0
 
     @nn.compact
     def __call__(self, observation: jax.Array) -> StrategyOutput:
@@ -185,12 +215,14 @@ class StrategyModule(nn.Module):
         )(observation)
         return StrategyHead(
             self.command_scale,
+            self.initial_log_std,
             name="head",
         )(features)
 
 
 class LocomotionModule(nn.Module):
     hidden_layer_sizes: Sequence[int]
+    initial_log_std: float = -2.0
 
     @nn.compact
     def __call__(self, observation: jax.Array) -> LocomotionOutput:
@@ -198,7 +230,10 @@ class LocomotionModule(nn.Module):
             self.hidden_layer_sizes,
             name="encoder",
         )(observation)
-        return MotorHead(name="motor_head")(features)
+        return MotorHead(
+            self.initial_log_std,
+            name="motor_head",
+        )(features)
 
 
 class HierarchicalPolicy(nn.Module):
@@ -217,6 +252,7 @@ class HierarchicalPolicy(nn.Module):
         strategy = StrategyModule(
             self.config.strategy_hidden_layer_sizes,
             self.config.command_scale,
+            self.config.strategy_initial_log_std,
             name="strategy",
         )(strategy_array)
 
@@ -226,6 +262,7 @@ class HierarchicalPolicy(nn.Module):
             locomotion_array = locomotion_normalization.normalize(locomotion_array)
         locomotion = LocomotionModule(
             self.config.locomotion_hidden_layer_sizes,
+            self.config.locomotion_initial_log_std,
             name="locomotion",
         )(locomotion_array)
         return HierarchicalPolicyOutput(

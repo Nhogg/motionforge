@@ -29,6 +29,7 @@ class Config:
     )
     seed: int = 0
     locomotion_steps: int = 10
+    stochastic_actions: bool = False
     output: Path = Path("logs/hierarchical/rollout_rates_a.json")
 
 
@@ -47,7 +48,10 @@ def main(config: Config) -> None:
     runner = HierarchicalRolloutRunner(
         environment,
         p2_locomotion_normalization(p2_parameters[0]),
-        HierarchicalRolloutConfig(learner_pursuer_probability=1.0),
+        HierarchicalRolloutConfig(
+            learner_pursuer_probability=1.0,
+            stochastic_actions=config.stochastic_actions,
+        ),
     )
     reset_key, parameter_key = jax.random.split(jax.random.PRNGKey(config.seed))
     state = runner.reset(reset_key)
@@ -118,6 +122,23 @@ def main(config: Config) -> None:
         ),
         "strategy_update_count": int(np.asarray(state.strategy_updates))
         == expected_strategy_updates,
+        "policy_statistics_finite": bool(
+            np.isfinite(np.asarray(state.strategy_log_probabilities)).all()
+            and np.isfinite(np.asarray(state.strategy_entropies)).all()
+            and np.isfinite(
+                np.asarray(state.locomotion_log_probabilities)
+            ).all()
+            and np.isfinite(np.asarray(state.locomotion_entropies)).all()
+        ),
+        "stochastic_log_probabilities_recorded": bool(
+            (not config.stochastic_actions)
+            or bool(
+                np.any(np.asarray(state.strategy_log_probabilities) != 0.0)
+                and np.any(
+                    np.asarray(state.locomotion_log_probabilities) != 0.0
+                )
+            )
+        ),
         "segment_indices": (
             segment.learner_index == 0 and segment.opponent_index == 1
         ),
