@@ -220,6 +220,51 @@ class HierarchicalRolloutRunner:
             self.locomotion_normalization,
         )["params"]
 
+    def bootstrap_values(
+        self,
+        segment: HierarchicalRolloutSegment,
+        state: HierarchicalRolloutState,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Evaluate both value heads at the current, unstepped observation."""
+        agent_parameters = self._agent_parameters(segment)
+        strategy_observation = strategy_observations(
+            state.environment,
+            state.commands,
+            state.roles,
+            self.observation_config,
+        ).as_array()
+        strategy_module = StrategyModule(
+            self.policy.config.strategy_hidden_layer_sizes,
+            self.policy.config.command_scale,
+            self.policy.config.strategy_initial_log_std,
+        )
+        strategy_values = jax.vmap(
+            lambda parameters, observation: (
+                strategy_module.apply({"params": parameters}, observation).value
+            )
+        )(agent_parameters["strategy"], strategy_observation)
+
+        locomotion_observation = locomotion_observations(
+            state.environment,
+            self.locomotion_layout,
+            state.previous_actions,
+            state.phases,
+            self.environment.default_joint_targets,
+        ).as_array(state.commands)
+        normalized_locomotion = self.locomotion_normalization.normalize(
+            locomotion_observation
+        )
+        locomotion_module = LocomotionModule(
+            self.policy.config.locomotion_hidden_layer_sizes,
+            self.policy.config.locomotion_initial_log_std,
+        )
+        locomotion_values = jax.vmap(
+            lambda parameters, observation: (
+                locomotion_module.apply({"params": parameters}, observation).value
+            )
+        )(agent_parameters["locomotion"], normalized_locomotion)
+        return strategy_values, locomotion_values
+
     def start_segment(
         self,
         learner_parameters: Any,
@@ -304,9 +349,7 @@ class HierarchicalRolloutRunner:
         strategy_keys = jax.random.split(strategy_key, 2)
         locomotion_keys = jax.random.split(locomotion_key, 2)
         should_update_strategy = (
-            state.locomotion_steps
-            % self.config.locomotion_steps_per_strategy_step
-            == 0
+            state.locomotion_steps % self.config.locomotion_steps_per_strategy_step == 0
         )
 
         def update_strategy(_):
@@ -321,9 +364,7 @@ class HierarchicalRolloutRunner:
             entropy = diagonal_normal_entropy(output.log_std)
             if not self.config.stochastic_actions:
                 return output, jp.zeros((2,), dtype=jp.float32), entropy
-            command, log_probability = jax.vmap(
-                tanh_normal_sample_and_log_prob
-            )(
+            command, log_probability = jax.vmap(tanh_normal_sample_and_log_prob)(
                 strategy_keys,
                 output.location,
                 output.log_std,
@@ -396,10 +437,7 @@ class HierarchicalRolloutRunner:
             state.environment,
             joint_targets,
         )
-        phases = (
-            jp.fmod(state.phases + self.phase_delta + jp.pi, 2.0 * jp.pi)
-            - jp.pi
-        )
+        phases = jp.fmod(state.phases + self.phase_delta + jp.pi, 2.0 * jp.pi) - jp.pi
         return state.replace(
             environment=environment_state,
             commands=strategy.command,

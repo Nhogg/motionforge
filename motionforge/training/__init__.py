@@ -12,6 +12,11 @@ from motionforge.training.hierarchical_ppo import (
     locomotion_ppo_loss,
     strategy_ppo_loss,
 )
+from motionforge.training.hierarchical_trainer import (
+    HierarchicalIterationResult,
+    HierarchicalPpoTrainer,
+    HierarchicalTrainerConfig,
+)
 from motionforge.training.hierarchical_update import (
     HierarchicalPpoUpdater,
     HierarchicalTrainState,
@@ -22,8 +27,11 @@ from motionforge.training.hierarchical_update import (
 __all__ = [
     "CHECKPOINT_SCHEMA",
     "CHECKPOINT_VERSION",
+    "HierarchicalIterationResult",
+    "HierarchicalPpoTrainer",
     "HierarchicalPpoUpdater",
     "HierarchicalTrainState",
+    "HierarchicalTrainerConfig",
     "HierarchicalUpdateConfig",
     "HierarchicalUpdateMetrics",
     "PpoLossConfig",
