@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import platform
 import subprocess
 import time
@@ -32,6 +31,7 @@ from motionforge.training import (
     HierarchicalUpdateConfig,
     load_hierarchical_checkpoint,
     save_hierarchical_checkpoint,
+    validate_full_episode_rollout,
 )
 
 
@@ -100,14 +100,11 @@ def _validate_config(config: Config) -> None:
             raise ValueError(f"{name} must be positive")
     if config.rollout_horizon % 5 != 0:
         raise ValueError("rollout_horizon must be divisible by five")
-    if config.episode_duration <= 0.0:
-        raise ValueError("episode_duration must be positive")
-    rollout_duration = config.rollout_horizon * 0.02
-    if not math.isclose(rollout_duration, config.episode_duration, abs_tol=1e-9):
-        raise ValueError(
-            "rollout_horizon must span exactly one episode at the 0.02-second "
-            "control timestep"
-        )
+    validate_full_episode_rollout(
+        rollout_horizon=config.rollout_horizon,
+        episode_duration=config.episode_duration,
+        control_timestep=0.02,
+    )
     if config.num_environments % 2 != 0:
         raise ValueError("num_environments must be even for balanced role batches")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:

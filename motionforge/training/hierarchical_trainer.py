@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import jax
@@ -22,6 +23,27 @@ from motionforge.training.hierarchical_update import (
     HierarchicalTrainState,
     HierarchicalUpdateMetrics,
 )
+
+
+def validate_full_episode_rollout(
+    *,
+    rollout_horizon: int,
+    episode_duration: float,
+    control_timestep: float,
+) -> None:
+    """Require one training rollout to expose the task's terminal outcomes."""
+    if rollout_horizon <= 0:
+        raise ValueError("rollout_horizon must be positive")
+    if episode_duration <= 0.0:
+        raise ValueError("episode_duration must be positive")
+    if control_timestep <= 0.0:
+        raise ValueError("control_timestep must be positive")
+    rollout_duration = rollout_horizon * control_timestep
+    if not math.isclose(rollout_duration, episode_duration, abs_tol=1e-9):
+        raise ValueError(
+            "rollout_horizon must span exactly one episode at the configured "
+            "control timestep"
+        )
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ from motionforge.training.hierarchical_trainer import (
     HierarchicalIterationResult,
     HierarchicalPpoTrainer,
     HierarchicalTrainerConfig,
+    validate_full_episode_rollout,
 )
 from motionforge.training.hierarchical_update import (
     HierarchicalPpoUpdater,
@@ -42,4 +43,5 @@ __all__ = [
     "read_hierarchical_checkpoint_manifest",
     "save_hierarchical_checkpoint",
     "strategy_ppo_loss",
+    "validate_full_episode_rollout",
 ]

@@ -250,6 +250,49 @@ The selected checkpoint is therefore iteration 10, not the final iteration.
 The complete audit record is written to
 `logs/hierarchical/evaluation/tag_joint_balanced_safe_80k_selection.json`.
 
+## Full-episode TAG curriculum
+
+The original hierarchical launcher collected 100 control steps per update,
+equivalent to two seconds, and reset every environment before the next update.
+The selected pursuer requires roughly 5.3 seconds to tag in deterministic
+evaluation. Consequently, the short training segments could not contain the
+pursuer's terminal tag bonus or the evader's timeout reward. PPO optimized only
+the dense shaping terms and bootstrapped value estimates, which explains why
+long-horizon behavior could regress while short training metrics remained
+finite.
+
+The launcher now defaults to 500 control steps and a 10-second episode. It
+requires the rollout duration to equal the episode duration, so every on-policy
+batch can represent tag, timeout, fall, or boundary termination. Training also
+logs role-specific pursuer tag and evader timeout rates instead of relying only
+on aggregate reward.
+
+A controlled 80,000-step continuation resumed the selected iteration-10
+checkpoint and changed only the rollout/episode horizon. After the first update,
+all remaining batches recorded a 100% pursuer tag rate and 100% evader timeout
+rate. The iteration-20 checkpoint then achieved 100% success and 100% physical
+survival for both roles over four deterministic evaluation seeds. Mean pursuer
+tag time fell from approximately 5.3 seconds to approximately 4.0 seconds. Mean
+tracking RMSE was `0.144` for the pursuer and `0.124` for the evader.
+
+This establishes full-episode collection as the fixed-opponent TAG curriculum
+baseline. The W&B run is `og63hoc3`, and the held-out report is
+`logs/hierarchical/evaluation/tag_joint_balanced_safe_full_episode_iter020.json`.
+
+A larger matched evaluation then used 16 held-out seeds (4--19) for the parent
+iteration 10 and full-episode iterations 15 and 20. Every checkpoint retained
+100% role success and 100% physical survival for both roles. Mean pursuer tag
+time improved from `3.14 s` at the parent to `2.71 s` at iteration 15 and
+`2.51 s` at iteration 20. The full-episode curriculum therefore retained both
+roles while making pursuit faster across the expanded seed set.
+
+The frozen conservative selector still chooses the parent iteration 10 because
+all outcome and survival fields tie, after which its worst-role tracking RMSE
+of `0.141` beats `0.148` at iteration 15 and `0.166` at iteration 20. This is a
+deliberate application of the predeclared rule rather than post-hoc selection
+for faster tags. The matched selection audit is stored in
+`logs/hierarchical/evaluation/tag_joint_balanced_safe_full_episode_selection_heldout16.json`.
+
 ## Planned scaled experiment matrix
 
 The available training system has 16 Blackwell GPUs. Once the diagnostic
@@ -281,12 +324,11 @@ tracking, root height, and tilt measurements did.
 
 ## Next experiments
 
-1. Improve the pursuer curriculum against the fixed opponent, then evaluate
-   whether late pursuer success can be retained without weakening the evader.
-2. Render both roles from the selected checkpoint.
-3. Once fixed-opponent training is stable, introduce historical league snapshots
-   and then controlled self-play mixtures.
-4. Use TAG failure trajectories to identify difficult locomotion states for
+1. Decide prospectively whether pursuer tag time should enter checkpoint ranking
+   ahead of tracking error; do not change the current experiment's frozen rule.
+2. Introduce historical league snapshots and then controlled self-play mixtures
+   after the expanded fixed-opponent evaluation remains stable.
+3. Use TAG failure trajectories to identify difficult locomotion states for
    targeted low-level training and ablation studies.
 
 The current evidence does not yet justify claiming a converged TAG policy. It
