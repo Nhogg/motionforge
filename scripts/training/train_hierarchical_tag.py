@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import platform
 import subprocess
 import time
@@ -43,7 +44,8 @@ class Config:
     seed: int = 0
     num_environments: int = 16
     num_iterations: int = 10
-    rollout_horizon: int = 100
+    rollout_horizon: int = 500
+    episode_duration: float = 10.0
     checkpoint_interval: int = 5
     naconmax: int = 256
     njmax: int = 512
@@ -98,6 +100,14 @@ def _validate_config(config: Config) -> None:
             raise ValueError(f"{name} must be positive")
     if config.rollout_horizon % 5 != 0:
         raise ValueError("rollout_horizon must be divisible by five")
+    if config.episode_duration <= 0.0:
+        raise ValueError("episode_duration must be positive")
+    rollout_duration = config.rollout_horizon * 0.02
+    if not math.isclose(rollout_duration, config.episode_duration, abs_tol=1e-9):
+        raise ValueError(
+            "rollout_horizon must span exactly one episode at the 0.02-second "
+            "control timestep"
+        )
     if config.num_environments % 2 != 0:
         raise ValueError("num_environments must be even for balanced role batches")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
@@ -131,6 +141,7 @@ def main(config: Config) -> None:
     environment = MultiAgentTaskEnv(
         league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
         config=MultiAgentTaskConfig(
+            episode_duration=config.episode_duration,
             naconmax=config.naconmax,
             njmax=config.njmax,
         ),
@@ -235,6 +246,20 @@ def main(config: Config) -> None:
             )
         )
         final_rollout_states.environment.physics.data.qpos.block_until_ready()
+        transition_valid = iteration_result.batch.transition_valid
+        pursuer_transition = iteration_result.batch.transitions.role[:, 0] > 0.5
+        evader_transition = iteration_result.batch.transitions.role[:, 1] > 0.5
+        pursuer_tags = (
+            transition_valid
+            & pursuer_transition
+            & iteration_result.batch.transitions.tagged
+        )
+        evader_timeouts = (
+            transition_valid
+            & evader_transition
+            & iteration_result.batch.transitions.timed_out
+        )
+        role_environment_count = config.num_environments // 2
         metrics = {
             "locomotion/approximate_kl": _scalar(
                 iteration_result.update_metrics.locomotion.approximate_kl
@@ -262,6 +287,12 @@ def main(config: Config) -> None:
             ),
             "strategy/reward_mean": _scalar(
                 iteration_result.batch.strategy.reward.mean()
+            ),
+            "strategy/pursuer_tag_rate": _scalar(
+                pursuer_tags.sum() / role_environment_count
+            ),
+            "strategy/evader_timeout_rate": _scalar(
+                evader_timeouts.sum() / role_environment_count
             ),
             "strategy/total_loss": _scalar(
                 iteration_result.update_metrics.strategy.total_loss
