@@ -29,6 +29,22 @@ def _state_digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def read_hierarchical_checkpoint_manifest(path: Path) -> dict[str, Any]:
+    """Read and validate the version header of a checkpoint manifest."""
+    checkpoint = path.resolve()
+    manifest_path = checkpoint / MANIFEST_FILENAME
+    if not checkpoint.is_dir():
+        raise FileNotFoundError(f"checkpoint does not exist: {checkpoint}")
+    if not manifest_path.is_file():
+        raise ValueError(f"checkpoint manifest is missing: {checkpoint}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != CHECKPOINT_SCHEMA:
+        raise ValueError(f"unsupported checkpoint schema: {manifest.get('schema')}")
+    if manifest.get("version") != CHECKPOINT_VERSION:
+        raise ValueError(f"unsupported checkpoint version: {manifest.get('version')}")
+    return manifest
+
+
 def save_hierarchical_checkpoint(
     path: Path,
     state: HierarchicalTrainState,
@@ -86,11 +102,7 @@ def load_hierarchical_checkpoint(
     if not manifest_path.is_file() or not state_path.is_file():
         raise ValueError(f"incomplete hierarchical checkpoint: {checkpoint}")
 
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("schema") != CHECKPOINT_SCHEMA:
-        raise ValueError(f"unsupported checkpoint schema: {manifest.get('schema')}")
-    if manifest.get("version") != CHECKPOINT_VERSION:
-        raise ValueError(f"unsupported checkpoint version: {manifest.get('version')}")
+    manifest = read_hierarchical_checkpoint_manifest(checkpoint)
     if manifest.get("state_file") != STATE_FILENAME:
         raise ValueError("checkpoint manifest references an unexpected state file")
 

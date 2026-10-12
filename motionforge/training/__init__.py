@@ -4,6 +4,7 @@ from motionforge.training.hierarchical_checkpoint import (
     CHECKPOINT_SCHEMA,
     CHECKPOINT_VERSION,
     load_hierarchical_checkpoint,
+    read_hierarchical_checkpoint_manifest,
     save_hierarchical_checkpoint,
 )
 from motionforge.training.hierarchical_ppo import (
@@ -38,6 +39,7 @@ __all__ = [
     "PpoLossMetrics",
     "load_hierarchical_checkpoint",
     "locomotion_ppo_loss",
+    "read_hierarchical_checkpoint_manifest",
     "save_hierarchical_checkpoint",
     "strategy_ppo_loss",
 ]

@@ -270,9 +270,11 @@ class HierarchicalRolloutRunner:
         learner_parameters: Any,
         *,
         seed: int,
+        learner_is_pursuer: bool | None = None,
     ) -> HierarchicalRolloutSegment:
         """Select and freeze the two policy trees used for one rollout segment."""
-        learner_is_pursuer = self.sample_learner_is_pursuer(seed=seed)
+        if learner_is_pursuer is None:
+            learner_is_pursuer = self.sample_learner_is_pursuer(seed=seed)
         learner_index = (
             self.environment.config.pursuer_index
             if learner_is_pursuer
