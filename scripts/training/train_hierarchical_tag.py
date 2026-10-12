@@ -41,6 +41,7 @@ class Config:
     )
     restore_checkpoint: Path | None = None
     seed: int = 0
+    num_environments: int = 16
     num_iterations: int = 10
     rollout_horizon: int = 100
     checkpoint_interval: int = 5
@@ -80,7 +81,12 @@ def _scalar(value: Any) -> float:
 
 
 def _validate_config(config: Config) -> None:
-    for name in ("num_iterations", "rollout_horizon", "checkpoint_interval"):
+    for name in (
+        "num_environments",
+        "num_iterations",
+        "rollout_horizon",
+        "checkpoint_interval",
+    ):
         if getattr(config, name) <= 0:
             raise ValueError(f"{name} must be positive")
     if config.rollout_horizon % 5 != 0:
@@ -198,17 +204,19 @@ def main(config: Config) -> None:
     start_iteration = int(train_state.iteration)
     for local_iteration in range(config.num_iterations):
         iteration = start_iteration + local_iteration
-        rollout_state = runner.reset(
-            jax.random.fold_in(jax.random.PRNGKey(config.seed), iteration)
+        reset_key = jax.random.fold_in(jax.random.PRNGKey(config.seed), iteration)
+        rollout_states = jax.vmap(runner.reset)(
+            jax.random.split(reset_key, config.num_environments)
         )
-        train_state, final_rollout_state, iteration_result = trainer.train_iteration(
-            train_state,
-            rollout_state,
-            seed=config.seed + iteration,
-            episode_id=iteration,
-            environment_id=0,
+        train_state, final_rollout_states, iteration_result = (
+            trainer.train_batch_iteration(
+                train_state,
+                rollout_states,
+                seed=config.seed + iteration,
+                episode_id=iteration,
+            )
         )
-        final_rollout_state.environment.physics.data.qpos.block_until_ready()
+        final_rollout_states.environment.physics.data.qpos.block_until_ready()
         metrics = {
             "locomotion/approximate_kl": _scalar(
                 iteration_result.update_metrics.locomotion.approximate_kl
@@ -247,7 +255,11 @@ def main(config: Config) -> None:
             "training/locomotion_updates": int(train_state.locomotion_updates),
             "training/strategy_updates": int(train_state.strategy_updates),
         }
-        environment_steps = int(train_state.iteration) * config.rollout_horizon
+        environment_steps = (
+            int(train_state.iteration)
+            * config.rollout_horizon
+            * config.num_environments
+        )
         finite = all(np.isfinite(value) for value in metrics.values())
         record = {
             "elapsed_seconds": time.monotonic() - start_time,
@@ -299,7 +311,11 @@ def main(config: Config) -> None:
         "output_dir": str(output_dir),
         "passed": all(checks.values()),
         "seed": config.seed,
-        "total_environment_steps": int(train_state.iteration) * config.rollout_horizon,
+        "total_environment_steps": (
+            int(train_state.iteration)
+            * config.rollout_horizon
+            * config.num_environments
+        ),
     }
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"

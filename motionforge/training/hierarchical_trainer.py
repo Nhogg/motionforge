@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import jax
 import jax.numpy as jp
 
 from motionforge.rollout import (
@@ -128,3 +129,89 @@ class HierarchicalPpoTrainer:
             ),
         )
         return next_train_state, next_rollout_state, result
+
+    def train_batch_iteration(
+        self,
+        train_state: HierarchicalTrainState,
+        rollout_states: HierarchicalRolloutState,
+        *,
+        seed: int,
+        episode_id: int,
+    ) -> tuple[
+        HierarchicalTrainState,
+        HierarchicalRolloutState,
+        HierarchicalIterationResult,
+    ]:
+        """Collect and flatten one vectorized environment batch before updating."""
+        environment_count = rollout_states.commands.shape[0]
+        if environment_count <= 0:
+            raise ValueError("rollout_states must contain at least one environment")
+        segment = self.runner.start_segment(train_state.parameters, seed=seed)
+        environment_ids = jp.arange(environment_count, dtype=jp.int32)
+        episode_ids = jp.full((environment_count,), episode_id, dtype=jp.int32)
+        collect = jax.vmap(
+            lambda state, current_episode_id, environment_id: (
+                collect_hierarchical_rollout(
+                    self.runner,
+                    segment,
+                    state,
+                    horizon=self.config.rollout_horizon,
+                    episode_id=current_episode_id,
+                    environment_id=environment_id,
+                )
+            )
+        )
+        next_rollout_states, environment_batches = collect(
+            rollout_states, episode_ids, environment_ids
+        )
+        strategy_values, locomotion_values = jax.vmap(
+            lambda state: self.runner.bootstrap_values(segment, state)
+        )(next_rollout_states)
+        learner_index = segment.learner_index
+        not_terminal = ~next_rollout_states.environment.done
+        strategy_bootstrap = jp.where(
+            not_terminal, strategy_values[:, learner_index], 0.0
+        )
+        locomotion_bootstrap = jp.where(
+            not_terminal, locomotion_values[:, learner_index], 0.0
+        )
+        strategy_targets, locomotion_targets = jax.vmap(
+            lambda batch, strategy_value, locomotion_value: hierarchical_advantages(
+                batch,
+                strategy_bootstrap_value=strategy_value,
+                locomotion_bootstrap_value=locomotion_value,
+                strategy_config=self.config.strategy_advantage,
+                locomotion_config=self.config.locomotion_advantage,
+            )
+        )(environment_batches, strategy_bootstrap, locomotion_bootstrap)
+
+        def flatten_environment_and_time(value: jax.Array) -> jax.Array:
+            return value.reshape((-1,) + value.shape[2:])
+
+        batch = jax.tree.map(flatten_environment_and_time, environment_batches)
+        strategy_targets = jax.tree.map(flatten_environment_and_time, strategy_targets)
+        locomotion_targets = jax.tree.map(
+            flatten_environment_and_time, locomotion_targets
+        )
+        next_train_state, update_metrics = self.updater.update(
+            train_state,
+            batch.strategy,
+            strategy_targets,
+            batch.locomotion,
+            locomotion_targets,
+        )
+        result = HierarchicalIterationResult(
+            batch=batch,
+            strategy_targets=strategy_targets,
+            locomotion_targets=locomotion_targets,
+            update_metrics=update_metrics,
+            trajectory=HierarchicalTrajectoryMetadata(
+                opponent_id=segment.opponent_id,
+                opponent_category=segment.opponent_category,
+                learner_role=segment.learner_role,
+                opponent_role=segment.opponent_role,
+                learner_index=segment.learner_index,
+                opponent_index=segment.opponent_index,
+            ),
+        )
+        return next_train_state, next_rollout_states, result
