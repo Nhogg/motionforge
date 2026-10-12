@@ -5,8 +5,9 @@
 MotionForge now has an end-to-end hierarchical TAG training path that jointly
 optimizes a 10 Hz strategy policy and a 50 Hz locomotion policy while executing
 physics at 500 Hz. The locomotion policy is initialized from the validated P2
-G1 checkpoint rather than learned from scratch. A fixed copy of that warm-start
-hierarchy currently serves as the league opponent.
+G1 checkpoint rather than learned from scratch. Training can use either a fixed
+warm-start opponent or an immutable population of historical hierarchical
+checkpoints as league opponents.
 
 The current implementation can train, checkpoint, resume, evaluate, and render
 the hierarchy. Two early training failures have been identified experimentally:
@@ -51,6 +52,131 @@ The two policies have separate PPO objectives, value heads, optimizer states,
 learning rates, update schedules, gradient clipping, GAE targets, metrics, and
 checkpointed counters. This keeps the hierarchy jointly trainable without
 collapsing it into one monolithic action distribution.
+
+## Component-level model description
+
+- **Physics and environment base (`WarpEnv`).** The physical substrate is a
+  two-G1 MuJoCo model executed through MJX-Warp on the GPU. Physics advances at
+  500 Hz using a 0.002-second integration timestep. The environment stores the
+  combined generalized position, velocity, actuator, contact, and sensor state
+  for both 29-actuator humanoids. One 50 Hz motor decision is held for ten
+  physics substeps. This layer is deliberately task-agnostic: it owns model
+  construction, reset state, batched physics stepping, and the partition that
+  maps each agent's 29 targets into the combined 58-actuator model.
+
+- **League layer (`LeagueEnv`).** The league-enabled layer inserts opponent
+  selection between physics and the task. A league entry contains a stable
+  opponent identifier, a category, and a frozen complete hierarchical parameter
+  tree. The fixed league supports controlled warm-start experiments. The
+  historical league stores a nonempty immutable population and selects an entry
+  deterministically from the rollout seed. Opponent parameters are never
+  updated by the learner's optimizer, so each rollout compares the learner to a
+  stationary policy even though the learner changes between updates.
+
+- **TAG task (`MultiAgentTaskEnv`).** The task layer assigns exactly one pursuer
+  and one evader, computes each agent's opponent-relative planar position and
+  velocity in its own heading frame, and reports the arena center in the same
+  local frame. It detects inter-agent tag contact, persistent falls, arena exits,
+  non-finite state, and the ten-second episode timeout. The same task class is
+  used for league training rather than maintaining a second parallel task
+  implementation.
+
+- **Shared role-conditioned strategy policy.** A single parameter set represents
+  both pursuer and evader behavior. Its 11-dimensional observation concatenates
+  local opponent position (2), local opponent velocity (2), local arena-center
+  position (2), the previous high-level command (3), and a two-element one-hot
+  role encoding. Position, velocity, and command fields are normalized by fixed
+  physical scales. This explicit role input allows one network to implement two
+  different game objectives while sharing useful representations.
+
+- **Strategy encoder and head.** The strategy encoder is a two-layer multilayer
+  perceptron with 128 tanh units per layer. Its stochastic actor head parameterizes
+  a diagonal Gaussian over three latent action coordinates; tanh squashing and
+  elementwise scaling convert samples into the interpretable command
+  `(forward_velocity, lateral_velocity, yaw_rate)` with limits `(1.0, 0.5, 1.0)`.
+  A separate scalar value head estimates the role-conditioned strategic return.
+  The strategy is evaluated at 10 Hz, so each command is held across five 50 Hz
+  locomotion decisions.
+
+- **Boundary-safe command execution.** PPO retains the raw sampled strategy
+  action and its exact log probability for optimization. Before physical
+  execution, a deterministic safety projection suppresses command components
+  that would drive an agent farther outside the configured boundary margin;
+  tangential motion and yaw remain available. Separating the sampled action from
+  the executed command avoids corrupting PPO's likelihood ratio while preventing
+  a learned outward command from becoming an avoidable arena termination.
+
+- **Locomotion observation and controller.** The motor policy receives the
+  accepted 103-dimensional P2 observation contract: local root linear velocity
+  (3), root angular velocity (3), projected gravity (3), the current strategy
+  command (3), joint displacement from the default pose (29), joint velocity
+  (29), previous motor action (29), and sine/cosine gait phase for the two legs
+  (4). It receives no role bit, opponent identity, or opponent geometry. This
+  information boundary forces the strategy module to decide *where to move* and
+  the locomotion module to solve only *how to execute that motion physically*.
+
+- **Locomotion encoder and motor head.** The locomotion encoder is a
+  512-256-128 SiLU multilayer perceptron. Its diagonal-Gaussian actor produces 29
+  tanh-bounded motor actions, which are scaled into joint-position targets, and
+  its scalar value head predicts locomotion return. Observation normalization,
+  encoder weights, and compatible actor weights are migrated from the accepted
+  40-million-step P2 controller. The hierarchy therefore begins with a capable
+  locomotion prior instead of relearning standing and walking from random
+  initialization.
+
+- **Explicit hierarchy and gradient boundary.** The strategy command is passed
+  through `stop_gradient` before it is concatenated with the locomotion
+  observation. Strategy and locomotion parameters occupy separate named
+  checkpoint subtrees. Consequently, locomotion loss cannot change strategic
+  parameters through the command channel, and strategy loss cannot directly
+  alter the motor network. The modules are optimized during the same training
+  run but remain independently attributable and can use different data cadence,
+  learning rates, and acceptance rules.
+
+- **Strategic objective.** Strategy PPO uses role-selected TAG reward. Pursuer
+  return rewards reducing opponent distance and completing a tag; evader return
+  rewards increasing or maintaining separation and surviving until timeout.
+  Both include task safety and command-regularity terms. Strategy transitions
+  occur only when a new 10 Hz command is sampled, and their GAE/value targets are
+  computed independently from the locomotion targets.
+
+- **Locomotion objective.** Locomotion PPO optimizes command execution and
+  physical stability rather than the game outcome. Its reward combines
+  exponential planar-velocity tracking, yaw-rate tracking, uprightness, action
+  smoothness, joint-deviation regularization, and a fall penalty. The strategy
+  may discover difficult task motions, while this separate objective determines
+  whether the low-level controller can execute them safely.
+
+- **Independent PPO updates.** The strategy optimizer uses Adam at `3e-4` on
+  every iteration. The locomotion optimizer uses Adam at `1e-5` every fifth
+  iteration. Both clip the global gradient norm at 1.0. A scheduled locomotion
+  update is rejected if its pre-update approximate KL is non-finite or exceeds
+  0.01, protecting the pretrained motor prior from destructive policy jumps.
+  Optimizer states, update counters, parameter trees, and configuration are all
+  restored exactly when training resumes.
+
+- **Balanced-role rollout batch.** Each update uses 16 parallel environments:
+  eight collect learner-as-pursuer trajectories and eight collect
+  learner-as-evader trajectories. The two halves face the same sampled frozen
+  opponent checkpoint, run for a complete 500-step, ten-second episode horizon,
+  compute role-specific advantages, and are flattened into one strategy batch
+  and one locomotion batch. This exact 50/50 construction prevents stochastic
+  runs of one role from moving the shared strategy network far enough to forget
+  the other role.
+
+- **Historical self-play.** The current league population contains accepted
+  hierarchical checkpoints from iterations 10, 15, and 20. It therefore exposes
+  each learner seed to policies from multiple stages of training instead of only
+  its own latest behavior. This is a first stationary historical-league
+  experiment, not yet a dynamically growing population or a learned matchmaking
+  system.
+
+- **Checkpoint evaluation and selection.** Evaluation runs each checkpoint in
+  both roles across deterministic held-out seeds. Selection is lexicographic:
+  minimum role success, minimum physical survival, mean role success, mean
+  survival, mean pursuer tag time, worst-role tracking RMSE, and finally earlier
+  iteration. The ordering prevents aggregate reward or one strong role from
+  hiding role collapse, locomotion failure, or reduced safety.
 
 ## Training and evaluation infrastructure
 
