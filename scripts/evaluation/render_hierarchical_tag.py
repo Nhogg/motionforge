@@ -15,7 +15,7 @@ import numpy as np
 from mujoco import mjx
 
 from motionforge.cli import run_hydra
-from motionforge.envs import MultiAgentTaskEnv
+from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import (
     load_p2_checkpoint,
@@ -44,6 +44,8 @@ class Config:
     width: int = 960
     height: int = 720
     camera_distance: float = 5.0
+    naconmax: int = 256
+    njmax: int = 512
     output: Path = Path("logs/hierarchical/videos/tag_checkpoint_pursuer_a.mp4")
 
 
@@ -56,6 +58,8 @@ def _validate_config(config: Config) -> None:
         raise ValueError("fps, width, and height must be positive")
     if config.camera_distance <= 0.0:
         raise ValueError("camera_distance must be positive")
+    if config.naconmax <= 0 or config.njmax <= 0:
+        raise ValueError("naconmax and njmax must be positive")
     if not config.checkpoint.is_dir():
         raise FileNotFoundError(f"checkpoint does not exist: {config.checkpoint}")
     if not config.locomotion_checkpoint.is_dir():
@@ -76,7 +80,11 @@ def main(config: Config) -> None:
     update_config = HierarchicalUpdateConfig(**manifest["update_config"])
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
     environment = MultiAgentTaskEnv(
-        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None))
+        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
+        config=MultiAgentTaskConfig(
+            naconmax=config.naconmax,
+            njmax=config.njmax,
+        ),
     )
     runner = HierarchicalRolloutRunner(
         environment,

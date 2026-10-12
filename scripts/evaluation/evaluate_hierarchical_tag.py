@@ -12,7 +12,7 @@ import jax.numpy as jp
 import numpy as np
 
 from motionforge.cli import run_hydra
-from motionforge.envs import MultiAgentTaskEnv
+from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import (
     load_p2_checkpoint,
@@ -41,6 +41,8 @@ class Config:
     seed: int = 0
     seeds: int = 4
     duration: float = 10.0
+    naconmax: int = 256
+    njmax: int = 512
     output: Path = Path("logs/hierarchical/evaluation/tag_checkpoint_a.json")
 
 
@@ -49,6 +51,8 @@ def _validate_config(config: Config) -> None:
         raise ValueError("seeds must be positive")
     if config.duration <= 0.0:
         raise ValueError("duration must be positive")
+    if config.naconmax <= 0 or config.njmax <= 0:
+        raise ValueError("naconmax and njmax must be positive")
     if not config.checkpoint.is_dir():
         raise FileNotFoundError(f"checkpoint does not exist: {config.checkpoint}")
     if not config.locomotion_checkpoint.is_dir():
@@ -109,7 +113,11 @@ def main(config: Config) -> None:
     update_config = HierarchicalUpdateConfig(**checkpoint_manifest["update_config"])
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
     environment = MultiAgentTaskEnv(
-        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None))
+        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
+        config=MultiAgentTaskConfig(
+            naconmax=config.naconmax,
+            njmax=config.njmax,
+        ),
     )
     runner = HierarchicalRolloutRunner(
         environment,

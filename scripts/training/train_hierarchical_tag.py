@@ -15,7 +15,7 @@ import jax
 import numpy as np
 
 from motionforge.cli import run_hydra
-from motionforge.envs import MultiAgentTaskEnv
+from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.logging.wandb import WandbMetricsLogger
 from motionforge.models import (
@@ -45,6 +45,8 @@ class Config:
     num_iterations: int = 10
     rollout_horizon: int = 100
     checkpoint_interval: int = 5
+    naconmax: int = 256
+    njmax: int = 512
     strategy_learning_rate: float = 3e-4
     locomotion_learning_rate: float = 1e-4
     strategy_update_interval: int = 1
@@ -86,6 +88,8 @@ def _validate_config(config: Config) -> None:
         "num_iterations",
         "rollout_horizon",
         "checkpoint_interval",
+        "naconmax",
+        "njmax",
     ):
         if getattr(config, name) <= 0:
             raise ValueError(f"{name} must be positive")
@@ -118,7 +122,11 @@ def main(config: Config) -> None:
 
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
     environment = MultiAgentTaskEnv(
-        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None))
+        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
+        config=MultiAgentTaskConfig(
+            naconmax=config.naconmax,
+            njmax=config.njmax,
+        ),
     )
     runner = HierarchicalRolloutRunner(
         environment,
