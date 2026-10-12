@@ -146,34 +146,146 @@ class HierarchicalPpoTrainer:
         environment_count = rollout_states.commands.shape[0]
         if environment_count <= 0:
             raise ValueError("rollout_states must contain at least one environment")
-        segment = self.runner.start_segment(train_state.parameters, seed=seed)
+        if environment_count % 2 != 0:
+            raise ValueError("balanced role batches require an even environment count")
+        pursuer_segment = self.runner.start_segment(
+            train_state.parameters,
+            seed=seed,
+            learner_is_pursuer=True,
+        )
+        evader_segment = self.runner.start_segment(
+            train_state.parameters,
+            seed=seed + 1,
+            learner_is_pursuer=False,
+        )
         environment_ids = jp.arange(environment_count, dtype=jp.int32)
         episode_ids = jp.full((environment_count,), episode_id, dtype=jp.int32)
+        split = environment_count // 2
+
         collect = jax.vmap(
-            lambda state, current_episode_id, environment_id: (
+            lambda segment_state, current_episode_id, environment_id, segment: (
                 collect_hierarchical_rollout(
                     self.runner,
                     segment,
-                    state,
+                    segment_state,
                     horizon=self.config.rollout_horizon,
                     episode_id=current_episode_id,
                     environment_id=environment_id,
                 )
+            ),
+            in_axes=(0, 0, 0, None),
+        )
+        pursuer_states, pursuer_batches = collect(
+            rollout_states,
+            episode_ids,
+            environment_ids,
+            pursuer_segment,
+        )
+        evader_states, evader_batches = collect(
+            rollout_states,
+            episode_ids,
+            environment_ids,
+            evader_segment,
+        )
+        pursuer_mask = environment_ids < split
+
+        def select_array(pursuer_value, evader_value):
+            mask = pursuer_mask.reshape(
+                pursuer_mask.shape + (1,) * (pursuer_value.ndim - pursuer_mask.ndim)
             )
+            return jp.where(mask, pursuer_value, evader_value)
+
+        environment = evader_states.environment.replace(
+            physics=evader_states.environment.physics.replace(
+                data=jax.vmap(
+                    lambda evader, pursuer, use_pursuer: evader.where(
+                        use_pursuer, pursuer
+                    )
+                )(
+                    evader_states.environment.physics.data,
+                    pursuer_states.environment.physics.data,
+                    pursuer_mask,
+                ),
+                step_count=select_array(
+                    pursuer_states.environment.physics.step_count,
+                    evader_states.environment.physics.step_count,
+                ),
+            ),
+            observation=jax.tree.map(
+                select_array,
+                pursuer_states.environment.observation,
+                evader_states.environment.observation,
+            ),
+            diagnostics=jax.tree.map(
+                select_array,
+                pursuer_states.environment.diagnostics,
+                evader_states.environment.diagnostics,
+            ),
+            termination=jax.tree.map(
+                select_array,
+                pursuer_states.environment.termination,
+                evader_states.environment.termination,
+            ),
+            fall_counts=select_array(
+                pursuer_states.environment.fall_counts,
+                evader_states.environment.fall_counts,
+            ),
+            done=select_array(
+                pursuer_states.environment.done,
+                evader_states.environment.done,
+            ),
         )
-        next_rollout_states, environment_batches = collect(
-            rollout_states, episode_ids, environment_ids
+        next_rollout_states = evader_states.replace(
+            environment=environment,
+            **{
+                field: select_array(
+                    getattr(pursuer_states, field), getattr(evader_states, field)
+                )
+                for field in (
+                    "commands",
+                    "previous_actions",
+                    "phases",
+                    "roles",
+                    "strategy_values",
+                    "locomotion_values",
+                    "strategy_log_probabilities",
+                    "strategy_entropies",
+                    "locomotion_log_probabilities",
+                    "locomotion_entropies",
+                    "policy_rng",
+                    "locomotion_steps",
+                    "strategy_updates",
+                )
+            },
         )
-        strategy_values, locomotion_values = jax.vmap(
-            lambda state: self.runner.bootstrap_values(segment, state)
-        )(next_rollout_states)
-        learner_index = segment.learner_index
+        environment_batches = jax.tree.map(
+            select_array, pursuer_batches, evader_batches
+        )
+
+        pursuer_values = jax.vmap(
+            lambda state: self.runner.bootstrap_values(pursuer_segment, state)
+        )(pursuer_states)
+        evader_values = jax.vmap(
+            lambda state: self.runner.bootstrap_values(evader_segment, state)
+        )(evader_states)
+        strategy_values = select_array(pursuer_values[0], evader_values[0])
+        locomotion_values = select_array(pursuer_values[1], evader_values[1])
+        learner_indices = jp.where(
+            environment_ids < split,
+            pursuer_segment.learner_index,
+            evader_segment.learner_index,
+        )
+        batch_indices = jp.arange(environment_count)
         not_terminal = ~next_rollout_states.environment.done
         strategy_bootstrap = jp.where(
-            not_terminal, strategy_values[:, learner_index], 0.0
+            not_terminal,
+            strategy_values[batch_indices, learner_indices],
+            0.0,
         )
         locomotion_bootstrap = jp.where(
-            not_terminal, locomotion_values[:, learner_index], 0.0
+            not_terminal,
+            locomotion_values[batch_indices, learner_indices],
+            0.0,
         )
         strategy_targets, locomotion_targets = jax.vmap(
             lambda batch, strategy_value, locomotion_value: hierarchical_advantages(
@@ -183,7 +295,11 @@ class HierarchicalPpoTrainer:
                 strategy_config=self.config.strategy_advantage,
                 locomotion_config=self.config.locomotion_advantage,
             )
-        )(environment_batches, strategy_bootstrap, locomotion_bootstrap)
+        )(
+            environment_batches,
+            strategy_bootstrap,
+            locomotion_bootstrap,
+        )
 
         def flatten_environment_and_time(value: jax.Array) -> jax.Array:
             return value.reshape((-1,) + value.shape[2:])
@@ -206,12 +322,12 @@ class HierarchicalPpoTrainer:
             locomotion_targets=locomotion_targets,
             update_metrics=update_metrics,
             trajectory=HierarchicalTrajectoryMetadata(
-                opponent_id=segment.opponent_id,
-                opponent_category=segment.opponent_category,
-                learner_role=segment.learner_role,
-                opponent_role=segment.opponent_role,
-                learner_index=segment.learner_index,
-                opponent_index=segment.opponent_index,
+                opponent_id=pursuer_segment.opponent_id,
+                opponent_category=pursuer_segment.opponent_category,
+                learner_role="balanced",
+                opponent_role="balanced",
+                learner_index=-1,
+                opponent_index=-1,
             ),
         )
         return next_train_state, next_rollout_states, result

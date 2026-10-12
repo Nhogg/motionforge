@@ -11,7 +11,7 @@ import jax
 import numpy as np
 
 from motionforge.cli import run_hydra
-from motionforge.envs import MultiAgentTaskEnv
+from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import (
     load_p2_checkpoint,
@@ -47,9 +47,12 @@ def _tree_changed(left, right) -> bool:
 def main(config: Config) -> None:
     if config.num_environments <= 1:
         raise ValueError("num_environments must exceed one")
+    if config.num_environments % 2 != 0:
+        raise ValueError("num_environments must be even")
     _, p2_parameters = load_p2_checkpoint(config.checkpoint)
     environment = MultiAgentTaskEnv(
-        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None))
+        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
+        config=MultiAgentTaskConfig(naconmax=256, njmax=512),
     )
     runner = HierarchicalRolloutRunner(
         environment,
@@ -87,6 +90,7 @@ def main(config: Config) -> None:
     locomotion_samples = config.num_environments * config.horizon
     strategy_samples = locomotion_samples // 5
     environment_ids = np.asarray(result.batch.locomotion.environment_id)
+    strategy_roles = np.asarray(result.batch.strategy.role)
     actions = np.asarray(result.batch.locomotion.action).reshape(
         config.num_environments, config.horizon, 29
     )
@@ -98,6 +102,11 @@ def main(config: Config) -> None:
             np.unique(environment_ids), np.arange(config.num_environments)
         ),
         "independent_stochastic_rollouts": not np.array_equal(actions[0], actions[1]),
+        "roles_balanced_in_single_update": (
+            np.array_equal(np.unique(strategy_roles, axis=0), [[0.0, 1.0], [1.0, 0.0]])
+            and np.allclose(strategy_roles.mean(axis=0), [0.5, 0.5])
+            and result.trajectory.learner_role == "balanced"
+        ),
         "locomotion_batch_flattened": (
             result.batch.locomotion.action.shape == (locomotion_samples, 29)
             and result.locomotion_targets.advantages.shape == (locomotion_samples,)

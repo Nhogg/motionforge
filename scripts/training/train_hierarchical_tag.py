@@ -96,6 +96,8 @@ def _validate_config(config: Config) -> None:
             raise ValueError(f"{name} must be positive")
     if config.rollout_horizon % 5 != 0:
         raise ValueError("rollout_horizon must be divisible by five")
+    if config.num_environments % 2 != 0:
+        raise ValueError("num_environments must be even for balanced role batches")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
         raise ValueError("learner_pursuer_probability must be in [0, 1]")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
@@ -259,8 +261,8 @@ def main(config: Config) -> None:
                 iteration_result.update_metrics.strategy.total_loss
             ),
             "training/iteration": int(train_state.iteration),
-            "training/learner_is_pursuer": float(
-                iteration_result.trajectory.learner_role == "pursuer"
+            "training/pursuer_sample_fraction": _scalar(
+                iteration_result.batch.strategy.role[:, 0].mean()
             ),
             "training/locomotion_updates": int(train_state.locomotion_updates),
             "training/locomotion_update_rejected": float(
