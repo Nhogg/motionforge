@@ -16,6 +16,7 @@ class HierarchicalCheckpointCandidate:
     minimum_physical_survival: float
     mean_role_success: float
     mean_physical_survival: float
+    mean_pursuer_tag_time_seconds: float
     maximum_tracking_rmse: float
 
     @property
@@ -26,6 +27,7 @@ class HierarchicalCheckpointCandidate:
             self.minimum_physical_survival,
             self.mean_role_success,
             self.mean_physical_survival,
+            -self.mean_pursuer_tag_time_seconds,
             -self.maximum_tracking_rmse,
             -float(self.iteration),
         )
@@ -36,6 +38,7 @@ class HierarchicalCheckpointCandidate:
             "iteration": self.iteration,
             "maximum_tracking_rmse": self.maximum_tracking_rmse,
             "mean_physical_survival": self.mean_physical_survival,
+            "mean_pursuer_tag_time_seconds": self.mean_pursuer_tag_time_seconds,
             "mean_role_success": self.mean_role_success,
             "minimum_physical_survival": self.minimum_physical_survival,
             "minimum_role_success": self.minimum_role_success,
@@ -73,6 +76,27 @@ def hierarchical_checkpoint_candidate(
     if not all(value >= 0.0 for value in tracking):
         raise ValueError("tracking RMSE must be nonnegative")
 
+    control_timestep = float(evaluation["control_timestep"])
+    rollout_steps = int(evaluation["rollout_steps"])
+    if not math.isfinite(control_timestep) or control_timestep <= 0.0:
+        raise ValueError("control_timestep must be finite and positive")
+    if rollout_steps <= 0:
+        raise ValueError("rollout_steps must be positive")
+    pursuer_rollouts = by_role["pursuer"].get("rollouts")
+    if not isinstance(pursuer_rollouts, list) or not pursuer_rollouts:
+        raise ValueError("pursuer scenario must contain nonempty rollouts")
+    pursuer_tag_steps = [
+        min(int(rollout["steps_alive"]), rollout_steps)
+        if bool(rollout["role_success"])
+        else rollout_steps
+        for rollout in pursuer_rollouts
+    ]
+    if not all(0 < steps <= rollout_steps for steps in pursuer_tag_steps):
+        raise ValueError("pursuer rollout steps_alive must be in the rollout horizon")
+    mean_pursuer_tag_time_seconds = (
+        sum(pursuer_tag_steps) / len(pursuer_tag_steps) * control_timestep
+    )
+
     return HierarchicalCheckpointCandidate(
         checkpoint=str(evaluation["checkpoint"]),
         iteration=int(evaluation["checkpoint_iteration"]),
@@ -80,6 +104,7 @@ def hierarchical_checkpoint_candidate(
         minimum_physical_survival=min(survival),
         mean_role_success=sum(success) / 2.0,
         mean_physical_survival=sum(survival) / 2.0,
+        mean_pursuer_tag_time_seconds=mean_pursuer_tag_time_seconds,
         maximum_tracking_rmse=max(tracking),
     )
 

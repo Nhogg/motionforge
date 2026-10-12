@@ -45,6 +45,7 @@ def main(config: Config) -> None:
             "maximize minimum physical survival",
             "maximize mean role success",
             "maximize mean physical survival",
+            "minimize mean pursuer tag time with failures charged the horizon",
             "minimize maximum command-tracking RMSE",
             "prefer earlier iteration on an exact tie",
         ],

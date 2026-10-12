@@ -293,6 +293,19 @@ deliberate application of the predeclared rule rather than post-hoc selection
 for faster tags. The matched selection audit is stored in
 `logs/hierarchical/evaluation/tag_joint_balanced_safe_full_episode_selection_heldout16.json`.
 
+For subsequent experiments, the checkpoint rule was prospectively extended to
+use mean pursuer tag time after role success and physical survival, but before
+tracking RMSE. Failed pursuer rollouts are charged the complete evaluation
+horizon, so early physical failure can never appear to be a fast tag. This
+retains the conservative role and safety gates while distinguishing policies
+that solve TAG more efficiently. A regression fixture freezes this ordering and
+verifies that tag speed cannot override weaker role success or survival.
+
+Under the revised rule, iteration 20 ranks first, followed by iteration 15 and
+the parent iteration 10. Iteration 20 is therefore the accepted checkpoint for
+the next phase. Its selection audit is
+`logs/hierarchical/evaluation/tag_joint_balanced_safe_full_episode_selection_tag_time_heldout16.json`.
+
 ## Planned scaled experiment matrix
 
 The available training system has 16 Blackwell GPUs. Once the diagnostic
@@ -324,8 +337,7 @@ tracking, root height, and tilt measurements did.
 
 ## Next experiments
 
-1. Decide prospectively whether pursuer tag time should enter checkpoint ranking
-   ahead of tracking error; do not change the current experiment's frozen rule.
+1. Render both roles from the newly accepted iteration-20 checkpoint.
 2. Introduce historical league snapshots and then controlled self-play mixtures
    after the expanded fixed-opponent evaluation remains stable.
 3. Use TAG failure trajectories to identify difficult locomotion states for

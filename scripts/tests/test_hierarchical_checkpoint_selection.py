@@ -22,18 +22,27 @@ def _evaluation(
     pursuer_survival: float,
     evader_survival: float,
     tracking: float,
+    pursuer_tag_steps: int,
 ) -> dict[str, object]:
     return {
         "checkpoint": f"/checkpoints/{iteration:012d}",
         "checkpoint_iteration": iteration,
+        "control_timestep": 0.02,
         "experiment": "hierarchical_tag_checkpoint_evaluation",
         "passed": True,
+        "rollout_steps": 500,
         "scenarios": [
             {
                 "mean_command_tracking_rmse": tracking,
                 "physical_survival_rate": pursuer_survival,
                 "role": "pursuer",
                 "role_success_rate": pursuer_success,
+                "rollouts": [
+                    {
+                        "role_success": pursuer_success == 1.0,
+                        "steps_alive": pursuer_tag_steps,
+                    }
+                ],
             },
             {
                 "mean_command_tracking_rmse": tracking,
@@ -47,16 +56,18 @@ def _evaluation(
 
 def main(config: Config) -> None:
     evaluations = [
-        _evaluation(10, 1.0, 1.0, 1.0, 1.0, 0.12),
-        _evaluation(20, 1.0, 0.5, 1.0, 1.0, 0.10),
-        _evaluation(30, 0.75, 1.0, 1.0, 1.0, 0.09),
-        _evaluation(40, 1.0, 1.0, 0.75, 1.0, 0.08),
+        _evaluation(10, 1.0, 1.0, 1.0, 1.0, 0.12, 200),
+        _evaluation(20, 1.0, 0.5, 1.0, 1.0, 0.10, 100),
+        _evaluation(30, 0.75, 1.0, 1.0, 1.0, 0.09, 100),
+        _evaluation(40, 1.0, 1.0, 0.75, 1.0, 0.08, 100),
+        _evaluation(50, 1.0, 1.0, 1.0, 1.0, 0.20, 100),
     ]
     selected, ranked = select_hierarchical_checkpoint(evaluations)
     checks = {
-        "minimum_role_success_has_priority": selected.iteration == 10,
+        "minimum_role_success_has_priority": ranked[-1].iteration == 20,
+        "faster_tag_breaks_outcome_tie": selected.iteration == 50,
         "weak_role_not_hidden_by_mean": ranked[-1].iteration == 20,
-        "survival_breaks_success_tie": ranked[1].iteration == 40,
+        "survival_breaks_success_tie": ranked[2].iteration == 40,
         "all_candidates_retained": len(ranked) == len(evaluations),
     }
     result = {
