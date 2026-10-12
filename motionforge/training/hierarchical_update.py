@@ -24,10 +24,11 @@ from motionforge.training.hierarchical_ppo import (
 @dataclass(frozen=True)
 class HierarchicalUpdateConfig:
     strategy_learning_rate: float = 3e-4
-    locomotion_learning_rate: float = 1e-4
+    locomotion_learning_rate: float = 1e-5
     strategy_update_interval: int = 1
-    locomotion_update_interval: int = 1
+    locomotion_update_interval: int = 5
     maximum_gradient_norm: float = 1.0
+    maximum_locomotion_approximate_kl: float = 0.01
 
     def __post_init__(self) -> None:
         if self.strategy_learning_rate <= 0.0:
@@ -40,6 +41,8 @@ class HierarchicalUpdateConfig:
             raise ValueError("locomotion_update_interval must be positive")
         if self.maximum_gradient_norm <= 0.0:
             raise ValueError("maximum_gradient_norm must be positive")
+        if self.maximum_locomotion_approximate_kl <= 0.0:
+            raise ValueError("maximum_locomotion_approximate_kl must be positive")
 
 
 @struct.dataclass
@@ -60,6 +63,7 @@ class HierarchicalUpdateMetrics:
     locomotion_gradient_norm: jax.Array
     strategy_updated: jax.Array
     locomotion_updated: jax.Array
+    locomotion_rejected: jax.Array
 
 
 class HierarchicalPpoUpdater:
@@ -123,6 +127,21 @@ class HierarchicalPpoUpdater:
         """Run whichever level updates are scheduled for this iteration."""
         strategy_due = state.iteration % self.config.strategy_update_interval == 0
         locomotion_due = state.iteration % self.config.locomotion_update_interval == 0
+        _, locomotion_preupdate_metrics = locomotion_ppo_loss(
+            state.parameters["locomotion"],
+            locomotion_batch,
+            locomotion_targets,
+            policy_config=self.policy_config,
+            loss_config=self.locomotion_loss_config,
+        )
+        locomotion_accepted = (
+            locomotion_due
+            & jp.isfinite(locomotion_preupdate_metrics.approximate_kl)
+            & (
+                locomotion_preupdate_metrics.approximate_kl
+                <= self.config.maximum_locomotion_approximate_kl
+            )
+        )
 
         def strategy_update(_):
             (loss, metrics), gradients = jax.value_and_grad(
@@ -204,7 +223,7 @@ class HierarchicalPpoUpdater:
             locomotion_metrics,
             locomotion_norm,
         ) = jax.lax.cond(
-            locomotion_due, locomotion_update, locomotion_skip, operand=None
+            locomotion_accepted, locomotion_update, locomotion_skip, operand=None
         )
         parameters = freeze(
             {
@@ -219,7 +238,7 @@ class HierarchicalPpoUpdater:
             iteration=state.iteration + 1,
             strategy_updates=(state.strategy_updates + strategy_due.astype(jp.int32)),
             locomotion_updates=(
-                state.locomotion_updates + locomotion_due.astype(jp.int32)
+                state.locomotion_updates + locomotion_accepted.astype(jp.int32)
             ),
         )
         return next_state, HierarchicalUpdateMetrics(
@@ -228,5 +247,6 @@ class HierarchicalPpoUpdater:
             strategy_gradient_norm=strategy_norm,
             locomotion_gradient_norm=locomotion_norm,
             strategy_updated=strategy_due,
-            locomotion_updated=locomotion_due,
+            locomotion_updated=locomotion_accepted,
+            locomotion_rejected=locomotion_due & ~locomotion_accepted,
         )

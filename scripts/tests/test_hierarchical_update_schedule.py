@@ -155,6 +155,24 @@ def main(config: Config) -> None:
         locomotion_batch,
         locomotion_targets,
     )
+    guarded_updater = HierarchicalPpoUpdater(
+        HierarchicalUpdateConfig(
+            strategy_update_interval=1,
+            locomotion_update_interval=1,
+            maximum_locomotion_approximate_kl=0.01,
+        )
+    )
+    guarded_state_0 = guarded_updater.initialize(parameters)
+    stale_locomotion_batch = locomotion_batch.replace(
+        log_probability=locomotion_batch.log_probability + 1.0
+    )
+    guarded_state_1, guarded_metrics = jax.jit(guarded_updater.update)(
+        guarded_state_0,
+        strategy_batch,
+        strategy_targets,
+        stale_locomotion_batch,
+        locomotion_targets,
+    )
     schedule = [
         [bool(metrics_0.strategy_updated), bool(metrics_0.locomotion_updated)],
         [bool(metrics_1.strategy_updated), bool(metrics_1.locomotion_updated)],
@@ -178,6 +196,19 @@ def main(config: Config) -> None:
             )
             and _tree_changed(
                 state_2.parameters["locomotion"], state_3.parameters["locomotion"]
+            )
+        ),
+        "locomotion_kl_guard_rejects_stale_batch": (
+            bool(guarded_metrics.locomotion_rejected)
+            and not bool(guarded_metrics.locomotion_updated)
+            and int(guarded_state_1.locomotion_updates) == 0
+            and _tree_equal(
+                guarded_state_0.parameters["locomotion"],
+                guarded_state_1.parameters["locomotion"],
+            )
+            and _tree_equal(
+                guarded_state_0.locomotion_optimizer_state,
+                guarded_state_1.locomotion_optimizer_state,
             )
         ),
         "scheduled_update_counts": (

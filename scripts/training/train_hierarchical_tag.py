@@ -48,10 +48,11 @@ class Config:
     naconmax: int = 256
     njmax: int = 512
     strategy_learning_rate: float = 3e-4
-    locomotion_learning_rate: float = 1e-4
+    locomotion_learning_rate: float = 1e-5
     strategy_update_interval: int = 1
-    locomotion_update_interval: int = 1
+    locomotion_update_interval: int = 5
     maximum_gradient_norm: float = 1.0
+    maximum_locomotion_approximate_kl: float = 0.01
     learner_pursuer_probability: float = 0.5
     wandb_mode: str = "disabled"
     wandb_project: str = "motionforge"
@@ -156,6 +157,7 @@ def main(config: Config) -> None:
         strategy_update_interval=config.strategy_update_interval,
         locomotion_update_interval=config.locomotion_update_interval,
         maximum_gradient_norm=config.maximum_gradient_norm,
+        maximum_locomotion_approximate_kl=(config.maximum_locomotion_approximate_kl),
     )
     updater = HierarchicalPpoUpdater(update_config)
     train_state = updater.initialize(parameters)
@@ -261,6 +263,9 @@ def main(config: Config) -> None:
                 iteration_result.trajectory.learner_role == "pursuer"
             ),
             "training/locomotion_updates": int(train_state.locomotion_updates),
+            "training/locomotion_update_rejected": float(
+                iteration_result.update_metrics.locomotion_rejected
+            ),
             "training/strategy_updates": int(train_state.strategy_updates),
         }
         environment_steps = (
