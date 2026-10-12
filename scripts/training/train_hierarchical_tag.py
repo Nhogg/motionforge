@@ -6,7 +6,7 @@ import json
 import platform
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -16,7 +16,7 @@ import numpy as np
 
 from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
-from motionforge.league import FixedLeague, LeagueOpponent
+from motionforge.league import FixedLeague, HistoricalLeague, LeagueOpponent
 from motionforge.logging.wandb import WandbMetricsLogger
 from motionforge.models import (
     load_p2_checkpoint,
@@ -41,6 +41,7 @@ class Config:
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
     restore_checkpoint: Path | None = None
+    historical_opponent_checkpoints: list[str] = field(default_factory=list)
     seed: int = 0
     num_environments: int = 16
     num_iterations: int = 10
@@ -121,6 +122,11 @@ def _validate_config(config: Config) -> None:
         raise FileNotFoundError(
             f"restore checkpoint does not exist: {config.restore_checkpoint}"
         )
+    for checkpoint in config.historical_opponent_checkpoints:
+        if not Path(checkpoint).is_dir():
+            raise FileNotFoundError(
+                f"historical opponent checkpoint does not exist: {checkpoint}"
+            )
     if config.output_dir.exists():
         raise FileExistsError(f"output directory already exists: {config.output_dir}")
 
@@ -185,6 +191,25 @@ def main(config: Config) -> None:
         if restore_manifest["update_config"] != asdict(update_config):
             raise ValueError("restore checkpoint update configuration does not match")
         restored_from = str(config.restore_checkpoint.resolve())
+    historical_opponents = []
+    for checkpoint_value in config.historical_opponent_checkpoints:
+        checkpoint = Path(checkpoint_value)
+        opponent_state, opponent_manifest = load_hierarchical_checkpoint(
+            checkpoint,
+            updater.initialize(parameters),
+        )
+        historical_opponents.append(
+            LeagueOpponent(
+                opponent_id=(
+                    f"historical/{checkpoint.parent.parent.name}/"
+                    f"{checkpoint.name}-{opponent_manifest['state_sha256'][:12]}"
+                ),
+                category="historical",
+                policy=opponent_state.parameters,
+            )
+        )
+    if historical_opponents:
+        environment.league = HistoricalLeague(historical_opponents)
     trainer = HierarchicalPpoTrainer(
         runner,
         updater,
@@ -207,6 +232,13 @@ def main(config: Config) -> None:
             repository, "status", "--short"
         ).splitlines(),
         "p2_locomotion_checkpoint": str(config.locomotion_checkpoint.resolve()),
+        "historical_opponents": [
+            {
+                "category": opponent.category,
+                "opponent_id": opponent.opponent_id,
+            }
+            for opponent in historical_opponents
+        ],
         "restore_checkpoint": restored_from,
         "update_config": asdict(update_config),
     }

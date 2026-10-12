@@ -177,7 +177,7 @@ class HierarchicalPpoTrainer:
         )
         evader_segment = self.runner.start_segment(
             train_state.parameters,
-            seed=seed + 1,
+            seed=seed,
             learner_is_pursuer=False,
         )
         environment_ids = jp.arange(environment_count, dtype=jp.int32)

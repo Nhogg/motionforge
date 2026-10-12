@@ -306,6 +306,31 @@ the parent iteration 10. Iteration 20 is therefore the accepted checkpoint for
 the next phase. Its selection audit is
 `logs/hierarchical/evaluation/tag_joint_balanced_safe_full_episode_selection_tag_time_heldout16.json`.
 
+## Historical hierarchical league
+
+The league layer now supports a nonempty immutable population of historical
+hierarchical policies. Every entry has a unique opponent ID, the `historical`
+category, and a complete frozen strategy-plus-locomotion parameter tree.
+Selection is deterministic from the rollout seed and cycles uniformly over the
+registered population. Invalid categories and duplicate identities are rejected.
+
+The training launcher accepts a list of hierarchical checkpoint directories,
+validates each checkpoint digest, restores its policy parameters, and records
+the resulting opponent IDs in the run manifest. Balanced pursuer and evader
+halves use the same sampled opponent within an update, so the single recorded
+opponent identity accurately describes the complete batch. Successive updates
+advance through the historical pool by seed.
+
+The first integration smoke restored accepted iteration 20 as the learner and
+registered iterations 10, 15, and 20 as historical opponents. One complete
+10-second, 16-environment update remained finite, preserved the 50/50 role
+split, applied both strategy and locomotion updates, and saved iteration 21.
+The sampled opponent was historical iteration 20 with its checkpoint digest in
+the recorded ID. Pursuer tag rate was 100%; evader timeout rate was 0% against
+the stronger historical pursuer, providing a concrete learning signal for the
+next longer run. Evidence is stored under
+`logs/hierarchical/training/tag_historical_league_smoke_seed0`.
+
 ## Planned scaled experiment matrix
 
 The available training system has 16 Blackwell GPUs. Once the diagnostic
@@ -337,9 +362,10 @@ tracking, root height, and tilt measurements did.
 
 ## Next experiments
 
-1. Render both roles from the newly accepted iteration-20 checkpoint.
-2. Introduce historical league snapshots and then controlled self-play mixtures
-   after the expanded fixed-opponent evaluation remains stable.
+1. Run a longer multi-seed TAG pilot against the frozen historical pool and
+   evaluate intermediate checkpoints conservatively.
+2. Add controlled mixtures of historical, recent, and best opponents after the
+   static historical pilot is stable.
 3. Use TAG failure trajectories to identify difficult locomotion states for
    targeted low-level training and ablation studies.
 
