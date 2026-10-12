@@ -228,6 +228,28 @@ pursuer tagged in only one of four evaluation seeds. The remaining issue is
 therefore strategy/curriculum quality rather than role omission, low-level KL
 collapse, or unconstrained boundary commands.
 
+## Role-conservative checkpoint selection
+
+Checkpoint selection is now an explicit, reproducible evaluation stage. Each
+candidate must contain valid pursuer and evader evaluations. Candidates are
+ranked lexicographically by minimum role success, minimum physical survival,
+mean role success, mean survival, and finally worst-role command-tracking RMSE.
+An exact tie favors the earlier checkpoint. This ordering prevents a strong role
+from hiding regression in the other role and treats locomotion safety as more
+important than tracking quality.
+
+All five checkpoints from the safety-aware 80,000-step run were evaluated over
+four seeds per role. Iterations 10, 20, 30, and 40 each achieved 100% role
+success and 100% physical survival for both roles. Iteration 10 was selected
+because its worst-role tracking RMSE (`0.131`) was lower than iteration 20
+(`0.164`), iteration 30 (`0.187`), and iteration 40 (`0.210`). Iteration 50
+ranked last because minimum role success fell to 25% and minimum physical
+survival to 75%.
+
+The selected checkpoint is therefore iteration 10, not the final iteration.
+The complete audit record is written to
+`logs/hierarchical/evaluation/tag_joint_balanced_safe_80k_selection.json`.
+
 ## Planned scaled experiment matrix
 
 The available training system has 16 Blackwell GPUs. Once the diagnostic
@@ -259,16 +281,12 @@ tracking, root height, and tilt measurements did.
 
 ## Next experiments
 
-1. Add automatic role-conservative checkpoint selection and retain the best
-   checkpoint instead of assuming the final iteration is best.
-2. Improve the pursuer curriculum against the fixed opponent, then evaluate
+1. Improve the pursuer curriculum against the fixed opponent, then evaluate
    whether late pursuer success can be retained without weakening the evader.
-3. Select checkpoints using a conservative score such as the minimum of pursuer
-   and evader success, with survival and tracking constraints.
-4. Render both roles from the selected checkpoint.
-5. Once fixed-opponent training is stable, introduce historical league snapshots
+2. Render both roles from the selected checkpoint.
+3. Once fixed-opponent training is stable, introduce historical league snapshots
    and then controlled self-play mixtures.
-6. Use TAG failure trajectories to identify difficult locomotion states for
+4. Use TAG failure trajectories to identify difficult locomotion states for
    targeted low-level training and ablation studies.
 
 The current evidence does not yet justify claiming a converged TAG policy. It
