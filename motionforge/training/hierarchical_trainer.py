@@ -242,6 +242,7 @@ class HierarchicalPpoTrainer:
                     getattr(pursuer_states, field), getattr(evader_states, field)
                 )
                 for field in (
+                    "strategy_actions",
                     "commands",
                     "previous_actions",
                     "phases",

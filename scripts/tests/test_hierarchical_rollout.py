@@ -24,8 +24,7 @@ from motionforge.rollout import HierarchicalRolloutConfig, HierarchicalRolloutRu
 @dataclass
 class Config:
     checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/"
-        "000040632320"
+        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
     seed: int = 0
     locomotion_steps: int = 10
@@ -72,34 +71,40 @@ def main(config: Config) -> None:
     step = jax.jit(runner.step)
 
     command_history = []
+    strategy_action_history = []
     action_history = []
     for _ in range(config.locomotion_steps):
         state = step(segment, state)
         command_history.append(np.asarray(state.commands))
+        strategy_action_history.append(np.asarray(state.strategy_actions))
         action_history.append(np.asarray(state.previous_actions))
     state.environment.physics.data.qpos.block_until_ready()
 
     commands = np.stack(command_history)
+    strategy_actions = np.stack(strategy_action_history)
     actions = np.stack(action_history)
     expected_strategy_updates = (
-        config.locomotion_steps
-        + runner.config.locomotion_steps_per_strategy_step
-        - 1
+        config.locomotion_steps + runner.config.locomotion_steps_per_strategy_step - 1
     ) // runner.config.locomotion_steps_per_strategy_step
     checks = {
         "actions_finite": bool(np.isfinite(actions).all()),
         "actions_shape": actions.shape == (config.locomotion_steps, 2, 29),
         "commands_finite": bool(np.isfinite(commands).all()),
+        "strategy_actions_finite": bool(np.isfinite(strategy_actions).all()),
+        "strategy_actions_shape": strategy_actions.shape
+        == (config.locomotion_steps, 2, 3),
         "commands_held_for_five_steps": bool(
-            np.array_equal(commands[0], commands[1])
-            and np.array_equal(commands[0], commands[4])
+            np.allclose(commands[0], commands[1])
+            and np.allclose(commands[0], commands[4])
+        ),
+        "strategy_actions_held_for_five_steps": bool(
+            np.array_equal(strategy_actions[0], strategy_actions[1])
+            and np.array_equal(strategy_actions[0], strategy_actions[4])
         ),
         "environment_not_done": not bool(np.asarray(state.environment.done)),
         "locomotion_step_count": int(np.asarray(state.locomotion_steps))
         == config.locomotion_steps,
-        "physics_step_count": int(
-            np.asarray(state.environment.physics.step_count)
-        )
+        "physics_step_count": int(np.asarray(state.environment.physics.step_count))
         == config.locomotion_steps,
         "rates": (
             runner.config.physics_hz == 500
@@ -125,26 +130,19 @@ def main(config: Config) -> None:
         "policy_statistics_finite": bool(
             np.isfinite(np.asarray(state.strategy_log_probabilities)).all()
             and np.isfinite(np.asarray(state.strategy_entropies)).all()
-            and np.isfinite(
-                np.asarray(state.locomotion_log_probabilities)
-            ).all()
+            and np.isfinite(np.asarray(state.locomotion_log_probabilities)).all()
             and np.isfinite(np.asarray(state.locomotion_entropies)).all()
         ),
         "stochastic_log_probabilities_recorded": bool(
             (not config.stochastic_actions)
             or bool(
                 np.any(np.asarray(state.strategy_log_probabilities) != 0.0)
-                and np.any(
-                    np.asarray(state.locomotion_log_probabilities) != 0.0
-                )
+                and np.any(np.asarray(state.locomotion_log_probabilities) != 0.0)
             )
         ),
-        "segment_indices": (
-            segment.learner_index == 0 and segment.opponent_index == 1
-        ),
+        "segment_indices": (segment.learner_index == 0 and segment.opponent_index == 1),
         "segment_roles": (
-            segment.learner_role == "pursuer"
-            and segment.opponent_role == "evader"
+            segment.learner_role == "pursuer" and segment.opponent_role == "evader"
         ),
         "segment_opponent_identity": (
             segment.opponent_id == "historical/test-0001"

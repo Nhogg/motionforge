@@ -12,7 +12,10 @@ import jax.numpy as jp
 from flax import struct
 from flax.core import freeze, unfreeze
 
-from motionforge.controllers import build_g1_tag_policy_observation_layout
+from motionforge.controllers import (
+    build_g1_tag_policy_observation_layout,
+    project_boundary_safe_command,
+)
 from motionforge.envs import (
     HierarchicalObservationConfig,
     MultiAgentTaskEnv,
@@ -51,6 +54,8 @@ class HierarchicalRolloutConfig:
     action_scale: float = 0.5
     learner_pursuer_probability: float = 0.5
     stochastic_actions: bool = False
+    boundary_command_safety_enabled: bool = True
+    boundary_command_margin: float = 1.0
 
     def __post_init__(self) -> None:
         for name in ("physics_hz", "locomotion_hz", "strategy_hz"):
@@ -64,6 +69,8 @@ class HierarchicalRolloutConfig:
             raise ValueError("gait_frequency_hz must be positive")
         if self.action_scale <= 0.0:
             raise ValueError("action_scale must be positive")
+        if self.boundary_command_margin <= 0.0:
+            raise ValueError("boundary_command_margin must be positive")
         if not 0.0 <= self.learner_pursuer_probability <= 1.0:
             raise ValueError("learner_pursuer_probability must be in [0, 1]")
 
@@ -79,6 +86,7 @@ class HierarchicalRolloutConfig:
 @struct.dataclass
 class HierarchicalRolloutState:
     environment: MultiAgentTaskState
+    strategy_actions: jax.Array
     commands: jax.Array
     previous_actions: jax.Array
     phases: jax.Array
@@ -142,6 +150,10 @@ class HierarchicalRolloutRunner:
             arena_half_extent=environment.config.arena_half_extent,
             command_scale=self.policy.config.command_scale,
         )
+        if self.config.boundary_command_margin > environment.config.arena_half_extent:
+            raise ValueError(
+                "boundary_command_margin must not exceed the arena half extent"
+            )
 
         simulation_hz = round(1.0 / environment.config.simulation_timestep)
         control_hz = round(1.0 / environment.config.control_timestep)
@@ -179,6 +191,7 @@ class HierarchicalRolloutRunner:
         environment_state = self.environment.reset(environment_key)
         return HierarchicalRolloutState(
             environment=environment_state,
+            strategy_actions=jp.zeros((2, 3), dtype=jp.float32),
             commands=jp.zeros((2, 3), dtype=jp.float32),
             previous_actions=jp.zeros((2, 29), dtype=jp.float32),
             phases=jp.asarray([[0.0, jp.pi], [0.0, jp.pi]], dtype=jp.float32),
@@ -327,6 +340,36 @@ class HierarchicalRolloutRunner:
         ordered[segment.learner_index] = segment.learner_parameters
         return jax.tree.map(lambda *leaves: jp.stack(leaves), *ordered)
 
+    def _project_boundary_safe_commands(
+        self,
+        state: HierarchicalRolloutState,
+        strategy_actions: jax.Array,
+    ) -> jax.Array:
+        """Project executed commands without changing PPO's sampled actions."""
+        if not self.config.boundary_command_safety_enabled:
+            return strategy_actions
+        root_quaternions = jp.stack(
+            [
+                state.environment.physics.data.qpos[
+                    agent.qpos_slice.start + 3 : agent.qpos_slice.start + 7
+                ]
+                for agent in self.locomotion_layout.agents
+            ]
+        )
+        return jax.vmap(
+            lambda command, position, quaternion: project_boundary_safe_command(
+                command,
+                position,
+                quaternion,
+                arena_half_extent=self.environment.config.arena_half_extent,
+                boundary_margin=self.config.boundary_command_margin,
+            )
+        )(
+            strategy_actions,
+            state.environment.diagnostics.planar_position,
+            root_quaternions,
+        )
+
     def step(
         self,
         segment: HierarchicalRolloutSegment,
@@ -380,9 +423,9 @@ class HierarchicalRolloutRunner:
         def hold_strategy(_):
             return (
                 StrategyOutput(
-                    location=jp.zeros_like(state.commands),
-                    command=state.commands,
-                    log_std=jp.zeros_like(state.commands),
+                    location=jp.zeros_like(state.strategy_actions),
+                    command=state.strategy_actions,
+                    log_std=jp.zeros_like(state.strategy_actions),
                     value=state.strategy_values,
                 ),
                 state.strategy_log_probabilities,
@@ -395,7 +438,9 @@ class HierarchicalRolloutRunner:
             hold_strategy,
             operand=None,
         )
-        motor_commands = jax.lax.stop_gradient(strategy.command)
+        motor_commands = jax.lax.stop_gradient(
+            self._project_boundary_safe_commands(state, strategy.command)
+        )
         locomotion_observation = locomotion_observations(
             state.environment,
             self.locomotion_layout,
@@ -442,7 +487,8 @@ class HierarchicalRolloutRunner:
         phases = jp.fmod(state.phases + self.phase_delta + jp.pi, 2.0 * jp.pi) - jp.pi
         return state.replace(
             environment=environment_state,
-            commands=strategy.command,
+            strategy_actions=strategy.command,
+            commands=motor_commands,
             previous_actions=locomotion.action,
             phases=phases,
             strategy_values=strategy.value,

@@ -46,6 +46,8 @@ class Config:
     camera_distance: float = 5.0
     naconmax: int = 256
     njmax: int = 512
+    boundary_command_safety_enabled: bool = True
+    boundary_command_margin: float = 1.0
     output: Path = Path("logs/hierarchical/videos/tag_checkpoint_pursuer_a.mp4")
 
 
@@ -60,6 +62,8 @@ def _validate_config(config: Config) -> None:
         raise ValueError("camera_distance must be positive")
     if config.naconmax <= 0 or config.njmax <= 0:
         raise ValueError("naconmax and njmax must be positive")
+    if config.boundary_command_margin <= 0.0:
+        raise ValueError("boundary_command_margin must be positive")
     if not config.checkpoint.is_dir():
         raise FileNotFoundError(f"checkpoint does not exist: {config.checkpoint}")
     if not config.locomotion_checkpoint.is_dir():
@@ -89,7 +93,11 @@ def main(config: Config) -> None:
     runner = HierarchicalRolloutRunner(
         environment,
         p2_locomotion_normalization(p2_parameters[0]),
-        HierarchicalRolloutConfig(stochastic_actions=False),
+        HierarchicalRolloutConfig(
+            stochastic_actions=False,
+            boundary_command_safety_enabled=(config.boundary_command_safety_enabled),
+            boundary_command_margin=config.boundary_command_margin,
+        ),
     )
     state = runner.reset(jax.random.PRNGKey(config.seed))
     warm_start_parameters = migrate_p2_actor_parameters(

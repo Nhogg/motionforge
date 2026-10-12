@@ -198,6 +198,51 @@ sampling alone does not guarantee monotonically improving behavior. For the
 current fixed-opponent curriculum, iteration 10 is the best validated checkpoint;
 the final checkpoint should not be selected merely because it is latest.
 
+## Boundary-safe hierarchical execution
+
+The hierarchy now distinguishes the raw strategy action from the command sent to
+the locomotion controller. `strategy_actions` retains the exact sampled action
+used to compute PPO log probability. `commands` contains its executed form. In
+the final one-meter arena margin, outward world-frame velocity is attenuated
+linearly to zero at the boundary while inward velocity, tangential velocity, and
+yaw remain available. This preserves PPO's action-distribution semantics while
+adding a hard execution constraint.
+
+Applying the constraint only during evaluation of the previously trained
+iteration-50 checkpoint raised evader survival from 0% to 100% and pursuer
+survival from 0% to 50%. Because that policy had never trained through the
+projection, a matched 80,000-step run was then trained with safe execution active
+throughout. It retained exact 50/50 role sampling, completed ten locomotion and 50
+strategy updates, rejected no locomotion updates, and ended with locomotion KL
+of `1.9e-7`.
+
+| Iteration 50 variant | Pursuer success/survival | Evader success/survival |
+| --- | ---: | ---: |
+| balanced, no safety | 0% / 0% | 0% / 0% |
+| old checkpoint, safety at evaluation only | 0% / 50% | 100% / 100% |
+| safety active during training and evaluation | 25% / 75% | 100% / 100% |
+
+The constraint fixes the evader's boundary failure and substantially improves
+pursuer survival. It does not yet produce a strong late pursuer: the retrained
+pursuer tagged in only one of four evaluation seeds. The remaining issue is
+therefore strategy/curriculum quality rather than role omission, low-level KL
+collapse, or unconstrained boundary commands.
+
+## Planned scaled experiment matrix
+
+The available training system has 16 Blackwell GPUs. Once the diagnostic
+curricula and checkpoint-selection rule are frozen, the main experiment can run
+four independent seeds for each of four conditions concurrently:
+
+1. TAG curriculum;
+2. aggressive-command curriculum;
+3. terrain curriculum;
+4. random-command baseline.
+
+This yields 16 independent runs rather than using multiple devices to accelerate
+one seed. The design supports seed-level uncertainty estimates and direct
+curriculum ablations while keeping each optimizer trajectory independent.
+
 ## Interpretation
 
 These experiments support retaining a hierarchical design while controlling the
@@ -214,10 +259,10 @@ tracking, root height, and tilt measurements did.
 
 ## Next experiments
 
-1. Add arena-aware command regularization or curriculum constraints so strategy
-   improvement cannot be obtained by driving indefinitely toward a boundary.
-2. Evaluate intermediate balanced checkpoints to locate the onset of boundary
-   termination, then rerun the 160,000-step experiment after that repair.
+1. Add automatic role-conservative checkpoint selection and retain the best
+   checkpoint instead of assuming the final iteration is best.
+2. Improve the pursuer curriculum against the fixed opponent, then evaluate
+   whether late pursuer success can be retained without weakening the evader.
 3. Select checkpoints using a conservative score such as the minimum of pursuer
    and evader success, with survival and tracking constraints.
 4. Render both roles from the selected checkpoint.

@@ -132,12 +132,8 @@ def locomotion_reward_terms(
     linear_tracking = config.linear_tracking_weight * jp.exp(
         -jp.sum(jp.square(tracking_error[:2]))
     )
-    yaw_tracking = config.yaw_tracking_weight * jp.exp(
-        -jp.square(tracking_error[2])
-    )
-    upright = config.upright_weight * jp.exp(
-        -jp.sum(jp.square(projected_gravity[:2]))
-    )
+    yaw_tracking = config.yaw_tracking_weight * jp.exp(-jp.square(tracking_error[2]))
+    upright = config.upright_weight * jp.exp(-jp.sum(jp.square(projected_gravity[:2])))
     action_rate = -config.action_rate_weight * jp.sum(
         jp.square(action - previous_action)
     )
@@ -179,9 +175,7 @@ def collect_hierarchical_transition(
     pursuer_config = TagPursuerConfig() if pursuer_config is None else pursuer_config
     evader_config = TagEvaderConfig() if evader_config is None else evader_config
     locomotion_config = (
-        LocomotionRewardConfig()
-        if locomotion_config is None
-        else locomotion_config
+        LocomotionRewardConfig() if locomotion_config is None else locomotion_config
     )
     learner_index = segment.learner_index
     previous_strategy = strategy_observations(
@@ -196,6 +190,7 @@ def collect_hierarchical_transition(
     previous_action = state.previous_actions[learner_index]
     next_state = runner.step(segment, state)
     command = next_state.commands[learner_index]
+    strategy_action = next_state.strategy_actions[learner_index]
 
     motor_fields = locomotion_observations(
         state.environment,
@@ -281,16 +276,13 @@ def collect_hierarchical_transition(
     )
     transition = HierarchicalTransition(
         strategy_observation=previous_strategy,
-        strategy_command=command,
+        strategy_command=strategy_action,
         strategy_value=next_state.strategy_values[learner_index],
-        strategy_log_probability=next_state.strategy_log_probabilities[
-            learner_index
-        ],
+        strategy_log_probability=next_state.strategy_log_probabilities[learner_index],
         strategy_entropy=next_state.strategy_entropies[learner_index],
         strategy_reward=strategy_reward,
         strategy_update=(
-            state.locomotion_steps
-            % runner.config.locomotion_steps_per_strategy_step
+            state.locomotion_steps % runner.config.locomotion_steps_per_strategy_step
             == 0
         ),
         locomotion_observation=motor_observation,
@@ -320,8 +312,7 @@ def collect_hierarchical_transition(
         fallen=fallen,
         near_fall=near_fall,
         out_of_bounds=(
-            termination.out_of_bounds
-            | next_state.environment.diagnostics.out_of_bounds
+            termination.out_of_bounds | next_state.environment.diagnostics.out_of_bounds
         ),
         tag_contact=next_state.environment.diagnostics.tag_contact,
         tagged=termination.tagged,

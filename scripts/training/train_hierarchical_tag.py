@@ -54,6 +54,8 @@ class Config:
     maximum_gradient_norm: float = 1.0
     maximum_locomotion_approximate_kl: float = 0.01
     learner_pursuer_probability: float = 0.5
+    boundary_command_safety_enabled: bool = True
+    boundary_command_margin: float = 1.0
     wandb_mode: str = "disabled"
     wandb_project: str = "motionforge"
     wandb_entity: str | None = None
@@ -100,6 +102,8 @@ def _validate_config(config: Config) -> None:
         raise ValueError("num_environments must be even for balanced role batches")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
         raise ValueError("learner_pursuer_probability must be in [0, 1]")
+    if config.boundary_command_margin <= 0.0:
+        raise ValueError("boundary_command_margin must be positive")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
         raise ValueError("wandb_mode must be disabled, online, or offline")
     if not config.locomotion_checkpoint.is_dir():
@@ -137,6 +141,8 @@ def main(config: Config) -> None:
         HierarchicalRolloutConfig(
             learner_pursuer_probability=config.learner_pursuer_probability,
             stochastic_actions=True,
+            boundary_command_safety_enabled=(config.boundary_command_safety_enabled),
+            boundary_command_margin=config.boundary_command_margin,
         ),
     )
     initialization_state = runner.reset(jax.random.PRNGKey(config.seed))
