@@ -89,10 +89,11 @@ collapsing it into one monolithic action distribution.
   physical scales. This explicit role input allows one network to implement two
   different game objectives while sharing useful representations.
 
-- **Strategy encoder and head.** The strategy encoder is a two-layer multilayer
-  perceptron with 128 tanh units per layer. Its stochastic actor head parameterizes
-  a diagonal Gaussian over three latent action coordinates; tanh squashing and
-  elementwise scaling convert samples into the interpretable command
+- **Strategy encoder and role-specific heads.** The strategy encoder is a shared
+  two-layer multilayer perceptron with 128 tanh units per layer. Separate pursuer
+  and evader stochastic actor heads each parameterize a diagonal Gaussian over
+  three latent action coordinates; each role also has its own scalar critic head.
+  Tanh squashing and elementwise scaling convert samples into the interpretable command
   `(forward_velocity, lateral_velocity, yaw_rate)` with limits `(1.0, 0.5, 1.0)`.
   A separate scalar value head estimates the role-conditioned strategic return.
   The strategy is evaluated at 10 Hz, so each command is held across five 50 Hz
@@ -535,3 +536,18 @@ reward and its running maximum. It also overlays two normalized empirical proxie
 
 Both proxies are labeled as such in the figure and should not be interpreted as
 unobserved model variables. Seed variability is shown as one standard deviation.
+
+## Role-specific strategy-head repair
+
+Held-out cross-play established that balanced batches alone did not prevent the
+shared output mapping from forgetting pursuit. The strategy now retains its shared
+role-conditioned encoder but routes its output through independent pursuer and
+evader actor, log-standard-deviation, and critic heads. A batch containing only one
+role therefore produces exactly zero gradient in the other role's output head,
+while both roles continue to update the shared representation.
+
+Legacy shared-head checkpoints remain usable. On restoration, the old strategy
+head is copied into both role-specific heads, preserving its deterministic policy
+at migration time. The locomotion parameters and locomotion optimizer are restored
+unchanged. The strategy optimizer is reinitialized because its parameter-tree shape
+has changed. New checkpoints use the role-specific tree directly.

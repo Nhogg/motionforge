@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from flax import serialization
+from flax.core import freeze, unfreeze
 
 from motionforge.training.hierarchical_update import (
     HierarchicalTrainState,
@@ -110,7 +111,34 @@ def load_hierarchical_checkpoint(
     actual_digest = _state_digest(payload)
     if actual_digest != manifest.get("state_sha256"):
         raise ValueError("hierarchical checkpoint state digest does not match")
-    restored = serialization.from_bytes(template, payload)
+    raw_state = serialization.msgpack_restore(payload)
+    template_strategy = unfreeze(template.parameters["strategy"])
+    raw_strategy = raw_state["parameters"]["strategy"]
+    legacy_strategy = (
+        "head" in raw_strategy
+        and "pursuer_head" in template_strategy
+        and "evader_head" in template_strategy
+    )
+    if legacy_strategy:
+        migrated_parameters = unfreeze(template.parameters)
+        migrated_parameters["strategy"]["encoder"] = raw_strategy["encoder"]
+        migrated_parameters["strategy"]["pursuer_head"] = raw_strategy["head"]
+        migrated_parameters["strategy"]["evader_head"] = raw_strategy["head"]
+        migrated_parameters["locomotion"] = raw_state["parameters"]["locomotion"]
+        restored = template.replace(
+            parameters=freeze(migrated_parameters),
+            strategy_optimizer_state=template.strategy_optimizer_state,
+            locomotion_optimizer_state=serialization.from_state_dict(
+                template.locomotion_optimizer_state,
+                raw_state["locomotion_optimizer_state"],
+            ),
+            iteration=raw_state["iteration"],
+            strategy_updates=raw_state["strategy_updates"],
+            locomotion_updates=raw_state["locomotion_updates"],
+        )
+        manifest = {**manifest, "legacy_strategy_head_migrated": True}
+    else:
+        restored = serialization.from_bytes(template, payload)
     counters = {
         "iteration": int(restored.iteration),
         "strategy_updates": int(restored.strategy_updates),

@@ -28,7 +28,7 @@ strategic observations + role
    strategy encoder
           |
           v
-    strategy head
+ role-specific strategy heads
           |
           v
  high-level command z
@@ -639,7 +639,7 @@ Do not implement:
 ```text
              shared encoder
               /        \
- strategy head       motor head
+ role-specific heads    motor head
 ```
 
 That is explicitly not the intended design.

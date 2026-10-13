@@ -40,9 +40,7 @@ def _observations(batch_size: int):
     locomotion = LocomotionObservation(
         root_linear_velocity=jp.zeros((batch_size, 3)),
         root_angular_velocity=jp.zeros((batch_size, 3)),
-        projected_gravity=jp.tile(
-            jp.asarray([[0.0, 0.0, -1.0]]), (batch_size, 1)
-        ),
+        projected_gravity=jp.tile(jp.asarray([[0.0, 0.0, -1.0]]), (batch_size, 1)),
         joint_position=jp.zeros((batch_size, 29)),
         joint_velocity=jp.zeros((batch_size, 29)),
         previous_action=jp.zeros((batch_size, 29)),
@@ -87,13 +85,11 @@ def main(config: Config) -> None:
         deterministic.strategy.log_std,
         strategy_scale,
     )
-    locomotion_action, locomotion_log_probability = (
-        tanh_normal_sample_and_log_prob(
-            locomotion_key,
-            deterministic.locomotion.location,
-            deterministic.locomotion.log_std,
-            jp.ones_like(deterministic.locomotion.location),
-        )
+    locomotion_action, locomotion_log_probability = tanh_normal_sample_and_log_prob(
+        locomotion_key,
+        deterministic.locomotion.location,
+        deterministic.locomotion.log_std,
+        jp.ones_like(deterministic.locomotion.location),
     )
     recomputed_strategy_log_probability = tanh_normal_log_prob(
         strategy_action,
@@ -108,14 +104,16 @@ def main(config: Config) -> None:
     locomotion_host = np.asarray(locomotion_action)
     checks = {
         "deterministic_means_bounded": bool(
-            np.all(np.abs(np.asarray(deterministic.strategy.command))
-                   <= np.asarray(policy.config.command_scale) + 1e-6)
+            np.all(
+                np.abs(np.asarray(deterministic.strategy.command))
+                <= np.asarray(policy.config.command_scale) + 1e-6
+            )
             and np.all(np.abs(np.asarray(deterministic.locomotion.action)) <= 1.0)
         ),
         "distribution_parameters_trainable": (
-            parameters["strategy"]["head"]["log_std"].shape == (3,)
-            and parameters["locomotion"]["motor_head"]["log_std"].shape
-            == (29,)
+            parameters["strategy"]["pursuer_head"]["log_std"].shape == (3,)
+            and parameters["strategy"]["evader_head"]["log_std"].shape == (3,)
+            and parameters["locomotion"]["motor_head"]["log_std"].shape == (29,)
         ),
         "entropy_shapes": (
             strategy_entropy.shape == (config.batch_size,)
@@ -133,8 +131,9 @@ def main(config: Config) -> None:
             )
         ),
         "sampled_actions_bounded": bool(
-            np.all(np.abs(strategy_host)
-                   <= np.asarray(policy.config.command_scale) + 1e-6)
+            np.all(
+                np.abs(strategy_host) <= np.asarray(policy.config.command_scale) + 1e-6
+            )
             and np.all(np.abs(locomotion_host) <= 1.0)
         ),
         "sampling_key_controls_actions": bool(

@@ -213,11 +213,29 @@ class StrategyModule(nn.Module):
             self.hidden_layer_sizes,
             name="encoder",
         )(observation)
-        return StrategyHead(
+        pursuer = StrategyHead(
             self.command_scale,
             self.initial_log_std,
-            name="head",
+            name="pursuer_head",
         )(features)
+        evader = StrategyHead(
+            self.command_scale,
+            self.initial_log_std,
+            name="evader_head",
+        )(features)
+        role = observation[..., -2:]
+        pursuer_selected = role[..., 0] >= role[..., 1]
+        return jax.tree.map(
+            lambda pursuer_value, evader_value: jp.where(
+                pursuer_selected[..., None]
+                if pursuer_value.ndim > pursuer_selected.ndim
+                else pursuer_selected,
+                pursuer_value,
+                evader_value,
+            ),
+            pursuer,
+            evader,
+        )
 
 
 class LocomotionModule(nn.Module):
