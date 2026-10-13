@@ -44,6 +44,10 @@ def _available_gpus(required: int = 4, maximum_used_mib: int = 4096) -> list[int
         index, used = (int(value.strip()) for value in line.split(","))
         if used <= maximum_used_mib:
             available.append(index)
+    requested = os.environ.get("MOTIONFORGE_PILOT_GPUS")
+    if requested:
+        preferred = [int(value) for value in requested.split(",")]
+        return [index for index in preferred if index in available][:required]
     return available[:required]
 
 
@@ -63,6 +67,11 @@ def _run(command: list[str], gpu: int, log_path: Path) -> None:
 
 def _train(seed: int, gpu: int) -> Path:
     output = TRAINING_ROOT / f"seed{seed}"
+    checkpoints_directory = output / "checkpoints"
+    if (output / "summary.json").is_file() and checkpoints_directory.is_dir():
+        checkpoints = sorted(checkpoints_directory.iterdir())
+        if checkpoints:
+            return checkpoints[-1]
     historical = ",".join(str(path) for path in HISTORICAL)
     command = [
         str(PYTHON),
@@ -95,6 +104,8 @@ def _evaluate(seed: int, gpu: int, checkpoint: Path) -> None:
         for mode, stochastic in (("deterministic", False), ("stochastic", True)):
             stem = f"seed{seed}_vs_{opponent_name}_{mode}"
             output = EVALUATION_ROOT / f"{stem}.json"
+            if output.is_file():
+                continue
             command = [
                 str(PYTHON),
                 "scripts/evaluation/evaluate_hierarchical_tag.py",
@@ -113,9 +124,6 @@ def _evaluate(seed: int, gpu: int, checkpoint: Path) -> None:
 def main() -> None:
     if not RESTORE.is_dir() or any(not path.is_dir() for path in HISTORICAL):
         raise FileNotFoundError("one or more pilot checkpoints are missing")
-    if any((TRAINING_ROOT / f"seed{seed}").exists() for seed in SEEDS):
-        raise FileExistsError("a role-head pilot output directory already exists")
-
     while len(gpus := _available_gpus()) < len(SEEDS):
         print(
             json.dumps(
