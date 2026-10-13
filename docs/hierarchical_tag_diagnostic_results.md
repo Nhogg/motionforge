@@ -103,12 +103,18 @@ physical agent slots in the reciprocal tests.
 
 The following artifacts are already generated:
 
-- `logs/hierarchical/plots/diagnostics_overnight/summary.svg`: combined success,
-  survival, and tracking comparison.
+- `logs/hierarchical/plots/diagnostics_overnight/crossplay_summary.svg`: combined
+  success, survival, and tracking comparison with labeled numeric axes.
 - `logs/hierarchical/plots/diagnostics_overnight/summary.csv`: paper/table-ready
   aggregate values.
 - `logs/hierarchical/plots/diagnostics_overnight/*_trajectories.svg`: per-condition
-  distance and planar trajectory plots.
+  distance and planar trajectory plots with physical units and axis ticks.
+- `logs/hierarchical/plots/training_progress/training_progress.svg`: training steps
+  versus strategy reward, the running maximum observed reward, sampled-opponent
+  difficulty, and perceived skill across four seeds. Perceived skill is the EWMA
+  of the mean pursuer tag rate and evader timeout rate. Task difficulty is the
+  sampled historical opponent checkpoint iteration divided by 20; these are
+  explicit empirical proxies, not hidden model outputs.
 - `logs/hierarchical/evaluation/diagnostics_overnight/*.json`: complete metrics and
   per-seed trajectories.
 
@@ -133,4 +139,6 @@ Regenerate plots without rerunning physics:
   'pattern=*.json' \
   'trajectory_pattern=*.json' \
   output_directory=logs/hierarchical/plots/diagnostics_overnight
+
+.venv/bin/python scripts/evaluation/plot_hierarchical_training_progress.py
 ```

@@ -1,13 +1,20 @@
-"""Create dependency-free CSV and SVG plots from hierarchical TAG evaluations."""
+"""Create publication-quality tables and plots from hierarchical TAG evaluations."""
 
 from __future__ import annotations
 
 import csv
-import html
 import json
-from collections.abc import Callable
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/motionforge-matplotlib")
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.ticker import MultipleLocator, PercentFormatter
 
 from motionforge.cli import run_hydra
 
@@ -18,21 +25,32 @@ class Config:
     pattern: str = "*.json"
     output_directory: Path = Path("logs/hierarchical/plots")
     trajectory_pattern: str = "*baseline*.json"
+    dpi: int = 180
 
 
 def _scenario(report: dict, role: str) -> dict:
     return next(item for item in report["scenarios"] if item["role"] == role)
 
 
-def _label(report: dict) -> str:
-    opponent = report.get("opponent", {})
-    opponent_checkpoint = opponent.get("checkpoint")
-    opponent_name = (
-        Path(opponent_checkpoint).parents[1].name
-        if opponent_checkpoint
-        else opponent.get("category", "unknown")
-    )
-    return f"{report.get('action_mode', 'deterministic')} vs {opponent_name}"
+def _condition_label(report: dict) -> str:
+    condition = str(report["_condition"])
+    action_mode = "Stochastic" if condition.endswith("_stochastic") else "Deterministic"
+    condition = condition.removesuffix("_stochastic").removesuffix("_deterministic")
+    pairings = {
+        "historical_vs_baseline": "iter 10 → iter 20",
+        "baseline_vs_historical": "iter 20 → iter 10",
+        "baseline_vs_warm_start": "iter 20 → warm start",
+        "later_seed0_vs_baseline": "iter 145 seed 0 → iter 20",
+        "later_seed1_vs_baseline": "iter 145 seed 1 → iter 20",
+        "later_seed2_vs_baseline": "iter 145 seed 2 → iter 20",
+        "later_seed3_vs_baseline": "iter 145 seed 3 → iter 20",
+        "baseline_vs_later_seed0": "iter 20 → iter 145 seed 0",
+        "baseline_vs_later_seed1": "iter 20 → iter 145 seed 1",
+        "baseline_vs_later_seed2": "iter 20 → iter 145 seed 2",
+        "baseline_vs_later_seed3": "iter 20 → iter 145 seed 3",
+    }
+    pairing = pairings.get(condition, condition.replace("_", " "))
+    return f"{pairing}\n{action_mode}"
 
 
 def _rows(reports: list[dict]) -> list[dict[str, object]]:
@@ -42,6 +60,7 @@ def _rows(reports: list[dict]) -> list[dict[str, object]]:
             scenario = _scenario(report, role)
             rows.append(
                 {
+                    "condition": report["_condition"],
                     "checkpoint": report["checkpoint"],
                     "iteration": report["checkpoint_iteration"],
                     "action_mode": report.get("action_mode", "deterministic"),
@@ -61,194 +80,161 @@ def _rows(reports: list[dict]) -> list[dict[str, object]]:
     return rows
 
 
-def _polyline(
-    points: list[tuple[float, float]],
-    *,
-    x0: float,
-    y0: float,
-    width: float,
-    height: float,
-    x_limits: tuple[float, float],
-    y_limits: tuple[float, float],
-) -> str:
-    xmin, xmax = x_limits
-    ymin, ymax = y_limits
-    coordinates = []
-    for x, y in points:
-        px = x0 + (x - xmin) / max(xmax - xmin, 1e-9) * width
-        py = y0 + height - (y - ymin) / max(ymax - ymin, 1e-9) * height
-        coordinates.append(f"{px:.1f},{py:.1f}")
-    return " ".join(coordinates)
+def _save_figure(fig: plt.Figure, destination: Path, dpi: int) -> None:
+    fig.savefig(destination.with_suffix(".svg"), bbox_inches="tight")
+    fig.savefig(destination.with_suffix(".png"), bbox_inches="tight", dpi=dpi)
+    plt.close(fig)
 
 
-def _summary_svg(reports: list[dict]) -> str:
-    width, panel_height, margin = 1600, 250, 70
-    panels: list[tuple[str, Callable[[dict], float], tuple[float, float]]] = [
-        ("Role success rate", lambda row: float(row["role_success_rate"]), (0.0, 1.0)),
-        (
-            "Physical survival rate",
-            lambda row: float(row["physical_survival_rate"]),
-            (0.0, 1.0),
+def _comparison_figure(reports: list[dict]) -> plt.Figure:
+    ordered = sorted(
+        reports,
+        key=lambda report: (
+            report["checkpoint_iteration"],
+            report.get("action_mode", "deterministic"),
+            report["_condition"],
         ),
-        (
-            "Command tracking RMSE",
-            lambda row: float(row["mean_command_tracking_rmse"]),
-            (0.0, 0.5),
-        ),
-    ]
-    rows = _rows(reports)
-    iterations = [float(row["iteration"]) for row in rows]
-    xmin, xmax = min(iterations), max(iterations)
-    groups: dict[tuple[str, str], list[dict]] = {}
-    for report in reports:
-        label = _label(report)
-        for role in ("pursuer", "evader"):
-            scenario = _scenario(report, role)
-            groups.setdefault((label, role), []).append(
-                {"iteration": report["checkpoint_iteration"], **scenario}
+    )
+    labels = [_condition_label(report) for report in ordered]
+    x = np.arange(len(ordered))
+    width = 0.38
+    colors = {"pursuer": "#2563eb", "evader": "#dc2626"}
+    fig, axes = plt.subplots(3, 1, figsize=(18, 13), sharex=True)
+    panels = (
+        ("role_success_rate", "Role success rate", (0.0, 1.05)),
+        ("physical_survival_rate", "Physical survival rate", (0.0, 1.05)),
+        ("mean_command_tracking_rmse", "Command tracking RMSE", (0.0, 0.5)),
+    )
+    for axis, (field, title, limits) in zip(axes, panels, strict=True):
+        for role, offset in (("pursuer", -width / 2), ("evader", width / 2)):
+            values = [float(_scenario(report, role)[field]) for report in ordered]
+            axis.bar(
+                x + offset,
+                values,
+                width,
+                label=role.capitalize(),
+                color=colors[role],
+                alpha=0.86,
+                edgecolor="white",
+                linewidth=0.5,
             )
-    colors = ["#2563eb", "#dc2626", "#059669", "#9333ea", "#ea580c", "#0891b2"]
-    color_by_group = {
-        key: colors[index % len(colors)] for index, key in enumerate(groups)
-    }
-    legend_columns = 2
-    legend_rows = (len(groups) + legend_columns - 1) // legend_columns
-    total_height = margin + len(panels) * panel_height + legend_rows * 24 + 30
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{total_height}" viewBox="0 0 {width} {total_height}">',
-        '<rect width="100%" height="100%" fill="white"/>',
-        "<style>text{font-family:system-ui,sans-serif;fill:#111827}.axis{stroke:#6b7280;stroke-width:1}.grid{stroke:#e5e7eb;stroke-width:1}.series{fill:none;stroke-width:2.5}</style>",
-        '<text x="70" y="35" font-size="22" font-weight="700">Hierarchical TAG evaluation summary</text>',
-    ]
-    plot_width = width - 2 * margin
-    for panel_index, (title, getter, y_limits) in enumerate(panels):
-        y0 = margin + panel_index * panel_height
-        plot_height = panel_height - 55
-        svg.append(
-            f'<text x="{margin}" y="{y0 - 12}" font-size="16" font-weight="600">{title}</text>'
-        )
-        for fraction in (0.0, 0.5, 1.0):
-            y = y0 + plot_height * (1.0 - fraction)
-            value = y_limits[0] + fraction * (y_limits[1] - y_limits[0])
-            svg.append(
-                f'<line class="grid" x1="{margin}" y1="{y:.1f}" x2="{width - margin}" y2="{y:.1f}"/>'
-            )
-            svg.append(
-                f'<text x="{margin - 10}" y="{y + 5:.1f}" text-anchor="end" font-size="12">{value:.2f}</text>'
-            )
-        svg.append(
-            f'<line class="axis" x1="{margin}" y1="{y0 + plot_height}" x2="{width - margin}" y2="{y0 + plot_height}"/>'
-        )
-        svg.append(
-            f'<line class="axis" x1="{margin}" y1="{y0}" x2="{margin}" y2="{y0 + plot_height}"/>'
-        )
-        for key, items in groups.items():
-            items = sorted(items, key=lambda item: item["iteration"])
-            points = [(float(item["iteration"]), getter(item)) for item in items]
-            svg.append(
-                f'<polyline class="series" stroke="{color_by_group[key]}" points="{_polyline(points, x0=margin, y0=y0, width=plot_width, height=plot_height, x_limits=(xmin, xmax), y_limits=y_limits)}"/>'
-            )
-            for x, y in points:
-                px = margin + (x - xmin) / max(xmax - xmin, 1e-9) * plot_width
-                py = (
-                    y0
-                    + plot_height
-                    - (
-                        (y - y_limits[0])
-                        / max(y_limits[1] - y_limits[0], 1e-9)
-                        * plot_height
-                    )
-                )
-                svg.append(
-                    f'<circle cx="{px:.1f}" cy="{py:.1f}" r="4" '
-                    f'fill="{color_by_group[key]}"/>'
-                )
-        svg.append(
-            f'<text x="{width - margin}" y="{y0 + plot_height + 28}" text-anchor="end" font-size="12">checkpoint iteration</text>'
-        )
-    legend_y = margin + len(panels) * panel_height - 20
-    for index, key in enumerate(groups):
-        x = margin + (index % legend_columns) * 740
-        y = legend_y + (index // legend_columns) * 24
-        svg.append(
-            f'<line x1="{x}" y1="{y}" x2="{x + 24}" y2="{y}" stroke="{color_by_group[key]}" stroke-width="3"/>'
-        )
-        svg.append(
-            f'<text x="{x + 32}" y="{y + 5}" font-size="12">{html.escape(key[0])} / {key[1]}</text>'
-        )
-    svg.append("</svg>")
-    return "\n".join(svg)
+        axis.set_title(title, loc="left", fontweight="bold")
+        axis.set_ylabel("RMSE" if "RMSE" in title else "Rate")
+        axis.set_ylim(*limits)
+        axis.grid(axis="y", color="#d1d5db", linewidth=0.8, alpha=0.8)
+        axis.set_axisbelow(True)
+        axis.spines[["top", "right"]].set_visible(False)
+        if "rate" in title.lower():
+            axis.yaxis.set_major_locator(MultipleLocator(0.25))
+            axis.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+        else:
+            axis.yaxis.set_major_locator(MultipleLocator(0.1))
+    axes[0].legend(loc="lower right", ncols=2, frameon=False)
+    axes[-1].set_xticks(x, labels, rotation=42, ha="right", fontsize=8)
+    axes[-1].set_xlabel("Evaluation condition")
+    fig.suptitle(
+        "Hierarchical TAG held-out cross-play (16 seeds per role)",
+        fontsize=18,
+        fontweight="bold",
+        y=1.01,
+    )
+    fig.tight_layout()
+    return fig
 
 
-def _trajectory_svg(report: dict) -> str:
-    width, height, margin = 1100, 720, 70
-    colors = ["#2563eb", "#dc2626", "#059669", "#9333ea", "#ea580c", "#0891b2"]
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="white"/>',
-        "<style>text{font-family:system-ui,sans-serif;fill:#111827}.axis{stroke:#6b7280}.grid{stroke:#e5e7eb}.series{fill:none;stroke-width:2}</style>",
-        f'<text x="{margin}" y="35" font-size="21" font-weight="700">Iteration {report["checkpoint_iteration"]}: {html.escape(_label(report))}</text>',
-    ]
-    for role_index, role in enumerate(("pursuer", "evader")):
+def _trajectory_figure(report: dict) -> plt.Figure:
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    for column, role in enumerate(("pursuer", "evader")):
         scenario = _scenario(report, role)
-        x0 = margin + role_index * 520
-        y0, plot_width, plot_height = 80, 450, 250
-        svg.append(
-            f'<text x="{x0}" y="{y0 - 15}" font-size="16" font-weight="600">{role}: distance vs time</text>'
-        )
-        svg.append(
-            f'<rect x="{x0}" y="{y0}" width="{plot_width}" height="{plot_height}" fill="none" class="axis"/>'
-        )
-        for rollout_index, rollout in enumerate(scenario["rollouts"]):
+        distance_axis, path_axis = axes[0, column], axes[1, column]
+        for rollout in scenario["rollouts"]:
             trajectory = rollout.get("trajectory")
-            if not trajectory:
-                continue
-            times = trajectory["time_seconds"]
-            distances = trajectory["distance"]
-            points = list(zip(times, distances, strict=True))
-            svg.append(
-                f'<polyline class="series" stroke="{colors[rollout_index % len(colors)]}" opacity="0.75" points="{_polyline(points, x0=x0, y0=y0, width=plot_width, height=plot_height, x_limits=(0.0, max(times[-1], 0.1)), y_limits=(0.0, 8.0))}"/>'
-            )
-        svg.append(
-            f'<text x="{x0 + plot_width}" y="{y0 + plot_height + 25}" text-anchor="end" font-size="12">time (s)</text>'
-        )
-        svg.append(f'<text x="{x0 + 8}" y="{y0 + 18}" font-size="12">8 m</text>')
-
-        y1 = 405
-        svg.append(
-            f'<text x="{x0}" y="{y1 - 15}" font-size="16" font-weight="600">seed 0 planar trajectories</text>'
-        )
-        svg.append(
-            f'<rect x="{x0}" y="{y1}" width="{plot_width}" height="{plot_height}" fill="none" class="axis"/>'
-        )
-        trajectory = scenario["rollouts"][0].get("trajectory")
-        if trajectory:
-            for name, color in (
-                ("learner_position", "#2563eb"),
-                ("opponent_position", "#dc2626"),
-            ):
-                positions = trajectory[name]
-                points = [(float(point[0]), float(point[1])) for point in positions]
-                svg.append(
-                    f'<polyline class="series" stroke="{color}" points="{_polyline(points, x0=x0, y0=y1, width=plot_width, height=plot_height, x_limits=(-5.0, 5.0), y_limits=(-5.0, 5.0))}"/>'
+            if trajectory:
+                distance_axis.plot(
+                    trajectory["time_seconds"],
+                    trajectory["distance"],
+                    linewidth=1.3,
+                    alpha=0.65,
                 )
-        svg.append(
-            f'<text x="{x0 + 10}" y="{y1 + 22}" font-size="12" fill="#2563eb">learner</text>'
+        distance_axis.axhline(
+            0.4,
+            color="#111827",
+            linestyle="--",
+            linewidth=1.2,
+            label="tag threshold",
         )
-        svg.append(
-            f'<text x="{x0 + 75}" y="{y1 + 22}" font-size="12" fill="#dc2626">opponent</text>'
+        distance_axis.set_title(
+            f"{role.capitalize()}: opponent distance", loc="left", fontweight="bold"
         )
-    svg.append("</svg>")
-    return "\n".join(svg)
+        distance_axis.set_xlabel("Time (s)")
+        distance_axis.set_ylabel("Distance (m)")
+        distance_axis.set_xlim(left=0.0)
+        distance_axis.set_ylim(bottom=0.0)
+        distance_axis.xaxis.set_major_locator(MultipleLocator(1.0))
+        distance_axis.yaxis.set_major_locator(MultipleLocator(1.0))
+        distance_axis.grid(color="#d1d5db", linewidth=0.8, alpha=0.8)
+        distance_axis.spines[["top", "right"]].set_visible(False)
+        distance_axis.legend(loc="best", frameon=False)
+
+        first = scenario["rollouts"][0].get("trajectory")
+        if first:
+            learner = np.asarray(first["learner_position"])
+            opponent = np.asarray(first["opponent_position"])
+            for points, color, label in (
+                (learner, "#2563eb", "learner"),
+                (opponent, "#dc2626", "opponent"),
+            ):
+                path_axis.plot(
+                    points[:, 0], points[:, 1], color=color, linewidth=2.0, label=label
+                )
+                path_axis.scatter(
+                    points[0, 0], points[0, 1], color=color, marker="o", s=35, zorder=3
+                )
+                path_axis.scatter(
+                    points[-1, 0],
+                    points[-1, 1],
+                    color=color,
+                    marker="x",
+                    s=45,
+                    zorder=3,
+                )
+        path_axis.set_title(
+            f"{role.capitalize()}: seed {scenario['rollouts'][0]['seed']} planar path",
+            loc="left",
+            fontweight="bold",
+        )
+        path_axis.set_xlabel("World x (m)")
+        path_axis.set_ylabel("World y (m)")
+        path_axis.set_xlim(-5.0, 5.0)
+        path_axis.set_ylim(-5.0, 5.0)
+        path_axis.xaxis.set_major_locator(MultipleLocator(1.0))
+        path_axis.yaxis.set_major_locator(MultipleLocator(1.0))
+        path_axis.set_aspect("equal", adjustable="box")
+        path_axis.grid(color="#d1d5db", linewidth=0.8, alpha=0.8)
+        path_axis.spines[["top", "right"]].set_visible(False)
+        path_axis.legend(loc="best", frameon=False)
+    fig.suptitle(
+        f"{_condition_label(report)} — iteration {report['checkpoint_iteration']}",
+        fontsize=17,
+        fontweight="bold",
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _load_reports(config: Config) -> tuple[list[dict], dict[Path, dict]]:
+    reports, by_path = [], {}
+    for path in sorted(config.evaluation_directory.glob(config.pattern)):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("experiment") == "hierarchical_tag_checkpoint_evaluation":
+            payload["_condition"] = path.stem
+            reports.append(payload)
+            by_path[path] = payload
+    return reports, by_path
 
 
 def main(config: Config) -> None:
-    paths = sorted(config.evaluation_directory.glob(config.pattern))
-    reports = []
-    for path in paths:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if payload.get("experiment") == "hierarchical_tag_checkpoint_evaluation":
-            reports.append(payload)
+    reports, by_path = _load_reports(config)
     if not reports:
         raise FileNotFoundError("no hierarchical TAG evaluation reports matched")
     config.output_directory.mkdir(parents=True, exist_ok=True)
@@ -259,25 +245,27 @@ def main(config: Config) -> None:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    (config.output_directory / "summary.svg").write_text(
-        _summary_svg(reports) + "\n", encoding="utf-8"
-    )
-    trajectory_paths = sorted(
-        config.evaluation_directory.glob(config.trajectory_pattern)
+    _save_figure(
+        _comparison_figure(reports),
+        config.output_directory / "crossplay_summary",
+        config.dpi,
     )
     trajectory_count = 0
-    for path in trajectory_paths:
-        report = json.loads(path.read_text(encoding="utf-8"))
-        if report.get("experiment") != "hierarchical_tag_checkpoint_evaluation":
-            continue
-        destination = config.output_directory / f"{path.stem}_trajectories.svg"
-        destination.write_text(_trajectory_svg(report) + "\n", encoding="utf-8")
-        trajectory_count += 1
+    for path in sorted(config.evaluation_directory.glob(config.trajectory_pattern)):
+        report = by_path.get(path)
+        if report is not None:
+            _save_figure(
+                _trajectory_figure(report),
+                config.output_directory / f"{path.stem}_trajectories",
+                config.dpi,
+            )
+            trajectory_count += 1
     result = {
         "evaluation_count": len(reports),
         "output_directory": str(config.output_directory),
         "summary_csv": str(config.output_directory / "summary.csv"),
-        "summary_svg": str(config.output_directory / "summary.svg"),
+        "summary_png": str(config.output_directory / "crossplay_summary.png"),
+        "summary_svg": str(config.output_directory / "crossplay_summary.svg"),
         "trajectory_plot_count": trajectory_count,
     }
     print(json.dumps(result, sort_keys=True))

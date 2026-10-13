@@ -517,3 +517,21 @@ checkpoint. Iteration 10 is the stronger pursuer control, and the next repair
 must target deterministic policy-mean behavior and role retention before
 another long historical run. Full methods, results, plots, and the repair plan
 are recorded in `docs/hierarchical_tag_diagnostic_results.md`.
+
+## Presentation plots
+
+The plotting utilities now produce publication-quality SVG and PNG figures with
+numeric axis ticks, units, legends, and grids. The cross-play summary separates
+role success, physical survival, and command-tracking error. Per-condition plots
+show opponent distance over time and planar trajectories.
+
+The four-seed training-progress figure compares environment steps with strategy
+reward and its running maximum. It also overlays two normalized empirical proxies:
+
+- perceived skill is the exponentially weighted moving average of the mean of
+  pursuer tag rate and evader timeout rate;
+- task difficulty is the sampled historical opponent checkpoint iteration divided
+  by iteration 20, the strongest checkpoint in the fixed training pool.
+
+Both proxies are labeled as such in the figure and should not be interpreted as
+unobserved model variables. Seed variability is shown as one standard deviation.
