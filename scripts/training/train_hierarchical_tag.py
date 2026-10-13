@@ -33,6 +33,7 @@ from motionforge.training import (
     HierarchicalPpoUpdater,
     HierarchicalTrainerConfig,
     HierarchicalUpdateConfig,
+    hierarchical_tag_training_metrics,
     load_hierarchical_checkpoint,
     save_hierarchical_checkpoint,
     validate_full_episode_rollout,
@@ -293,20 +294,6 @@ def main(config: Config) -> None:
             )
         )
         final_rollout_states.environment.physics.data.qpos.block_until_ready()
-        transition_valid = iteration_result.batch.transition_valid
-        pursuer_transition = iteration_result.batch.transitions.role[:, 0] > 0.5
-        evader_transition = iteration_result.batch.transitions.role[:, 1] > 0.5
-        pursuer_tags = (
-            transition_valid
-            & pursuer_transition
-            & iteration_result.batch.transitions.tagged
-        )
-        evader_timeouts = (
-            transition_valid
-            & evader_transition
-            & iteration_result.batch.transitions.timed_out
-        )
-        role_environment_count = config.num_environments // 2
         metrics = {
             "locomotion/approximate_kl": _scalar(
                 iteration_result.update_metrics.locomotion.approximate_kl
@@ -335,12 +322,6 @@ def main(config: Config) -> None:
             "strategy/reward_mean": _scalar(
                 iteration_result.batch.strategy.reward.mean()
             ),
-            "strategy/pursuer_tag_rate": _scalar(
-                pursuer_tags.sum() / role_environment_count
-            ),
-            "strategy/evader_timeout_rate": _scalar(
-                evader_timeouts.sum() / role_environment_count
-            ),
             "strategy/total_loss": _scalar(
                 iteration_result.update_metrics.strategy.total_loss
             ),
@@ -354,6 +335,14 @@ def main(config: Config) -> None:
             ),
             "training/strategy_updates": int(train_state.strategy_updates),
         }
+        metrics.update(
+            {
+                name: _scalar(value)
+                for name, value in hierarchical_tag_training_metrics(
+                    iteration_result.batch
+                ).items()
+            }
+        )
         environment_steps = (
             int(train_state.iteration)
             * config.rollout_horizon

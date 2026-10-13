@@ -25,6 +25,7 @@ from motionforge.training.hierarchical_update import (
     HierarchicalUpdateConfig,
     HierarchicalUpdateMetrics,
 )
+from motionforge.training.tag_metrics import hierarchical_tag_training_metrics
 
 __all__ = [
     "CHECKPOINT_SCHEMA",
@@ -38,6 +39,7 @@ __all__ = [
     "HierarchicalUpdateMetrics",
     "PpoLossConfig",
     "PpoLossMetrics",
+    "hierarchical_tag_training_metrics",
     "load_hierarchical_checkpoint",
     "locomotion_ppo_loss",
     "read_hierarchical_checkpoint_manifest",
