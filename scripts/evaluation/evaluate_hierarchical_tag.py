@@ -1,4 +1,4 @@
-"""Evaluate a hierarchical TAG checkpoint deterministically in both roles."""
+"""Evaluate a hierarchical TAG checkpoint in both roles against a fixed policy."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from motionforge.training import (
 @dataclass
 class Config:
     checkpoint: Path = Path("???")
+    opponent_checkpoint: Path | None = None
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
@@ -45,6 +46,8 @@ class Config:
     njmax: int = 512
     boundary_command_safety_enabled: bool = True
     boundary_command_margin: float = 1.0
+    stochastic_actions: bool = False
+    record_trajectories: bool = True
     output: Path = Path("logs/hierarchical/evaluation/tag_checkpoint_a.json")
 
 
@@ -63,9 +66,24 @@ def _validate_config(config: Config) -> None:
         raise FileNotFoundError(
             f"locomotion checkpoint does not exist: {config.locomotion_checkpoint}"
         )
+    if (
+        config.opponent_checkpoint is not None
+        and not config.opponent_checkpoint.is_dir()
+    ):
+        raise FileNotFoundError(
+            f"opponent checkpoint does not exist: {config.opponent_checkpoint}"
+        )
 
 
-def _rollout_metrics(batch, learner_index: int, role: str) -> dict[str, object]:
+def _rollout_metrics(
+    batch,
+    learner_index: int,
+    role: str,
+    *,
+    control_timestep: float,
+    strategy_cadence: int,
+    record_trajectories: bool,
+) -> dict[str, object]:
     valid = np.asarray(batch.transition_valid, dtype=bool)
     transitions = batch.transitions
     fallen = np.asarray(transitions.fallen)[:, learner_index]
@@ -83,7 +101,7 @@ def _rollout_metrics(batch, learner_index: int, role: str) -> dict[str, object]:
     role_success = (
         tag_occurred if role == "pursuer" else physical_survival and not tag_occurred
     )
-    return {
+    result = {
         "command_tracking_rmse": float(
             np.sqrt(np.mean(np.square(tracking_error[valid])))
         ),
@@ -109,12 +127,41 @@ def _rollout_metrics(batch, learner_index: int, role: str) -> dict[str, object]:
         ),
         "tag_occurred": tag_occurred,
     }
+    if record_trajectories:
+        indices = np.arange(0, valid.shape[0], strategy_cadence)
+        indices = indices[valid[indices]]
+        positions = np.asarray(transitions.root_position_world)[indices, :, :2]
+        tracking = np.asarray(transitions.command_tracking_error)[indices]
+        result["trajectory"] = {
+            "time_seconds": (indices * control_timestep).tolist(),
+            "distance": distances[indices].tolist(),
+            "learner_command": np.asarray(batch.strategy.command)[
+                np.asarray(batch.strategy.valid)
+            ].tolist(),
+            "learner_position": positions[:, learner_index].tolist(),
+            "opponent_position": positions[:, 1 - learner_index].tolist(),
+            "command_tracking_error": tracking.tolist(),
+        }
+    return result
+
+
+def _load_parameters(
+    checkpoint: Path,
+    warm_start_parameters,
+):
+    manifest = read_hierarchical_checkpoint_manifest(checkpoint)
+    updater = HierarchicalPpoUpdater(
+        HierarchicalUpdateConfig(**manifest["update_config"])
+    )
+    state, _ = load_hierarchical_checkpoint(
+        checkpoint,
+        updater.initialize(warm_start_parameters),
+    )
+    return state, manifest
 
 
 def main(config: Config) -> None:
     _validate_config(config)
-    checkpoint_manifest = read_hierarchical_checkpoint_manifest(config.checkpoint)
-    update_config = HierarchicalUpdateConfig(**checkpoint_manifest["update_config"])
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
     environment = MultiAgentTaskEnv(
         league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
@@ -127,7 +174,7 @@ def main(config: Config) -> None:
         environment,
         p2_locomotion_normalization(p2_parameters[0]),
         HierarchicalRolloutConfig(
-            stochastic_actions=False,
+            stochastic_actions=config.stochastic_actions,
             boundary_command_safety_enabled=(config.boundary_command_safety_enabled),
             boundary_command_margin=config.boundary_command_margin,
         ),
@@ -137,14 +184,27 @@ def main(config: Config) -> None:
         runner.initialize_parameters(jax.random.PRNGKey(config.seed + 1), initial),
         p2_parameters[1],
     )
-    updater = HierarchicalPpoUpdater(update_config)
-    template = updater.initialize(warm_start_parameters)
-    train_state, _ = load_hierarchical_checkpoint(config.checkpoint, template)
+    train_state, checkpoint_manifest = _load_parameters(
+        config.checkpoint,
+        warm_start_parameters,
+    )
+    if config.opponent_checkpoint is None:
+        opponent_id = "warm-start/p2"
+        opponent_category = "warm_start"
+        opponent_parameters = warm_start_parameters
+    else:
+        opponent_state, _ = _load_parameters(
+            config.opponent_checkpoint,
+            warm_start_parameters,
+        )
+        opponent_id = f"checkpoint/{config.opponent_checkpoint.resolve()}"
+        opponent_category = "historical"
+        opponent_parameters = opponent_state.parameters
     environment.league = FixedLeague(
         LeagueOpponent(
-            "warm-start/p2",
-            "warm_start",
-            warm_start_parameters,
+            opponent_id,
+            opponent_category,
+            opponent_parameters,
         )
     )
     horizon = round(config.duration / environment.config.control_timestep)
@@ -175,8 +235,16 @@ def main(config: Config) -> None:
                 environment_id=jp.asarray(0),
             )
             batch.transitions.root_height.block_until_ready()
-            metrics = _rollout_metrics(batch, segment.learner_index, role)
+            metrics = _rollout_metrics(
+                batch,
+                segment.learner_index,
+                role,
+                control_timestep=environment.config.control_timestep,
+                strategy_cadence=runner.config.locomotion_steps_per_strategy_step,
+                record_trajectories=config.record_trajectories,
+            )
             metrics["seed"] = rollout_seed
+            metrics["opponent_id"] = segment.opponent_id
             rollouts.append(metrics)
             all_finite = all_finite and all(
                 not isinstance(value, float) or np.isfinite(value)
@@ -220,10 +288,25 @@ def main(config: Config) -> None:
             **asdict(config),
             "checkpoint": str(config.checkpoint),
             "locomotion_checkpoint": str(config.locomotion_checkpoint),
+            "opponent_checkpoint": (
+                None
+                if config.opponent_checkpoint is None
+                else str(config.opponent_checkpoint)
+            ),
             "output": str(config.output),
         },
         "control_timestep": environment.config.control_timestep,
         "experiment": "hierarchical_tag_checkpoint_evaluation",
+        "action_mode": "stochastic" if config.stochastic_actions else "deterministic",
+        "opponent": {
+            "category": opponent_category,
+            "checkpoint": (
+                None
+                if config.opponent_checkpoint is None
+                else str(config.opponent_checkpoint.resolve())
+            ),
+            "id": opponent_id,
+        },
         "jax_version": jax.__version__,
         "passed": all(checks.values()),
         "python_version": platform.python_version(),

@@ -499,3 +499,21 @@ The current evidence does not yet justify claiming a converged TAG policy. It
 does justify that the hierarchical execution, optimization, checkpointing,
 evaluation, contact capacity, locomotion stability, and balanced-role data path
 are implemented and individually validated.
+
+## Held-out cross-play correction
+
+The longer historical pilot and a subsequent 16-seed cross-play audit changed
+the checkpoint interpretation above. The old evaluator used a randomly
+initialized warm-start strategy as its opponent rather than restoring a real
+historical hierarchy. After correcting opponent restoration, iteration 20 and
+all four iteration-145 continuations achieve zero deterministic pursuer success
+on held-out seeds 20--35. Iteration 10 retains 37.5% deterministic and 62.5%
+stochastic pursuer success against iteration 20 while maintaining complete
+physical survival. Iteration 20 reaches 50% pursuit only when actions are
+sampled.
+
+Thus iteration 20 should no longer be described as a converged or balanced TAG
+checkpoint. Iteration 10 is the stronger pursuer control, and the next repair
+must target deterministic policy-mean behavior and role retention before
+another long historical run. Full methods, results, plots, and the repair plan
+are recorded in `docs/hierarchical_tag_diagnostic_results.md`.
