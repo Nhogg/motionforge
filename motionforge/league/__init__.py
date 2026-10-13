@@ -5,6 +5,13 @@ from motionforge.league.base import (
     HistoricalLeague,
     League,
     LeagueOpponent,
+    WeightedLeague,
 )
 
-__all__ = ["FixedLeague", "HistoricalLeague", "League", "LeagueOpponent"]
+__all__ = [
+    "FixedLeague",
+    "HistoricalLeague",
+    "League",
+    "LeagueOpponent",
+    "WeightedLeague",
+]

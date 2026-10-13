@@ -16,7 +16,7 @@ import numpy as np
 
 from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
-from motionforge.league import FixedLeague, HistoricalLeague, LeagueOpponent
+from motionforge.league import FixedLeague, LeagueOpponent, WeightedLeague
 from motionforge.logging.wandb import WandbMetricsLogger
 from motionforge.models import (
     load_p2_checkpoint,
@@ -35,6 +35,7 @@ from motionforge.training import (
     HierarchicalUpdateConfig,
     hierarchical_tag_training_metrics,
     load_hierarchical_checkpoint,
+    make_stationary_hierarchical_opponent,
     save_hierarchical_checkpoint,
     validate_full_episode_rollout,
 )
@@ -52,6 +53,10 @@ class Config:
     num_iterations: int = 10
     rollout_horizon: int = 500
     episode_duration: float = 10.0
+    minimum_initial_separation: float = 2.0
+    maximum_initial_separation: float = 2.0
+    historical_opponent_probability: float = 0.75
+    opponent_mode: str = "warm_start"
     checkpoint_interval: int = 5
     naconmax: int = 256
     njmax: int = 512
@@ -115,6 +120,15 @@ def _validate_config(config: Config) -> None:
     )
     if config.num_environments % 2 != 0:
         raise ValueError("num_environments must be even for balanced role batches")
+    if (
+        config.minimum_initial_separation <= 0.0
+        or config.maximum_initial_separation < config.minimum_initial_separation
+    ):
+        raise ValueError("initial separation range must be positive and ordered")
+    if not 0.0 <= config.historical_opponent_probability <= 1.0:
+        raise ValueError("historical_opponent_probability must be in [0, 1]")
+    if config.opponent_mode not in {"warm_start", "stationary"}:
+        raise ValueError("opponent_mode must be warm_start or stationary")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
         raise ValueError("learner_pursuer_probability must be in [0, 1]")
     if config.strategy_discount != 1.0:
@@ -140,6 +154,12 @@ def _validate_config(config: Config) -> None:
             raise FileNotFoundError(
                 f"historical opponent checkpoint does not exist: {checkpoint}"
             )
+    if config.historical_opponent_checkpoints and not (
+        0.0 < config.historical_opponent_probability < 1.0
+    ):
+        raise ValueError(
+            "historical_opponent_probability must be in (0, 1) for mixed leagues"
+        )
     if config.output_dir.exists():
         raise FileExistsError(f"output directory already exists: {config.output_dir}")
 
@@ -158,6 +178,9 @@ def main(config: Config) -> None:
         league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
         config=MultiAgentTaskConfig(
             episode_duration=config.episode_duration,
+            separation=config.minimum_initial_separation,
+            minimum_separation=config.minimum_initial_separation,
+            maximum_separation=config.maximum_initial_separation,
             naconmax=config.naconmax,
             njmax=config.njmax,
         ),
@@ -179,11 +202,18 @@ def main(config: Config) -> None:
         ),
         p2_parameters[1],
     )
+    opponent_parameters = parameters
+    opponent_id = "warm-start/p2"
+    opponent_category = "warm_start"
+    if config.opponent_mode == "stationary":
+        opponent_parameters = make_stationary_hierarchical_opponent(parameters)
+        opponent_id = "curriculum/stationary"
+        opponent_category = "stationary"
     environment.league = FixedLeague(
         LeagueOpponent(
-            "warm-start/p2",
-            "warm_start",
-            jax.tree.map(lambda value: value, parameters),
+            opponent_id,
+            opponent_category,
+            jax.tree.map(lambda value: value, opponent_parameters),
         )
     )
     update_config = HierarchicalUpdateConfig(
@@ -221,8 +251,45 @@ def main(config: Config) -> None:
                 policy=opponent_state.parameters,
             )
         )
-    if historical_opponents:
-        environment.league = HistoricalLeague(historical_opponents)
+    stationary_opponent = LeagueOpponent(
+        opponent_id="curriculum/stationary",
+        category="stationary",
+        policy=make_stationary_hierarchical_opponent(train_state.parameters),
+    )
+    scripted_opponent = LeagueOpponent(
+        opponent_id="curriculum/scripted",
+        category="scripted",
+        policy=train_state.parameters,
+        controller="scripted",
+    )
+
+    def configure_training_league(current_parameters) -> None:
+        if not historical_opponents:
+            return
+        historical_probability = config.historical_opponent_probability
+        auxiliary_probability = (1.0 - historical_probability) / 3.0
+        opponents = [
+            *historical_opponents,
+            stationary_opponent,
+            scripted_opponent,
+            LeagueOpponent(
+                opponent_id="current/self-play",
+                category="recent",
+                policy=current_parameters,
+            ),
+        ]
+        weights = [
+            *(
+                [historical_probability / len(historical_opponents)]
+                * len(historical_opponents)
+            ),
+            auxiliary_probability,
+            auxiliary_probability,
+            auxiliary_probability,
+        ]
+        environment.league = WeightedLeague(opponents, weights)
+
+    configure_training_league(train_state.parameters)
     trainer = HierarchicalPpoTrainer(
         runner,
         updater,
@@ -258,6 +325,16 @@ def main(config: Config) -> None:
             }
             for opponent in historical_opponents
         ],
+        "opponent_mixture": (
+            {
+                "current": (1.0 - config.historical_opponent_probability) / 3.0,
+                "historical": config.historical_opponent_probability,
+                "scripted": (1.0 - config.historical_opponent_probability) / 3.0,
+                "stationary": (1.0 - config.historical_opponent_probability) / 3.0,
+            }
+            if historical_opponents
+            else None
+        ),
         "restore_checkpoint": restored_from,
         "update_config": asdict(update_config),
     }
@@ -281,6 +358,7 @@ def main(config: Config) -> None:
     start_iteration = int(train_state.iteration)
     for local_iteration in range(config.num_iterations):
         iteration = start_iteration + local_iteration
+        configure_training_league(train_state.parameters)
         reset_key = jax.random.fold_in(jax.random.PRNGKey(config.seed), iteration)
         rollout_states = jax.vmap(runner.reset)(
             jax.random.split(reset_key, config.num_environments)

@@ -23,6 +23,8 @@ class WarpEnvConfig:
     simulation_timestep: float = 0.002
     control_timestep: float = 0.02
     separation: float = 2.0
+    minimum_separation: float | None = None
+    maximum_separation: float | None = None
     slope_degrees: float = 0.0
     slope_curriculum_degrees: float = 0.0
     naconmax: int = 64
@@ -36,8 +38,7 @@ class WarpEnvConfig:
         substeps = self.control_timestep / self.simulation_timestep
         if not math.isclose(substeps, round(substeps), abs_tol=1e-9):
             raise ValueError(
-                "control_timestep must be an integer multiple of "
-                "simulation_timestep"
+                "control_timestep must be an integer multiple of simulation_timestep"
             )
         if self.naconmax <= 0:
             raise ValueError("naconmax must be positive")
@@ -45,6 +46,8 @@ class WarpEnvConfig:
             raise ValueError("njmax must be positive")
         TagResetConfig(
             separation=self.separation,
+            minimum_separation=self.minimum_separation,
+            maximum_separation=self.maximum_separation,
             slope_degrees=self.slope_degrees,
             slope_curriculum_degrees=self.slope_curriculum_degrees,
         )
@@ -88,6 +91,8 @@ class WarpEnv:
         self.reset_layout = build_tag_reset_layout(self.model_bundle)
         self.reset_config = TagResetConfig(
             separation=self.config.separation,
+            minimum_separation=self.config.minimum_separation,
+            maximum_separation=self.config.maximum_separation,
             slope_degrees=self.config.slope_degrees,
             slope_curriculum_degrees=self.config.slope_curriculum_degrees,
         )

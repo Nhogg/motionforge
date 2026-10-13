@@ -20,12 +20,26 @@ from motionforge.envs.two_g1 import TwoG1Model
 @dataclass(frozen=True)
 class TagResetConfig:
     separation: float = 2.0
+    minimum_separation: float | None = None
+    maximum_separation: float | None = None
     slope_degrees: float = 0.0
     slope_curriculum_degrees: float = 0.0
 
     def __post_init__(self) -> None:
         if self.separation <= 0.0:
             raise ValueError("separation must be positive")
+        minimum = (
+            self.separation
+            if self.minimum_separation is None
+            else self.minimum_separation
+        )
+        maximum = (
+            self.separation
+            if self.maximum_separation is None
+            else self.maximum_separation
+        )
+        if minimum <= 0.0 or maximum < minimum:
+            raise ValueError("separation range must be positive and ordered")
         if not math.isfinite(self.slope_degrees) or abs(self.slope_degrees) > 30.0:
             raise ValueError("slope_degrees must be finite and within [-30, 30]")
         if (
@@ -89,19 +103,38 @@ def sample_tag_reset(
     qpos = jp.asarray(template_qpos)
     qvel = jp.zeros_like(jp.asarray(template_qvel))
 
+    angle_key, separation_key = jax.random.split(key)
     spawn_angle = jax.random.uniform(
-        key,
+        angle_key,
         shape=(),
         minval=-jp.pi,
         maxval=jp.pi,
     )
-    spawn_direction = jp.asarray(
-        [jp.cos(spawn_angle), jp.sin(spawn_angle)]
+    spawn_direction = jp.asarray([jp.cos(spawn_angle), jp.sin(spawn_angle)])
+    minimum_separation = (
+        config.separation
+        if config.minimum_separation is None
+        else config.minimum_separation
+    )
+    maximum_separation = (
+        config.separation
+        if config.maximum_separation is None
+        else config.maximum_separation
+    )
+    separation = (
+        jp.asarray(minimum_separation)
+        if minimum_separation == maximum_separation
+        else jax.random.uniform(
+            separation_key,
+            shape=(),
+            minval=minimum_separation,
+            maxval=maximum_separation,
+        )
     )
     planar_positions = jp.stack(
         [
-            -0.5 * config.separation * spawn_direction,
-            0.5 * config.separation * spawn_direction,
+            -0.5 * separation * spawn_direction,
+            0.5 * separation * spawn_direction,
         ]
     )
     headings = jp.asarray(
@@ -131,9 +164,7 @@ def sample_tag_reset(
     else:
         slope_degrees = jp.asarray(config.slope_degrees)
     half_slope = 0.5 * jp.deg2rad(slope_degrees)
-    floor_quaternion = jp.asarray(
-        [jp.cos(half_slope), 0.0, jp.sin(half_slope), 0.0]
-    )
+    floor_quaternion = jp.asarray([jp.cos(half_slope), 0.0, jp.sin(half_slope), 0.0])
 
     for agent_index, agent in enumerate(layout.agents):
         root_start = agent.root_qpos_start
@@ -146,11 +177,9 @@ def sample_tag_reset(
                 jp.sin(half_heading),
             ]
         )
-        qpos = qpos.at[root_start : root_start + 2].set(
-            planar_positions[agent_index]
-        )
-        terrain_height = -jp.tan(jp.deg2rad(slope_degrees)) * (
-            planar_positions[agent_index, 0]
+        qpos = qpos.at[root_start : root_start + 2].set(planar_positions[agent_index])
+        terrain_height = (
+            -jp.tan(jp.deg2rad(slope_degrees)) * (planar_positions[agent_index, 0])
         )
         qpos = qpos.at[root_start + 2].add(terrain_height)
         qpos = qpos.at[root_start + 3 : root_start + 7].set(root_quaternion)

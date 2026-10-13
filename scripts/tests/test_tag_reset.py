@@ -27,6 +27,8 @@ class Config:
     seed: int = 0
     alternate_seed: int = 1
     separation: float = 2.0
+    minimum_separation: float | None = None
+    maximum_separation: float | None = None
     arena_half_extent: float = 4.0
     output: Path = Path("logs/p3/tag_reset_a.json")
 
@@ -44,7 +46,11 @@ def main(config: Config) -> None:
     bundle = build_two_g1_model()
     template_data = make_two_g1_data(bundle, separation=config.separation)
     layout = build_tag_reset_layout(bundle)
-    reset_config = TagResetConfig(separation=config.separation)
+    reset_config = TagResetConfig(
+        separation=config.separation,
+        minimum_separation=config.minimum_separation,
+        maximum_separation=config.maximum_separation,
+    )
 
     template_qpos = jax.numpy.asarray(template_data.qpos)
     template_qvel = jax.numpy.asarray(template_data.qvel)
@@ -72,13 +78,21 @@ def main(config: Config) -> None:
     headings = np.asarray(first.headings)
 
     separation = float(np.linalg.norm(positions[1] - positions[0]))
+    minimum_separation = (
+        config.separation
+        if config.minimum_separation is None
+        else config.minimum_separation
+    )
+    maximum_separation = (
+        config.separation
+        if config.maximum_separation is None
+        else config.maximum_separation
+    )
     center = np.mean(positions, axis=0)
     quaternion_norms = np.asarray(
         [
             np.linalg.norm(
-                first_qpos[
-                    agent.root_qpos_start + 3 : agent.root_qpos_start + 7
-                ]
+                first_qpos[agent.root_qpos_start + 3 : agent.root_qpos_start + 7]
             )
             for agent in layout.agents
         ]
@@ -121,12 +135,10 @@ def main(config: Config) -> None:
             np.isfinite(first_qpos).all() and np.isfinite(first_qvel).all()
         ),
         "joint_pose_preserved": bool(joint_pose_preserved),
-        "quaternions_normalized": bool(
-            np.allclose(quaternion_norms, 1.0, atol=1e-6)
-        ),
+        "quaternions_normalized": bool(np.allclose(quaternion_norms, 1.0, atol=1e-6)),
         "same_seed_exact": bool(np.array_equal(first_qpos, repeated_qpos)),
-        "separation_exact": bool(
-            np.isclose(separation, config.separation, atol=1e-6)
+        "separation_valid": bool(
+            minimum_separation <= separation <= maximum_separation
         ),
         "velocities_zero": bool(np.array_equal(first_qvel, np.zeros_like(first_qvel))),
     }

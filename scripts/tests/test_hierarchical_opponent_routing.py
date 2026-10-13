@@ -14,6 +14,7 @@ from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import LocomotionNormalization
+from motionforge.policies import scripted_evader_command
 from motionforge.rollout import HierarchicalRolloutConfig, HierarchicalRolloutRunner
 
 
@@ -32,9 +33,7 @@ def _tree_equal(left, right) -> bool:
 
 def main(config: Config) -> None:
     environment = MultiAgentTaskEnv(
-        league=FixedLeague(
-            LeagueOpponent("placeholder", "scripted", None)
-        ),
+        league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
         config=MultiAgentTaskConfig(pursuer_index=1),
     )
     runner = HierarchicalRolloutRunner(
@@ -58,6 +57,29 @@ def main(config: Config) -> None:
     segment = runner.start_segment(learner, seed=config.seed)
     next_state = jax.jit(runner.step)(segment, state)
     next_state.environment.physics.data.qpos.block_until_ready()
+    environment.league = FixedLeague(
+        LeagueOpponent(
+            "scripted/evader",
+            "scripted",
+            opponent,
+            controller="scripted",
+        )
+    )
+    scripted_segment = runner.start_segment(
+        learner,
+        seed=config.seed,
+        learner_is_pursuer=True,
+    )
+    expected_scripted_command = scripted_evader_command(
+        state.environment.observation.relative_position[
+            scripted_segment.opponent_index
+        ],
+        state.environment.observation.arena_center_position[
+            scripted_segment.opponent_index
+        ],
+    )
+    scripted_state = jax.jit(runner.step)(scripted_segment, state)
+    scripted_state.environment.physics.data.qpos.block_until_ready()
 
     checks = {
         "agent_actions_differ": not np.array_equal(
@@ -76,6 +98,10 @@ def main(config: Config) -> None:
         ),
         "opponent_routed_to_agent0": segment.opponent_index == 0,
         "opponent_role_is_evader": segment.opponent_role == "evader",
+        "scripted_controller_routed": np.allclose(
+            np.asarray(scripted_state.commands[scripted_segment.opponent_index]),
+            np.asarray(expected_scripted_command),
+        ),
         "rollout_finite": bool(
             np.isfinite(np.asarray(next_state.environment.physics.data.qpos)).all()
         ),

@@ -12,7 +12,7 @@ from motionforge.training import hierarchical_tag_training_metrics
 
 
 def main() -> None:
-    roles = jp.asarray(
+    grouped_roles = jp.asarray(
         [
             [[1.0, 0.0]] * 2,
             [[1.0, 0.0]] * 2,
@@ -21,15 +21,16 @@ def main() -> None:
         ]
     )
     batch = SimpleNamespace(
-        transition_valid=jp.ones((4, 2), dtype=bool),
+        transition_valid=jp.ones(8, dtype=bool),
         transitions=SimpleNamespace(
-            role=roles,
+            environment_id=jp.repeat(jp.arange(4), 2),
+            role=grouped_roles.reshape((8, 2)),
             tagged=jp.asarray(
                 [[False, True], [False, False], [False, True], [False, False]]
-            ),
+            ).reshape(8),
             timed_out=jp.asarray(
                 [[False, False], [False, True], [False, False], [False, True]]
-            ),
+            ).reshape(8),
             fallen=jp.asarray(
                 [
                     [[False, False], [False, False]],
@@ -37,7 +38,7 @@ def main() -> None:
                     [[False, False], [False, False]],
                     [[False, False], [False, False]],
                 ]
-            ),
+            ).reshape((8, 2)),
             out_of_bounds=jp.asarray(
                 [
                     [[False, False], [False, False]],
@@ -45,7 +46,7 @@ def main() -> None:
                     [[False, False], [False, False]],
                     [[False, False], [False, True]],
                 ]
-            ),
+            ).reshape((8, 2)),
         ),
         strategy=SimpleNamespace(
             reward=jp.asarray([0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, -1.0]),
@@ -61,6 +62,9 @@ def main() -> None:
         "pursuer_tag_rate": np.isclose(metrics["strategy/pursuer/tag_rate"], 0.5),
         "pursuer_return": np.isclose(
             metrics["strategy/pursuer/episode_return_mean"], 0.5
+        ),
+        "pursuer_episode_steps": np.isclose(
+            metrics["strategy/pursuer/episode_steps_mean"], 2.0
         ),
         "pursuer_opponent_oob": np.isclose(
             metrics["strategy/pursuer/opponent_out_of_bounds_rate"], 0.5

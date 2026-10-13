@@ -34,6 +34,7 @@ from motionforge.models import (
     diagonal_normal_entropy,
     tanh_normal_sample_and_log_prob,
 )
+from motionforge.policies import scripted_evader_command, scripted_pursuer_command
 
 
 def sample_learner_is_pursuer(*, seed: int, probability: float) -> bool:
@@ -112,6 +113,7 @@ class HierarchicalRolloutSegment:
     opponent_category: str = struct.field(pytree_node=False)
     learner_index: int = struct.field(pytree_node=False)
     learner_is_pursuer: bool = struct.field(pytree_node=False)
+    opponent_controller: str = struct.field(pytree_node=False, default="learned")
 
     def __post_init__(self) -> None:
         if self.learner_index not in (0, 1):
@@ -312,6 +314,7 @@ class HierarchicalRolloutRunner:
             opponent_category=opponent.category,
             learner_index=learner_index,
             learner_is_pursuer=learner_is_pursuer,
+            opponent_controller=opponent.controller,
         )
 
     def sample_learner_is_pursuer(self, *, seed: int) -> bool:
@@ -323,6 +326,8 @@ class HierarchicalRolloutRunner:
 
     @staticmethod
     def _validate_opponent(opponent: LeagueOpponent) -> None:
+        if opponent.controller not in {"learned", "scripted"}:
+            raise ValueError("opponent controller must be learned or scripted")
         try:
             strategy = opponent.policy["strategy"]
             locomotion = opponent.policy["locomotion"]
@@ -438,6 +443,25 @@ class HierarchicalRolloutRunner:
             hold_strategy,
             operand=None,
         )
+        if segment.opponent_controller == "scripted":
+            opponent_index = segment.opponent_index
+            if segment.opponent_role == "pursuer":
+                scripted_command = scripted_pursuer_command(
+                    state.environment.observation.relative_position[opponent_index]
+                )
+            else:
+                scripted_command = scripted_evader_command(
+                    state.environment.observation.relative_position[opponent_index],
+                    state.environment.observation.arena_center_position[opponent_index],
+                )
+            opponent_command = jp.where(
+                should_update_strategy,
+                scripted_command,
+                state.strategy_actions[opponent_index],
+            )
+            strategy = strategy.replace(
+                command=strategy.command.at[opponent_index].set(opponent_command)
+            )
         motor_commands = jax.lax.stop_gradient(
             self._project_boundary_safe_commands(state, strategy.command)
         )
