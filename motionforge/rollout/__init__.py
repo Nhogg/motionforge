@@ -24,6 +24,7 @@ from motionforge.rollout.trajectory import (
     LocomotionRewardTerms,
     collect_hierarchical_transition,
     locomotion_reward_terms,
+    sparse_tag_strategy_reward,
     trajectory_metadata,
 )
 
@@ -47,5 +48,6 @@ __all__ = [
     "hierarchical_advantages",
     "locomotion_reward_terms",
     "sample_learner_is_pursuer",
+    "sparse_tag_strategy_reward",
     "trajectory_metadata",
 ]

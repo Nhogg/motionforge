@@ -9,11 +9,7 @@ import jax.numpy as jp
 from flax import struct
 
 from motionforge.envs import (
-    TagEvaderConfig,
-    TagPursuerConfig,
-    evader_reward,
     locomotion_observations,
-    pursuer_reward,
     strategy_observations,
 )
 from motionforge.rollout.hierarchical import (
@@ -101,6 +97,26 @@ class HierarchicalTrajectoryMetadata:
     opponent_index: int
 
 
+def sparse_tag_strategy_reward(
+    *,
+    termination: object,
+    learner_index: int,
+    learner_is_pursuer: bool,
+) -> jax.Array:
+    """Return the terminal-outcome reward for one TAG strategy learner.
+
+    Pursuers receive one point only for completing a tag.  Evaders receive a
+    loss for being tagged or leaving the arena.  Every nonterminal step and
+    every other terminal outcome has zero strategy reward.  The environment's
+    done flag, rather than this payoff, controls bootstrapping at termination.
+    """
+    tagged = termination.tagged
+    if learner_is_pursuer:
+        return tagged.astype(jp.float32)
+    evader_failed = tagged | termination.out_of_bounds[learner_index]
+    return -evader_failed.astype(jp.float32)
+
+
 def trajectory_metadata(
     segment: HierarchicalRolloutSegment,
 ) -> HierarchicalTrajectoryMetadata:
@@ -167,13 +183,9 @@ def collect_hierarchical_transition(
     *,
     episode_id: jax.Array,
     environment_id: jax.Array,
-    pursuer_config: TagPursuerConfig | None = None,
-    evader_config: TagEvaderConfig | None = None,
     locomotion_config: LocomotionRewardConfig | None = None,
 ) -> tuple[HierarchicalRolloutState, HierarchicalTransition]:
     """Advance one control step and retain only learner training outputs."""
-    pursuer_config = TagPursuerConfig() if pursuer_config is None else pursuer_config
-    evader_config = TagEvaderConfig() if evader_config is None else evader_config
     locomotion_config = (
         LocomotionRewardConfig() if locomotion_config is None else locomotion_config
     )
@@ -184,9 +196,6 @@ def collect_hierarchical_transition(
         state.roles,
         runner.observation_config,
     ).as_array()[learner_index]
-    previous_distance = jp.linalg.norm(
-        state.environment.observation.relative_position[learner_index]
-    )
     previous_action = state.previous_actions[learner_index]
     next_state = runner.step(segment, state)
     command = next_state.commands[learner_index]
@@ -202,40 +211,12 @@ def collect_hierarchical_transition(
     motor_observation = runner.locomotion_normalization.normalize(
         motor_fields.as_array(next_state.commands)
     )[learner_index]
-    current_distance = jp.linalg.norm(
-        next_state.environment.observation.relative_position[learner_index]
-    )
     termination = next_state.environment.termination
-    positions = next_state.environment.diagnostics.planar_position
-    if segment.learner_is_pursuer:
-        strategy_reward = pursuer_reward(
-            previous_distance=previous_distance,
-            current_distance=current_distance,
-            previous_command=state.commands[learner_index],
-            current_command=command,
-            pursuer_planar_position=positions[learner_index],
-            arena_half_extent=runner.environment.config.arena_half_extent,
-            termination=termination,
-            pursuer_index=learner_index,
-            config=pursuer_config,
-        ).total
-    else:
-        agent = runner.locomotion_layout.agents[learner_index]
-        planar_velocity = next_state.environment.physics.data.qvel[
-            agent.qvel_slice.start : agent.qvel_slice.start + 2
-        ]
-        strategy_reward = evader_reward(
-            previous_distance=previous_distance,
-            current_distance=current_distance,
-            previous_command=state.commands[learner_index],
-            current_command=command,
-            evader_planar_position=positions[learner_index],
-            evader_planar_velocity=planar_velocity,
-            arena_half_extent=runner.environment.config.arena_half_extent,
-            termination=termination,
-            evader_index=learner_index,
-            config=evader_config,
-        ).total
+    strategy_reward = sparse_tag_strategy_reward(
+        termination=termination,
+        learner_index=learner_index,
+        learner_is_pursuer=segment.learner_is_pursuer,
+    )
 
     next_motor_fields = locomotion_observations(
         next_state.environment,

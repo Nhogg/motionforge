@@ -23,7 +23,11 @@ from motionforge.models import (
     migrate_p2_actor_parameters,
     p2_locomotion_normalization,
 )
-from motionforge.rollout import HierarchicalRolloutConfig, HierarchicalRolloutRunner
+from motionforge.rollout import (
+    AdvantageConfig,
+    HierarchicalRolloutConfig,
+    HierarchicalRolloutRunner,
+)
 from motionforge.training import (
     HierarchicalPpoTrainer,
     HierarchicalPpoUpdater,
@@ -56,6 +60,8 @@ class Config:
     locomotion_update_interval: int = 5
     maximum_gradient_norm: float = 1.0
     maximum_locomotion_approximate_kl: float = 0.01
+    strategy_discount: float = 1.0
+    strategy_gae_lambda: float = 0.95
     learner_pursuer_probability: float = 0.5
     boundary_command_safety_enabled: bool = True
     boundary_command_margin: float = 1.0
@@ -110,6 +116,12 @@ def _validate_config(config: Config) -> None:
         raise ValueError("num_environments must be even for balanced role batches")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
         raise ValueError("learner_pursuer_probability must be in [0, 1]")
+    if config.strategy_discount != 1.0:
+        raise ValueError(
+            "strategy_discount must equal 1.0 for probability-valued critics"
+        )
+    if not 0.0 <= config.strategy_gae_lambda <= 1.0:
+        raise ValueError("strategy_gae_lambda must be in [0, 1]")
     if config.boundary_command_margin <= 0.0:
         raise ValueError("boundary_command_margin must be positive")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
@@ -213,7 +225,13 @@ def main(config: Config) -> None:
     trainer = HierarchicalPpoTrainer(
         runner,
         updater,
-        HierarchicalTrainerConfig(rollout_horizon=config.rollout_horizon),
+        HierarchicalTrainerConfig(
+            rollout_horizon=config.rollout_horizon,
+            strategy_advantage=AdvantageConfig(
+                discount=config.strategy_discount,
+                gae_lambda=config.strategy_gae_lambda,
+            ),
+        ),
     )
 
     repository = Path(__file__).resolve().parents[2]

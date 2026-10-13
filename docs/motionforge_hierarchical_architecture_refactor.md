@@ -458,11 +458,19 @@ elif training_evader_program:
     ...
 ```
 
-Retain the useful existing reward behavior where possible.
+The implemented strategy reward is sparse and outcome-only:
 
-Do not accidentally treat an opponent fall or OOB event as a successful tag unless explicitly intended.
+- pursuer tag: pursuer `+1`, evader `-1`;
+- evader out of bounds: pursuer `0`, evader `-1`;
+- pursuer out of bounds: both `0`;
+- timeout without a tag: both `0`;
+- every nonterminal step: both `0`.
 
-Preserve correct timeout semantics per role.
+Tag and any out-of-bounds event terminate the episode, so there is no future
+bootstrap value after those transitions. Falls currently terminate with neutral
+strategy reward; the locomotion objective retains its dense fall penalty. With a
+strategy discount of one, the two role critics learn the probability of their
+respective terminal outcome rather than receiving distance-to-opponent shaping.
 
 ---
 

@@ -134,12 +134,15 @@ collapsing it into one monolithic action distribution.
   run but remain independently attributable and can use different data cadence,
   learning rates, and acceptance rules.
 
-- **Strategic objective.** Strategy PPO uses role-selected TAG reward. Pursuer
-  return rewards reducing opponent distance and completing a tag; evader return
-  rewards increasing or maintaining separation and surviving until timeout.
-  Both include task safety and command-regularity terms. Strategy transitions
-  occur only when a new 10 Hz command is sampled, and their GAE/value targets are
-  computed independently from the locomotion targets.
+- **Strategic objective.** Strategy PPO now uses only terminal game outcomes.
+  The pursuer receives `+1` only for a tag. The evader receives `-1` when tagged
+  or when it leaves the arena. All other strategy rewards, including timeout,
+  pursuer boundary exit, and nonterminal steps, are zero. Tag and boundary exit
+  are true terminals with zero bootstrap value. The strategy discount is exactly
+  one, so the ideal pursuer critic estimates tag probability and the ideal evader
+  critic estimates the negative probability of tag or evader boundary failure.
+  Strategy transitions occur only when a new 10 Hz command is sampled, and their
+  GAE/value targets are computed independently from the locomotion targets.
 
 - **Locomotion objective.** Locomotion PPO optimizes command execution and
   physical stability rather than the game outcome. Its reward combines
