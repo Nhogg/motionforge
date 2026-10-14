@@ -80,7 +80,13 @@ def _contact_buffers(data) -> tuple[jax.Array, jax.Array, jax.Array]:
     active_counts = jp.asarray(impl.nacon)
 
     slots = jp.arange(distances.shape[0]) % impl.naconmax
-    active = slots < active_counts[world_ids]
+    # Inactive Warp contact slots do not promise a valid world id.  Indexing
+    # nacon with those sentinel/garbage ids is an out-of-bounds GPU gather and
+    # can poison the CUDA context before the inactive slot is masked below.
+    world_count = active_counts.shape[0]
+    valid_world = (world_ids >= 0) & (world_ids < world_count)
+    safe_world_ids = jp.clip(world_ids, 0, world_count - 1)
+    active = valid_world & (slots < active_counts[safe_world_ids])
 
     return contact_geoms, distances, active
 

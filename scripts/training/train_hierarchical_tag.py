@@ -64,7 +64,8 @@ class Config:
     historical_opponent_probability: float = 0.75
     opponent_mode: str = "warm_start"
     checkpoint_interval: int = 5
-    naconmax: int = 2048
+    naconmax_per_environment: int = 64
+    naconmax: int | None = None
     njmax: int = 4096
     strategy_learning_rate: float = 3e-4
     locomotion_learning_rate: float = 1e-5
@@ -121,7 +122,7 @@ def _validate_config(config: Config) -> None:
         "num_iterations",
         "rollout_horizon",
         "checkpoint_interval",
-        "naconmax",
+        "naconmax_per_environment",
         "njmax",
         "minibatch_size",
         "wandb_video_interval_steps",
@@ -131,6 +132,15 @@ def _validate_config(config: Config) -> None:
     ):
         if getattr(config, name) <= 0:
             raise ValueError(f"{name} must be positive")
+    required_contact_capacity = (
+        config.naconmax_per_environment * config.num_environments
+    )
+    if config.naconmax is not None and config.naconmax < required_contact_capacity:
+        raise ValueError(
+            "naconmax is the total Warp contact capacity and must be at least "
+            "naconmax_per_environment * num_environments; "
+            f"got {config.naconmax}, need at least {required_contact_capacity}"
+        )
     if config.rollout_horizon % 5 != 0:
         raise ValueError("rollout_horizon must be divisible by five")
     validate_full_episode_rollout(
@@ -200,6 +210,9 @@ def main(config: Config) -> None:
     summary_path = output_dir / "summary.json"
 
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
+    contact_capacity = config.naconmax or (
+        config.naconmax_per_environment * config.num_environments
+    )
     environment = MultiAgentTaskEnv(
         league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
         config=MultiAgentTaskConfig(
@@ -207,7 +220,7 @@ def main(config: Config) -> None:
             separation=config.minimum_initial_separation,
             minimum_separation=config.minimum_initial_separation,
             maximum_separation=config.maximum_initial_separation,
-            naconmax=config.naconmax,
+            naconmax=contact_capacity,
             njmax=config.njmax,
         ),
     )

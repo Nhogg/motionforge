@@ -327,7 +327,10 @@ def extract_tag_foot_contact(data, layout: TagFootContactLayout) -> TagFootConta
     world_ids = jp.asarray(impl.contact__worldid)
     active_counts = jp.asarray(impl.nacon)
     slots = jp.arange(distances.shape[0]) % impl.naconmax
-    buffer_active = slots < active_counts[world_ids]
+    world_count = active_counts.shape[0]
+    valid_world = (world_ids >= 0) & (world_ids < world_count)
+    safe_world_ids = jp.clip(world_ids, 0, world_count - 1)
+    buffer_active = valid_world & (slots < active_counts[safe_world_ids])
 
     normal_addresses = jp.asarray(impl.contact__efc_address)[:, 0]
     address_valid = normal_addresses >= 0
