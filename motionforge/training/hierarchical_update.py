@@ -27,6 +27,7 @@ class HierarchicalUpdateConfig:
     locomotion_learning_rate: float = 1e-5
     strategy_update_interval: int = 1
     locomotion_update_interval: int = 5
+    freeze_locomotion: bool = False
     maximum_gradient_norm: float = 1.0
     maximum_locomotion_approximate_kl: float = 0.01
     minibatch_size: int | None = None
@@ -129,7 +130,9 @@ class HierarchicalPpoUpdater:
     ) -> tuple[HierarchicalTrainState, HierarchicalUpdateMetrics]:
         """Run whichever level updates are scheduled for this iteration."""
         strategy_due = state.iteration % self.config.strategy_update_interval == 0
-        locomotion_due = state.iteration % self.config.locomotion_update_interval == 0
+        locomotion_due = (
+            not self.config.freeze_locomotion
+        ) & (state.iteration % self.config.locomotion_update_interval == 0)
         _, locomotion_preupdate_metrics = self._loss(
             locomotion_ppo_loss,
             state.parameters["locomotion"],

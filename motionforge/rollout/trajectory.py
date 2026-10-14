@@ -17,6 +17,7 @@ from motionforge.rollout.hierarchical import (
     HierarchicalRolloutSegment,
     HierarchicalRolloutState,
 )
+from motionforge.rollout.tag_reward import TagRewardTerms
 
 
 @dataclass(frozen=True)
@@ -79,12 +80,23 @@ class HierarchicalTransition:
     root_height: jax.Array
     up_alignment: jax.Array
     fallen: jax.Array
+    persistent_fallen: jax.Array
     near_fall: jax.Array
     out_of_bounds: jax.Array
     tag_contact: jax.Array
     tagged: jax.Array
     timed_out: jax.Array
     terrain_quaternion_wxyz: jax.Array
+    terminated: jax.Array
+    truncated: jax.Array
+    terminal_cause: jax.Array
+    previous_distance: jax.Array
+    planar_distance: jax.Array
+    previous_command: jax.Array
+    strategy_reward_components: TagRewardTerms
+    control_timestep: jax.Array
+    arena_half_extent: jax.Array
+    boundary_onset_m: jax.Array
 
 
 @dataclass(frozen=True)
@@ -105,16 +117,13 @@ def sparse_tag_strategy_reward(
 ) -> jax.Array:
     """Return the terminal-outcome reward for one TAG strategy learner.
 
-    Pursuers receive one point only for completing a tag.  Evaders receive a
-    loss for being tagged or leaving the arena.  Every nonterminal step and
-    every other terminal outcome has zero strategy reward.  The environment's
-    done flag, rather than this payoff, controls bootstrapping at termination.
+    The valid TAG component is exactly +1/-1. Own failures are separate terms;
+    time limits are truncations with no game payoff.
     """
     tagged = termination.tagged
     if learner_is_pursuer:
         return tagged.astype(jp.float32)
-    evader_failed = tagged | termination.out_of_bounds[learner_index]
-    return -evader_failed.astype(jp.float32)
+    return -tagged.astype(jp.float32)
 
 
 def trajectory_metadata(
@@ -261,7 +270,13 @@ def collect_hierarchical_transition(
         strategy_value=next_state.strategy_values[learner_index],
         strategy_log_probability=next_state.strategy_log_probabilities[learner_index],
         strategy_entropy=next_state.strategy_entropies[learner_index],
-        strategy_reward=strategy_reward,
+        strategy_reward=(
+            strategy_reward
+            - runner.config.tag_reward.own_fall_penalty
+            * termination.fallen[learner_index].astype(jp.float32)
+            - runner.config.tag_reward.own_oob_penalty
+            * termination.out_of_bounds[learner_index].astype(jp.float32)
+        ),
         strategy_update=(
             state.locomotion_steps % runner.config.locomotion_steps_per_strategy_step
             == 0
@@ -291,6 +306,7 @@ def collect_hierarchical_transition(
         root_height=next_state.environment.diagnostics.root_height,
         up_alignment=next_state.environment.diagnostics.up_alignment,
         fallen=fallen,
+        persistent_fallen=termination.fallen,
         near_fall=near_fall,
         out_of_bounds=(
             termination.out_of_bounds | next_state.environment.diagnostics.out_of_bounds
@@ -301,5 +317,38 @@ def collect_hierarchical_transition(
         terrain_quaternion_wxyz=data.mocap_quat[
             runner.environment.model_bundle.terrain_mocap_id
         ],
+        terminated=termination.terminated,
+        truncated=termination.truncated,
+        terminal_cause=termination.cause,
+        previous_distance=jp.linalg.norm(
+            state.environment.diagnostics.planar_position[1]
+            - state.environment.diagnostics.planar_position[0]
+        ),
+        planar_distance=jp.linalg.norm(
+            next_state.environment.diagnostics.planar_position[1]
+            - next_state.environment.diagnostics.planar_position[0]
+        ),
+        previous_command=state.strategy_actions[learner_index],
+        control_timestep=jp.asarray(runner.environment.config.control_timestep),
+        arena_half_extent=jp.asarray(runner.environment.config.arena_half_extent),
+        boundary_onset_m=jp.asarray(runner.config.tag_reward.boundary_onset_m),
+        # Dense terms are constructed at strategy cadence after collection.
+        strategy_reward_components=TagRewardTerms(
+            progress=jp.zeros_like(strategy_reward),
+            tag=strategy_reward,
+            command_smoothness=jp.zeros_like(strategy_reward),
+            boundary=jp.zeros_like(strategy_reward),
+            fall=-runner.config.tag_reward.own_fall_penalty
+            * termination.fallen[learner_index].astype(jp.float32),
+            oob=-runner.config.tag_reward.own_oob_penalty
+            * termination.out_of_bounds[learner_index].astype(jp.float32),
+            total=(
+                strategy_reward
+                - runner.config.tag_reward.own_fall_penalty
+                * termination.fallen[learner_index].astype(jp.float32)
+                - runner.config.tag_reward.own_oob_penalty
+                * termination.out_of_bounds[learner_index].astype(jp.float32)
+            ),
+        ),
     )
     return next_state, transition

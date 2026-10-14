@@ -16,6 +16,7 @@ from motionforge.envs.tag_bounds import (
     detect_out_of_bounds,
 )
 from motionforge.envs.tag_contact import build_tag_contact_layout, detect_tag_contact
+from motionforge.envs.tag_endings import TagEndCause, classify_tag_ending
 from motionforge.envs.tag_fall import (
     FallDetectionConfig,
     build_fall_detection_layout,
@@ -91,6 +92,10 @@ class MultiAgentTaskTermination:
     fallen: jax.Array
     out_of_bounds: jax.Array
     timed_out: jax.Array
+    nonfinite: jax.Array
+    terminated: jax.Array
+    truncated: jax.Array
+    cause: jax.Array
 
 
 @struct.dataclass
@@ -101,6 +106,14 @@ class MultiAgentTaskState:
     termination: MultiAgentTaskTermination
     fall_counts: jax.Array
     done: jax.Array
+
+    @property
+    def terminated(self):
+        return self.termination.terminated
+
+    @property
+    def truncated(self):
+        return self.termination.truncated
 
 
 class MultiAgentTaskEnv(LeagueEnv):
@@ -193,6 +206,10 @@ class MultiAgentTaskEnv(LeagueEnv):
                 fallen=jp.zeros((2,), dtype=bool),
                 out_of_bounds=jp.zeros((2,), dtype=bool),
                 timed_out=jp.zeros((), dtype=bool),
+                nonfinite=jp.zeros((), dtype=bool),
+                terminated=jp.zeros((), dtype=bool),
+                truncated=jp.zeros((), dtype=bool),
+                cause=jp.asarray(TagEndCause.NONE, dtype=jp.int32),
             ),
             fall_counts=jp.zeros((2,), dtype=jp.int32),
             done=jp.zeros((), dtype=bool),
@@ -211,22 +228,53 @@ class MultiAgentTaskEnv(LeagueEnv):
             0,
         )
         persistent_falls = fall_counts >= self.config.fall_persistence_steps
-        termination = MultiAgentTaskTermination(
-            tagged=state.termination.tagged | diagnostics.tag_contact,
-            fallen=state.termination.fallen | persistent_falls,
-            out_of_bounds=state.termination.out_of_bounds
-            | diagnostics.out_of_bounds,
-            timed_out=state.termination.timed_out | diagnostics.timed_out,
+        nonfinite = ~(
+            jp.all(jp.isfinite(physics.data.qpos))
+            & jp.all(jp.isfinite(physics.data.qvel))
+            & jp.all(diagnostics.root_state_finite)
+            & jp.all(diagnostics.planar_state_finite)
         )
-        done = (
-            termination.tagged
-            | jp.any(termination.fallen)
-            | jp.any(termination.out_of_bounds)
-            | termination.timed_out
+        tagged, terminated, truncated, cause = classify_tag_ending(
+            contact=diagnostics.tag_contact,
+            fallen=persistent_falls,
+            out_of_bounds=diagnostics.out_of_bounds,
+            nonfinite=nonfinite,
+            time_limit=diagnostics.timed_out,
+            pursuer_index=self.config.pursuer_index,
+        )
+        termination = MultiAgentTaskTermination(
+            tagged=tagged,
+            fallen=persistent_falls,
+            out_of_bounds=diagnostics.out_of_bounds,
+            timed_out=truncated,
+            nonfinite=nonfinite,
+            terminated=terminated,
+            truncated=truncated,
+            cause=cause,
+        )
+        termination = jax.tree.map(
+            lambda old, new: jp.where(state.done, old, new),
+            state.termination,
+            termination,
+        )
+        done = termination.terminated | termination.truncated
+        # A detected numerical simulator failure is terminal. Retain a finite
+        # physical observation for diagnostics/loss masking; never bootstrap it.
+        physics = physics.replace(
+            data=physics.data.where(nonfinite, state.physics.data)
+        )
+        observation = self._get_observation(physics.data)
+        diagnostics = jax.tree.map(
+            lambda value: (
+                jp.nan_to_num(value)
+                if jp.issubdtype(value.dtype, jp.inexact)
+                else value
+            ),
+            diagnostics,
         )
         return state.replace(
             physics=physics,
-            observation=self._get_observation(physics.data),
+            observation=observation,
             diagnostics=diagnostics,
             termination=termination,
             fall_counts=fall_counts,

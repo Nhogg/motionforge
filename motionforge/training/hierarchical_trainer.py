@@ -106,9 +106,10 @@ class HierarchicalPpoTrainer:
             horizon=self.config.rollout_horizon,
             episode_id=jp.asarray(episode_id, dtype=jp.int32),
             environment_id=jp.asarray(environment_id, dtype=jp.int32),
+            strategy_discount=self.config.strategy_advantage.discount,
         )
         learner_index = segment.learner_index
-        not_terminal = ~next_rollout_state.environment.done
+        not_terminal = ~next_rollout_state.environment.terminated
         strategy_values, locomotion_values = self.runner.bootstrap_values(
             segment, next_rollout_state
         )
@@ -193,6 +194,7 @@ class HierarchicalPpoTrainer:
                     horizon=self.config.rollout_horizon,
                     episode_id=current_episode_id,
                     environment_id=environment_id,
+                    strategy_discount=self.config.strategy_advantage.discount,
                 )
             ),
             in_axes=(0, 0, 0, None),
@@ -299,7 +301,7 @@ class HierarchicalPpoTrainer:
             evader_segment.learner_index,
         )
         batch_indices = jp.arange(environment_count)
-        not_terminal = ~next_rollout_states.environment.done
+        not_terminal = ~next_rollout_states.environment.terminated
         strategy_bootstrap = jp.where(
             not_terminal,
             strategy_values[batch_indices, learner_indices],

@@ -13,6 +13,7 @@ import numpy as np
 
 from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
+from motionforge.envs.tag_endings import TagEndCause
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import (
     load_p2_checkpoint,
@@ -24,6 +25,7 @@ from motionforge.rollout import (
     HierarchicalRolloutRunner,
     collect_hierarchical_rollout,
 )
+from motionforge.rollout.tag_reward import TagRewardConfig, tag_reward_config_from_dict
 from motionforge.training import (
     HierarchicalPpoUpdater,
     HierarchicalUpdateConfig,
@@ -36,6 +38,9 @@ from motionforge.training import (
 class Config:
     checkpoint: Path = Path("???")
     opponent_checkpoint: Path | None = None
+    use_self_play: bool = False
+    initial_separation: float = 2.0
+    episode_duration: float = 20.0
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
@@ -52,10 +57,16 @@ class Config:
 
 
 def _validate_config(config: Config) -> None:
+    if config.use_self_play and config.opponent_checkpoint is not None:
+        raise ValueError("use_self_play and opponent_checkpoint are mutually exclusive")
+    if not config.initial_separation > 0.0:
+        raise ValueError("initial_separation must be positive")
     if config.seeds <= 0:
         raise ValueError("seeds must be positive")
     if config.duration <= 0.0:
         raise ValueError("duration must be positive")
+    if config.episode_duration <= 0.0:
+        raise ValueError("episode_duration must be positive")
     if config.naconmax <= 0 or config.njmax <= 0:
         raise ValueError("naconmax and njmax must be positive")
     if config.boundary_command_margin <= 0.0:
@@ -86,22 +97,68 @@ def _rollout_metrics(
 ) -> dict[str, object]:
     valid = np.asarray(batch.transition_valid, dtype=bool)
     transitions = batch.transitions
-    fallen = np.asarray(transitions.fallen)[:, learner_index]
+    fallen = np.asarray(transitions.persistent_fallen)[:, learner_index]
     out_of_bounds = np.asarray(transitions.out_of_bounds)[:, learner_index]
     tagged = np.asarray(transitions.tagged, dtype=bool)
-    distances = np.linalg.norm(
-        np.asarray(transitions.relative_position)[:, learner_index], axis=-1
-    )
+    distances = np.asarray(transitions.planar_distance)
     tracking_error = np.asarray(transitions.command_tracking_error)
     up_alignment = np.clip(
         np.asarray(transitions.up_alignment)[:, learner_index], -1.0, 1.0
     )
     physical_survival = not bool(np.any((fallen | out_of_bounds) & valid))
     tag_occurred = bool(np.any(tagged & valid))
-    role_success = (
-        tag_occurred if role == "pursuer" else physical_survival and not tag_occurred
-    )
+    final_index = np.flatnonzero(valid)[-1]
+    terminated = bool(np.asarray(transitions.terminated)[final_index])
+    truncated = bool(np.asarray(transitions.truncated)[final_index])
+    cause = TagEndCause(int(np.asarray(transitions.terminal_cause)[final_index]))
+    if terminated and truncated:
+        raise AssertionError("incompatible rollout ending flags")
+    # Censored episodes do not demonstrate a pursuer loss or an evader win.
+    role_success = (role == "pursuer") if cause == TagEndCause.TAG else None
     result = {
+        "initial_distance": float(np.asarray(transitions.previous_distance)[0]),
+        "distance_closed": float(
+            np.asarray(transitions.previous_distance)[0] - distances[final_index]
+        ),
+        "maximum_distance": float(distances[valid].max()),
+        "time_below_1m": float(np.sum((distances < 1.0) & valid) * control_timestep),
+        "time_below_0_5m": float(np.sum((distances < 0.5) & valid) * control_timestep),
+        "time_near_boundary": float(
+            np.sum(
+                (
+                    np.asarray(transitions.arena_half_extent)
+                    - np.max(
+                        np.abs(
+                            np.asarray(transitions.root_position_world)[
+                                :, learner_index, :2
+                            ]
+                        ),
+                        axis=-1,
+                    )
+                    <= np.asarray(transitions.boundary_onset_m)
+                )
+                & valid
+            )
+            * control_timestep
+        ),
+        "reward_episode_sums": {
+            name: float(
+                np.sum(
+                    np.asarray(getattr(transitions.strategy_reward_components, name))[
+                        valid
+                    ]
+                )
+            )
+            for name in (
+                "progress",
+                "tag",
+                "command_smoothness",
+                "boundary",
+                "fall",
+                "oob",
+                "total",
+            )
+        },
         "command_tracking_rmse": float(
             np.sqrt(np.mean(np.square(tracking_error[valid])))
         ),
@@ -121,6 +178,10 @@ def _rollout_metrics(
         ),
         "physical_survival": physical_survival,
         "role_success": role_success,
+        "terminated": terminated,
+        "truncated": truncated,
+        "terminal_cause": cause.name,
+        "no_tag_physical_survival": physical_survival and not tag_occurred,
         "steps_alive": int(valid.sum()),
         "strategy_reward": float(
             np.asarray(batch.strategy.reward)[np.asarray(batch.strategy.valid)].sum()
@@ -162,10 +223,26 @@ def _load_parameters(
 
 def main(config: Config) -> None:
     _validate_config(config)
+    run_manifest = config.checkpoint.parent.parent / "manifest.json"
+    training_config = (
+        json.loads(run_manifest.read_text()).get("config", {})
+        if run_manifest.is_file()
+        else {}
+    )
+    reward_config = (
+        tag_reward_config_from_dict(training_config["tag_reward"])
+        if "tag_reward" in training_config
+        else TagRewardConfig()
+    )
+    strategy_discount = training_config.get("strategy_discount", 1.0)
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
     environment = MultiAgentTaskEnv(
         league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
         config=MultiAgentTaskConfig(
+            episode_duration=config.episode_duration,
+            separation=config.initial_separation,
+            minimum_separation=config.initial_separation,
+            maximum_separation=config.initial_separation,
             naconmax=config.naconmax,
             njmax=config.njmax,
         ),
@@ -175,6 +252,7 @@ def main(config: Config) -> None:
         p2_locomotion_normalization(p2_parameters[0]),
         HierarchicalRolloutConfig(
             stochastic_actions=config.stochastic_actions,
+            tag_reward=reward_config,
             boundary_command_safety_enabled=(config.boundary_command_safety_enabled),
             boundary_command_margin=config.boundary_command_margin,
         ),
@@ -188,7 +266,11 @@ def main(config: Config) -> None:
         config.checkpoint,
         warm_start_parameters,
     )
-    if config.opponent_checkpoint is None:
+    if config.use_self_play:
+        opponent_id = "current/self-play"
+        opponent_category = "recent"
+        opponent_parameters = train_state.parameters
+    elif config.opponent_checkpoint is None:
         opponent_id = "warm-start/p2"
         opponent_category = "warm_start"
         opponent_parameters = warm_start_parameters
@@ -233,6 +315,7 @@ def main(config: Config) -> None:
                 horizon=horizon,
                 episode_id=jp.asarray(rollout_seed),
                 environment_id=jp.asarray(0),
+                strategy_discount=strategy_discount,
             )
             batch.transitions.root_height.block_until_ready()
             metrics = _rollout_metrics(
@@ -263,8 +346,24 @@ def main(config: Config) -> None:
                     np.mean([item["physical_survival"] for item in rollouts])
                 ),
                 "role": role,
-                "role_success_rate": float(
-                    np.mean([item["role_success"] for item in rollouts])
+                "role_success_rate": (
+                    float(
+                        np.mean(
+                            [
+                                item["role_success"]
+                                for item in rollouts
+                                if item["role_success"] is not None
+                            ]
+                        )
+                    )
+                    if any(item["role_success"] is not None for item in rollouts)
+                    else None
+                ),
+                "uncensored_tag_games": sum(
+                    item["role_success"] is not None for item in rollouts
+                ),
+                "truncation_rate": float(
+                    np.mean([item["truncated"] for item in rollouts])
                 ),
                 "rollouts": rollouts,
                 "tag_rate": float(np.mean([item["tag_occurred"] for item in rollouts])),
@@ -281,6 +380,18 @@ def main(config: Config) -> None:
     }
     payload = {
         "backend": jax.default_backend(),
+        "evaluation_protocol": "tag_distance_potential_truncation_v2",
+        "strategy_shaping": {
+            "discount": strategy_discount,
+            "enabled": reward_config.progress.enabled,
+            "alpha": reward_config.progress.alpha,
+            "distance_normalization_m": reward_config.progress.normalization_m(
+                environment.config.arena_half_extent
+            ),
+            "config_source": "checkpoint_run_manifest"
+            if "tag_reward" in training_config
+            else "potential_defaults_for_legacy_checkpoint",
+        },
         "checkpoint": str(config.checkpoint.resolve()),
         "checkpoint_iteration": int(train_state.iteration),
         "checks": checks,

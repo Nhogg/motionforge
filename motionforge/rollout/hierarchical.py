@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax
@@ -35,6 +35,7 @@ from motionforge.models import (
     tanh_normal_sample_and_log_prob,
 )
 from motionforge.policies import scripted_evader_command, scripted_pursuer_command
+from motionforge.rollout.tag_reward import TagRewardConfig
 
 
 def sample_learner_is_pursuer(*, seed: int, probability: float) -> bool:
@@ -57,6 +58,7 @@ class HierarchicalRolloutConfig:
     stochastic_actions: bool = False
     boundary_command_safety_enabled: bool = True
     boundary_command_margin: float = 1.0
+    tag_reward: TagRewardConfig = field(default_factory=TagRewardConfig)
 
     def __post_init__(self) -> None:
         for name in ("physics_hz", "locomotion_hz", "strategy_hz"):

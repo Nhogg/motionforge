@@ -21,6 +21,7 @@ from motionforge.callbacks import (
 )
 from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
+from motionforge.envs.tag_endings import TagEndCause
 from motionforge.league import FixedLeague, LeagueOpponent, WeightedLeague
 from motionforge.logging.wandb import WandbMetricsLogger
 from motionforge.models import (
@@ -33,6 +34,7 @@ from motionforge.rollout import (
     HierarchicalRolloutConfig,
     HierarchicalRolloutRunner,
 )
+from motionforge.rollout.tag_reward import TagRewardConfig
 from motionforge.training import (
     HierarchicalPpoTrainer,
     HierarchicalPpoUpdater,
@@ -49,6 +51,7 @@ from motionforge.training import (
 
 @dataclass
 class Config:
+    tag_reward: TagRewardConfig = field(default_factory=TagRewardConfig)
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
@@ -62,8 +65,10 @@ class Config:
     minimum_initial_separation: float = 2.0
     maximum_initial_separation: float = 2.0
     historical_opponent_probability: float = 0.75
+    recent_opponent_probability: float | None = None
     opponent_mode: str = "warm_start"
     checkpoint_interval: int = 5
+    save_initial_checkpoint: bool = False
     naconmax_per_environment: int = 64
     naconmax: int | None = None
     njmax: int = 4096
@@ -71,6 +76,7 @@ class Config:
     locomotion_learning_rate: float = 1e-5
     strategy_update_interval: int = 1
     locomotion_update_interval: int = 5
+    freeze_locomotion: bool = False
     maximum_gradient_norm: float = 1.0
     maximum_locomotion_approximate_kl: float = 0.01
     minibatch_size: int = 1024
@@ -116,6 +122,27 @@ def _scalar(value: Any) -> float:
     return float(np.asarray(value))
 
 
+def mixed_opponent_probabilities(historical: float, recent: float | None = None):
+    """Keep legacy equal auxiliaries unless a current-policy share is explicit."""
+    if not 0.0 < historical < 1.0:
+        raise ValueError("historical probability must be in (0, 1)")
+    if recent is None:
+        recent = (1.0 - historical) / 3.0
+        auxiliary = recent
+    else:
+        if not 0.0 < recent < 1.0 - historical:
+            raise ValueError(
+                "recent probability must be positive and leave curriculum mass"
+            )
+        auxiliary = (1.0 - historical - recent) / 2.0
+    return {
+        "historical": historical,
+        "current": recent,
+        "stationary": auxiliary,
+        "scripted": auxiliary,
+    }
+
+
 def _validate_config(config: Config) -> None:
     for name in (
         "num_environments",
@@ -157,6 +184,14 @@ def _validate_config(config: Config) -> None:
         raise ValueError("initial separation range must be positive and ordered")
     if not 0.0 <= config.historical_opponent_probability <= 1.0:
         raise ValueError("historical_opponent_probability must be in [0, 1]")
+    if config.recent_opponent_probability is not None:
+        if not config.historical_opponent_checkpoints:
+            raise ValueError(
+                "recent_opponent_probability requires a mixed historical league"
+            )
+        mixed_opponent_probabilities(
+            config.historical_opponent_probability, config.recent_opponent_probability
+        )
     if config.opponent_mode not in {"warm_start", "stationary"}:
         raise ValueError("opponent_mode must be warm_start or stationary")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
@@ -232,6 +267,7 @@ def main(config: Config) -> None:
             stochastic_actions=True,
             boundary_command_safety_enabled=(config.boundary_command_safety_enabled),
             boundary_command_margin=config.boundary_command_margin,
+            tag_reward=config.tag_reward,
         ),
     )
     initialization_state = runner.reset(jax.random.PRNGKey(config.seed))
@@ -260,6 +296,7 @@ def main(config: Config) -> None:
         locomotion_learning_rate=config.locomotion_learning_rate,
         strategy_update_interval=config.strategy_update_interval,
         locomotion_update_interval=config.locomotion_update_interval,
+        freeze_locomotion=config.freeze_locomotion,
         maximum_gradient_norm=config.maximum_gradient_norm,
         maximum_locomotion_approximate_kl=(config.maximum_locomotion_approximate_kl),
         minibatch_size=config.minibatch_size,
@@ -271,7 +308,10 @@ def main(config: Config) -> None:
         train_state, restore_manifest = load_hierarchical_checkpoint(
             config.restore_checkpoint, train_state
         )
-        if restore_manifest["update_config"] != asdict(update_config):
+        restored_update_config = HierarchicalUpdateConfig(
+            **restore_manifest["update_config"]
+        )
+        if asdict(restored_update_config) != asdict(update_config):
             raise ValueError("restore checkpoint update configuration does not match")
         restored_from = str(config.restore_checkpoint.resolve())
     historical_opponents = []
@@ -306,8 +346,9 @@ def main(config: Config) -> None:
     def configure_training_league(current_parameters) -> None:
         if not historical_opponents:
             return
-        historical_probability = config.historical_opponent_probability
-        auxiliary_probability = (1.0 - historical_probability) / 3.0
+        probabilities = mixed_opponent_probabilities(
+            config.historical_opponent_probability, config.recent_opponent_probability
+        )
         opponents = [
             *historical_opponents,
             stationary_opponent,
@@ -320,12 +361,12 @@ def main(config: Config) -> None:
         ]
         weights = [
             *(
-                [historical_probability / len(historical_opponents)]
+                [probabilities["historical"] / len(historical_opponents)]
                 * len(historical_opponents)
             ),
-            auxiliary_probability,
-            auxiliary_probability,
-            auxiliary_probability,
+            probabilities["stationary"],
+            probabilities["scripted"],
+            probabilities["current"],
         ]
         environment.league = WeightedLeague(opponents, weights)
 
@@ -353,6 +394,16 @@ def main(config: Config) -> None:
         },
         "devices": [str(device) for device in jax.devices()],
         "experiment": "hierarchical_joint_tag_ppo",
+        "strategy_reward_version": "tag_distance_potential_truncation_v2",
+        "strategy_shaping": {
+            "kind": "distance_potential",
+            "alpha": config.tag_reward.progress.alpha,
+            "distance_normalization_m": config.tag_reward.progress.normalization_m(
+                environment.config.arena_half_extent
+            ),
+            "discount": config.strategy_discount,
+        },
+        "terminal_cause_codes": {cause.name: int(cause) for cause in TagEndCause},
         "motionforge_revision": _git_output(repository, "rev-parse", "HEAD"),
         "motionforge_status_short": _git_output(
             repository, "status", "--short"
@@ -366,12 +417,10 @@ def main(config: Config) -> None:
             for opponent in historical_opponents
         ],
         "opponent_mixture": (
-            {
-                "current": (1.0 - config.historical_opponent_probability) / 3.0,
-                "historical": config.historical_opponent_probability,
-                "scripted": (1.0 - config.historical_opponent_probability) / 3.0,
-                "stationary": (1.0 - config.historical_opponent_probability) / 3.0,
-            }
+            mixed_opponent_probabilities(
+                config.historical_opponent_probability,
+                config.recent_opponent_probability,
+            )
             if historical_opponents
             else None
         ),
@@ -421,6 +470,21 @@ def main(config: Config) -> None:
     start_time = time.monotonic()
     checkpoint_entries: list[str] = []
     records: list[dict[str, Any]] = []
+    if config.save_initial_checkpoint:
+        name = f"{start_iteration:012d}"
+        save_hierarchical_checkpoint(
+            checkpoint_dir / name,
+            train_state,
+            update_config=update_config,
+            metadata={
+                "environment_steps": (
+                    start_iteration * config.rollout_horizon * config.num_environments
+                ),
+                "seed": config.seed,
+                "checkpoint_kind": "run_start",
+            },
+        )
+        checkpoint_entries.append(name)
     for local_iteration in range(config.num_iterations):
         iteration = start_iteration + local_iteration
         configure_training_league(train_state.parameters)
@@ -533,21 +597,31 @@ def main(config: Config) -> None:
             * config.rollout_horizon
             * config.num_environments
         )
-        learner_pursuer_win_rate = float(
-            np.clip(metrics["strategy/pursuer/episode_return_mean"], 0.0, 1.0)
-        )
-        opponent_pursuer_win_rate = float(
-            np.clip(-metrics["strategy/evader/episode_return_mean"], 0.0, 1.0)
-        )
-        metrics.update(
-            elo.update(
-                opponent_id=iteration_result.trajectory.opponent_id,
-                learner_pursuer_win_rate=learner_pursuer_win_rate,
-                opponent_pursuer_win_rate=opponent_pursuer_win_rate,
-                pursuer_games=config.num_environments // 2,
-                evader_games=config.num_environments // 2,
+        if (
+            metrics["diagnostics/incompatible_end_flags"]
+            or metrics["diagnostics/missing_or_multiple_final_causes"]
+        ):
+            raise AssertionError(
+                "rollout must have exactly one exclusive terminated/truncated ending"
             )
+        # Shaped returns are not game outcomes. Time limits and physical
+        # failures are censored TAG matches, not automatic wins or losses.
+        pursuer_games = int(metrics["strategy/pursuer/valid_tag_games"])
+        evader_games = int(metrics["strategy/evader/valid_tag_games"])
+        metrics.update(elo.metrics(iteration_result.trajectory.opponent_id))
+        metrics["elo/update_skipped_censored"] = float(
+            pursuer_games == 0 or evader_games == 0
         )
+        if pursuer_games > 0 and evader_games > 0:
+            metrics.update(
+                elo.update(
+                    opponent_id=iteration_result.trajectory.opponent_id,
+                    learner_pursuer_win_rate=1.0,
+                    opponent_pursuer_win_rate=1.0,
+                    pursuer_games=pursuer_games,
+                    evader_games=evader_games,
+                )
+            )
         for category in ("historical", "stationary", "scripted", "recent"):
             metrics[f"opponent/category/{category}"] = float(
                 iteration_result.trajectory.opponent_category == category
@@ -583,6 +657,44 @@ def main(config: Config) -> None:
             "metrics_finite": finite,
             "opponent_category": iteration_result.trajectory.opponent_category,
             "opponent_id": iteration_result.trajectory.opponent_id,
+            "rollout_episode_id": iteration,
+            # Arrays are indexed by environment_id. Both cause and explicit
+            # flags are retained; do not reconstruct outcomes from returns.
+            "rollout_final_causes": np.asarray(
+                final_rollout_states.environment.termination.cause
+            ).tolist(),
+            "rollout_terminated": np.asarray(
+                final_rollout_states.environment.terminated
+            ).tolist(),
+            "rollout_truncated": np.asarray(
+                final_rollout_states.environment.truncated
+            ).tolist(),
+            "reward_episode_sums": {
+                component: np.asarray(
+                    jp.sum(
+                        jp.where(
+                            iteration_result.batch.transition_valid.reshape(
+                                config.num_environments, config.rollout_horizon
+                            ),
+                            getattr(
+                                iteration_result.batch.transitions.strategy_reward_components,
+                                component,
+                            ).reshape(config.num_environments, config.rollout_horizon),
+                            0.0,
+                        ),
+                        axis=1,
+                    )
+                ).tolist()
+                for component in (
+                    "progress",
+                    "tag",
+                    "command_smoothness",
+                    "boundary",
+                    "fall",
+                    "oob",
+                    "total",
+                )
+            },
         }
         records.append(record)
         with metrics_path.open("a", encoding="utf-8") as stream:
@@ -592,6 +704,10 @@ def main(config: Config) -> None:
         if config.wandb_videos:
             video_callback(environment_steps, train_state.parameters)
         print(json.dumps(record, sort_keys=True))
+        if not finite:
+            raise FloatingPointError(
+                "non-finite training metrics; inspect recorded distance jumps and reward components"
+            )
 
         should_checkpoint = (
             int(train_state.iteration) % config.checkpoint_interval == 0

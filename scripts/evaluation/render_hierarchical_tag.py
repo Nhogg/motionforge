@@ -16,6 +16,12 @@ from mujoco import mjx
 
 from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
+from motionforge.envs.tag_endings import tag_ending_metadata
+from motionforge.evaluation.hierarchical_roles import (
+    annotate_hierarchical_frame,
+    audit_hierarchical_roles,
+    color_hierarchical_agents,
+)
 from motionforge.league import FixedLeague, LeagueOpponent
 from motionforge.models import (
     load_p2_checkpoint,
@@ -34,6 +40,11 @@ from motionforge.training import (
 @dataclass
 class Config:
     checkpoint: Path = Path("???")
+    opponent_checkpoint: Path | None = None
+    use_self_play: bool = False
+    stochastic_actions: bool = False
+    initial_separation: float | None = None
+    use_training_reset: bool = False
     locomotion_checkpoint: Path = Path(
         "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
     )
@@ -52,6 +63,15 @@ class Config:
 
 
 def _validate_config(config: Config) -> None:
+    if config.initial_separation is not None and config.initial_separation <= 0:
+        raise ValueError("initial_separation must be positive")
+    if config.use_self_play and config.opponent_checkpoint is not None:
+        raise ValueError("choose use_self_play or opponent_checkpoint")
+    if (
+        config.opponent_checkpoint is not None
+        and not config.opponent_checkpoint.is_dir()
+    ):
+        raise FileNotFoundError(config.opponent_checkpoint)
     if config.role not in {"pursuer", "evader"}:
         raise ValueError("role must be pursuer or evader")
     if config.duration <= 0.0:
@@ -83,9 +103,23 @@ def main(config: Config) -> None:
     manifest = read_hierarchical_checkpoint_manifest(config.checkpoint)
     update_config = HierarchicalUpdateConfig(**manifest["update_config"])
     _, p2_parameters = load_p2_checkpoint(config.locomotion_checkpoint)
+    minimum_separation = maximum_separation = 2.0
+    training_manifest = config.checkpoint.parent.parent / "manifest.json"
+    if config.use_training_reset and training_manifest.is_file():
+        training_config = json.loads(training_manifest.read_text()).get("config", {})
+        minimum_separation = training_config.get("minimum_initial_separation", 2.0)
+        maximum_separation = training_config.get(
+            "maximum_initial_separation", minimum_separation
+        )
+    if config.initial_separation is not None:
+        minimum_separation = maximum_separation = config.initial_separation
     environment = MultiAgentTaskEnv(
         league=FixedLeague(LeagueOpponent("placeholder", "scripted", None)),
         config=MultiAgentTaskConfig(
+            separation=minimum_separation,
+            minimum_separation=minimum_separation,
+            maximum_separation=maximum_separation,
+            episode_duration=config.duration,
             naconmax=config.naconmax,
             njmax=config.njmax,
         ),
@@ -94,7 +128,7 @@ def main(config: Config) -> None:
         environment,
         p2_locomotion_normalization(p2_parameters[0]),
         HierarchicalRolloutConfig(
-            stochastic_actions=False,
+            stochastic_actions=config.stochastic_actions,
             boundary_command_safety_enabled=(config.boundary_command_safety_enabled),
             boundary_command_margin=config.boundary_command_margin,
         ),
@@ -106,29 +140,39 @@ def main(config: Config) -> None:
     )
     template = HierarchicalPpoUpdater(update_config).initialize(warm_start_parameters)
     train_state, _ = load_hierarchical_checkpoint(config.checkpoint, template)
+    opponent_parameters = warm_start_parameters
+    opponent_id, opponent_category = "warm-start/p2", "warm_start"
+    if config.use_self_play:
+        opponent_parameters = train_state.parameters
+        opponent_id, opponent_category = "current/self-play", "recent"
+    elif config.opponent_checkpoint is not None:
+        opponent_state, _ = load_hierarchical_checkpoint(
+            config.opponent_checkpoint, template
+        )
+        opponent_parameters = opponent_state.parameters
+        opponent_id, opponent_category = (
+            str(config.opponent_checkpoint.resolve()),
+            "historical",
+        )
     environment.league = FixedLeague(
-        LeagueOpponent("warm-start/p2", "warm_start", warm_start_parameters)
+        LeagueOpponent(opponent_id, opponent_category, opponent_parameters)
     )
     segment = runner.start_segment(
         train_state.parameters,
         seed=config.seed,
         learner_is_pursuer=config.role == "pursuer",
     )
+    audit = audit_hierarchical_roles(
+        pursuer_index=environment.config.pursuer_index,
+        segment=segment,
+        roles=state.roles,
+    )
     step = jax.jit(runner.step)
 
     model = environment.model_bundle.model
-    learner_color = np.asarray([0.20, 0.75, 0.30])
-    opponent_color = np.asarray([0.90, 0.35, 0.15])
-    geom_groups = (
-        environment.contact_layout.agent0_geom_ids,
-        environment.contact_layout.agent1_geom_ids,
+    colored_geom_counts = color_hierarchical_agents(
+        environment.model_bundle, pursuer_index=audit["pursuer_index"]
     )
-    for agent_index, geom_ids in enumerate(geom_groups):
-        color = (
-            learner_color if agent_index == segment.learner_index else opponent_color
-        )
-        for geom_id in geom_ids:
-            model.geom_rgba[geom_id, :3] = color
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, config.width)
     model.vis.global_.offheight = max(model.vis.global_.offheight, config.height)
 
@@ -166,7 +210,14 @@ def main(config: Config) -> None:
                 camera.lookat[2] = 0.7
                 host_data = mjx.get_data(model, state.environment.physics.data)
                 renderer.update_scene(host_data, camera=camera)
-                frames.append(renderer.render().copy())
+                frames.append(
+                    annotate_hierarchical_frame(
+                        renderer.render(),
+                        audit,
+                        stochastic_actions=config.stochastic_actions,
+                        matchup=opponent_id,
+                    )
+                )
                 next_frame_time += 1.0 / config.fps
             if bool(np.asarray(state.environment.done)):
                 terminated_at = frame_time
@@ -180,12 +231,19 @@ def main(config: Config) -> None:
     _write_video(config.output, frames, config.fps)
     termination = state.environment.termination
     payload = {
+        **audit,
+        "colored_geom_counts": colored_geom_counts,
+        "opponent_id": opponent_id,
+        "initial_separation_range": [minimum_separation, maximum_separation],
         "backend": jax.default_backend(),
         "checkpoint": str(config.checkpoint.resolve()),
         "checkpoint_iteration": int(train_state.iteration),
         "config": {
             **asdict(config),
             "checkpoint": str(config.checkpoint),
+            "opponent_checkpoint": str(config.opponent_checkpoint)
+            if config.opponent_checkpoint
+            else None,
             "locomotion_checkpoint": str(config.locomotion_checkpoint),
             "output": str(config.output),
         },
@@ -201,6 +259,7 @@ def main(config: Config) -> None:
         "role": config.role,
         "terminated_at": terminated_at,
         "termination": {
+            **tag_ending_metadata(termination, collection_cutoff=True),
             "fallen": np.asarray(termination.fallen).tolist(),
             "out_of_bounds": np.asarray(termination.out_of_bounds).tolist(),
             "tagged": bool(np.asarray(termination.tagged)),

@@ -88,6 +88,22 @@ class TagEloTracker:
         opponent["pursuer"] += evader_delta
         self.learner_evader_rating -= evader_delta
 
+        return {
+            **self.metrics(opponent_id),
+            "elo/matchup/expected_learner_pursuer_win": expected_pursuer,
+            "elo/matchup/expected_opponent_pursuer_win": expected_opponent_pursuer,
+        }
+
+    def metrics(self, opponent_id: str) -> dict[str, float]:
+        """Report ratings without treating a censored trajectory as a game."""
+        opponent = self._opponent(opponent_id)
+        expected_pursuer = self.pursuer_win_probability(
+            self.learner_pursuer_rating, opponent["evader"]
+        )
+        expected_opponent_pursuer = self.pursuer_win_probability(
+            opponent["pursuer"], self.learner_evader_rating
+        )
+
         pursuer_difficulty = 1.0 - self.pursuer_win_probability(
             self.learner_pursuer_rating,
             opponent["evader"],

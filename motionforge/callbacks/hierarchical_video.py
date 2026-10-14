@@ -14,6 +14,16 @@ import mujoco
 import numpy as np
 from mujoco import mjx
 
+from motionforge.envs.tag_endings import tag_ending_metadata
+from motionforge.evaluation.hierarchical_roles import (
+    annotate_hierarchical_frame,
+    audit_hierarchical_roles,
+    color_hierarchical_agents,
+)
+from motionforge.evaluation.hierarchical_trajectory import (
+    plot_path,
+    trajectory_diagnostics,
+)
 from motionforge.logging.wandb import WandbMetricsLogger
 from motionforge.rollout import HierarchicalRolloutRunner, HierarchicalRolloutSegment
 
@@ -49,6 +59,9 @@ class HierarchicalTagVideoCallback:
             path = self.output_dir / "videos" / f"{role}_{environment_steps:012d}.mp4"
             metadata = self._render(parameters, role, path)
             metadata["environment_steps"] = environment_steps
+            metadata["run_name"] = self.output_dir.name
+            plot = path.with_suffix(".png")
+            plot_path(metadata, plot)
             path.with_suffix(".json").write_text(
                 json.dumps(metadata, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -56,8 +69,42 @@ class HierarchicalTagVideoCallback:
             self.logger.log_video(
                 environment_steps=environment_steps,
                 path=path,
-                caption=f"current self-play policy as {role}, step={environment_steps}",
+                caption=(
+                    f"green=pursuer, orange=evader; learner={role}; "
+                    f"current self-play, step={environment_steps}"
+                ),
                 key=f"evaluation/{role}_policy_video",
+            )
+            self.logger.log_image(
+                environment_steps=environment_steps,
+                path=plot,
+                caption=(
+                    f"Same self-play rollout as {role} video; "
+                    "green=pursuer, orange=evader"
+                ),
+                key=f"evaluation/{role}_trajectory",
+            )
+            self.logger.log(
+                environment_steps=environment_steps,
+                metrics={
+                    f"evaluation/{role}_rollout/tagged": float(
+                        metadata["termination"]["tagged"]
+                    ),
+                    f"evaluation/{role}_rollout/pursuer_out_of_bounds": float(
+                        metadata["termination"]["out_of_bounds"][
+                            metadata["pursuer_index"]
+                        ]
+                    ),
+                    f"evaluation/{role}_rollout/final_distance": metadata[
+                        "final_distance"
+                    ],
+                    f"evaluation/{role}_rollout/pursuer_toward_evader_mps": metadata[
+                        "mean_pursuer_toward_evader_mps"
+                    ],
+                    f"evaluation/{role}_rollout/pursuer_moving_away_fraction": metadata[
+                        "pursuer_moving_away_fraction"
+                    ],
+                },
             )
         self._last_rendered_step = environment_steps
 
@@ -77,17 +124,16 @@ class HierarchicalTagVideoCallback:
             learner_is_pursuer=learner_is_pursuer,
         )
         state = self.runner.reset(jax.random.PRNGKey(self.seed))
+        audit = audit_hierarchical_roles(
+            pursuer_index=self.runner.environment.config.pursuer_index,
+            segment=segment,
+            roles=state.roles,
+        )
         step = jax.jit(self.runner.step)
         model = self.runner.environment.model_bundle.model
-        colors = (np.asarray([0.20, 0.75, 0.30]), np.asarray([0.90, 0.35, 0.15]))
-        geom_groups = (
-            self.runner.environment.contact_layout.agent0_geom_ids,
-            self.runner.environment.contact_layout.agent1_geom_ids,
+        colored_geom_counts = color_hierarchical_agents(
+            self.runner.environment.model_bundle, pursuer_index=audit["pursuer_index"]
         )
-        for agent_index, geom_ids in enumerate(geom_groups):
-            color = colors[0] if agent_index == learner_index else colors[1]
-            for geom_id in geom_ids:
-                model.geom_rgba[geom_id, :3] = color
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, self.width)
         model.vis.global_.offheight = max(model.vis.global_.offheight, self.height)
         renderer = mujoco.Renderer(model, width=self.width, height=self.height)
@@ -101,18 +147,27 @@ class HierarchicalTagVideoCallback:
         control_timestep = self.runner.environment.config.control_timestep
         rollout_steps = round(self.duration / control_timestep)
         terminated_at = None
+        positions_history = [np.asarray(state.environment.diagnostics.planar_position)]
         try:
             for index in range(rollout_steps):
                 state = step(segment, state)
                 state.environment.physics.data.qpos.block_until_ready()
                 simulation_time = (index + 1) * control_timestep
                 positions = np.asarray(state.environment.diagnostics.planar_position)
+                positions_history.append(positions)
                 if simulation_time >= next_frame_time:
                     camera.lookat[:2] = positions.mean(axis=0)
                     camera.lookat[2] = 0.7
                     host_data = mjx.get_data(model, state.environment.physics.data)
                     renderer.update_scene(host_data, camera=camera)
-                    frames.append(renderer.render().copy())
+                    frames.append(
+                        annotate_hierarchical_frame(
+                            renderer.render(),
+                            audit,
+                            stochastic_actions=self.runner.config.stochastic_actions,
+                            matchup="current self-play",
+                        )
+                    )
                     next_frame_time += 1.0 / self.fps
                 if bool(np.asarray(state.environment.done)):
                     terminated_at = simulation_time
@@ -124,7 +179,21 @@ class HierarchicalTagVideoCallback:
         output.parent.mkdir(parents=True, exist_ok=True)
         mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
         mediapy.write_video(output, frames, fps=self.fps)
+        termination = state.environment.termination
         return {
+            **audit,
+            **trajectory_diagnostics(positions_history, control_timestep, audit),
+            "arena_half_extent": self.runner.environment.config.arena_half_extent,
+            "termination": {
+                **tag_ending_metadata(termination, collection_cutoff=True),
+                "tagged": bool(np.asarray(termination.tagged)),
+                "fallen": np.asarray(termination.fallen).tolist(),
+                "out_of_bounds": np.asarray(termination.out_of_bounds).tolist(),
+                "timed_out": bool(np.asarray(termination.timed_out)),
+            },
+            "colored_geom_counts": colored_geom_counts,
+            "opponent_id": segment.opponent_id,
+            "stochastic_actions": self.runner.config.stochastic_actions,
             "duration": len(frames) / self.fps,
             "frames": len(frames),
             "learner_role": role,

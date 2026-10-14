@@ -174,6 +174,25 @@ def main(config: Config) -> None:
         stale_locomotion_batch,
         locomotion_targets,
     )
+    frozen_updater = HierarchicalPpoUpdater(
+        HierarchicalUpdateConfig(
+            freeze_locomotion=True,
+            locomotion_update_interval=1,
+            minibatch_size=4,
+        )
+    )
+    frozen_update = jax.jit(frozen_updater.update)
+    # Start with populated Adam state: freezing must suppress momentum as well
+    # as fresh gradients, including on an iteration where an update is due.
+    frozen_state = state_1
+    for _ in range(3):
+        frozen_state, frozen_metrics = frozen_update(
+            frozen_state,
+            strategy_batch,
+            strategy_targets,
+            locomotion_batch,
+            locomotion_targets,
+        )
     schedule = [
         [bool(metrics_0.strategy_updated), bool(metrics_0.locomotion_updated)],
         [bool(metrics_1.strategy_updated), bool(metrics_1.locomotion_updated)],
@@ -181,6 +200,23 @@ def main(config: Config) -> None:
     ]
     metric_leaves = jax.tree.leaves((metrics_0, metrics_1, metrics_2))
     checks = {
+        "locomotion_freeze_preserves_parameters_and_optimizer": (
+            _tree_equal(
+                state_1.parameters["locomotion"],
+                frozen_state.parameters["locomotion"],
+            )
+            and _tree_equal(
+                state_1.locomotion_optimizer_state,
+                frozen_state.locomotion_optimizer_state,
+            )
+            and int(frozen_state.locomotion_updates) == int(state_1.locomotion_updates)
+            and not bool(frozen_metrics.locomotion_updated)
+            and not bool(frozen_metrics.locomotion_rejected)
+            and float(frozen_metrics.locomotion_gradient_norm) == 0.0
+            and _tree_changed(
+                state_1.parameters["strategy"], frozen_state.parameters["strategy"]
+            )
+        ),
         "all_metrics_finite": all(
             bool(np.isfinite(np.asarray(value)).all()) for value in metric_leaves
         ),

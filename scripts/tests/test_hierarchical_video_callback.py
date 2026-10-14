@@ -50,11 +50,48 @@ def main() -> None:
             width=320,
             height=240,
         )
+        logged_images = []
+        logger.log_image = lambda **kwargs: logged_images.append(kwargs)
         callback(0, parameters)
         checks = {
             f"{role}_video": (output / "videos" / f"{role}_000000000000.mp4").is_file()
             for role in ("pursuer", "evader")
         }
+        checks["trajectory_images_logged_at_video_step"] = (
+            len(logged_images) == 2
+            and {item["key"] for item in logged_images}
+            == {"evaluation/pursuer_trajectory", "evaluation/evader_trajectory"}
+            and all(
+                item["environment_steps"] == 0 and item["path"].is_file()
+                for item in logged_images
+            )
+        )
+        metadata = {
+            role: json.loads(
+                (output / "videos" / f"{role}_000000000000.json").read_text()
+            )
+            for role in ("pursuer", "evader")
+        }
+        checks["physical_roles_and_colors_stay_fixed"] = all(
+            item["agent_roles"] == ["pursuer", "evader"]
+            and item["agent_role_encodings"] == [[1.0, 0.0], [0.0, 1.0]]
+            and item["selected_strategy_heads"] == ["pursuer_head", "evader_head"]
+            and item["colors"] == {"green": "pursuer", "orange": "evader"}
+            and item["roles_validated"]
+            for item in metadata.values()
+        )
+        checks["learner_selection_matches_video_role"] = (
+            metadata["pursuer"]["learner_index"] == 0
+            and metadata["evader"]["learner_index"] == 1
+        )
+        checks["all_agent_visual_geoms_colored"] = all(
+            min(item["colored_geom_counts"]) > 10 for item in metadata.values()
+        )
+        checks["plots_use_the_video_rollout_samples"] = all(
+            len(item["trajectory"]["time_seconds"]) == 3
+            and len(item["trajectory"]["positions_world_xy"]) == 3
+            for item in metadata.values()
+        )
     result = {
         "backend": jax.default_backend(),
         "checks": checks,
