@@ -99,6 +99,27 @@ class WandbMetricsLogger:
             }
         )
 
+    def log_image(
+        self,
+        *,
+        environment_steps: int,
+        path: Path,
+        caption: str,
+        key: str,
+    ) -> None:
+        """Attach a versioned plot or diagnostic image to the active run."""
+        if self._run is None:
+            return
+
+        import wandb
+
+        self._run.log(
+            {
+                "environment_steps": environment_steps,
+                key: wandb.Image(str(path), caption=caption),
+            }
+        )
+
     def log(
         self,
         *,

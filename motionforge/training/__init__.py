@@ -26,6 +26,7 @@ from motionforge.training.hierarchical_update import (
     HierarchicalUpdateMetrics,
 )
 from motionforge.training.opponents import make_stationary_hierarchical_opponent
+from motionforge.training.tag_elo import TagEloTracker
 from motionforge.training.tag_metrics import hierarchical_tag_training_metrics
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "HierarchicalUpdateMetrics",
     "PpoLossConfig",
     "PpoLossMetrics",
+    "TagEloTracker",
     "hierarchical_tag_training_metrics",
     "load_hierarchical_checkpoint",
     "locomotion_ppo_loss",

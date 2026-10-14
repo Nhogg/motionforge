@@ -12,8 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import jax
+import jax.numpy as jp
 import numpy as np
 
+from motionforge.callbacks import (
+    HierarchicalTagVideoCallback,
+    TagProgressPlotCallback,
+)
 from motionforge.cli import run_hydra
 from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.league import FixedLeague, LeagueOpponent, WeightedLeague
@@ -33,6 +38,7 @@ from motionforge.training import (
     HierarchicalPpoUpdater,
     HierarchicalTrainerConfig,
     HierarchicalUpdateConfig,
+    TagEloTracker,
     hierarchical_tag_training_metrics,
     load_hierarchical_checkpoint,
     make_stationary_hierarchical_opponent,
@@ -49,7 +55,7 @@ class Config:
     restore_checkpoint: Path | None = None
     historical_opponent_checkpoints: list[str] = field(default_factory=list)
     seed: int = 0
-    num_environments: int = 16
+    num_environments: int = 4096
     num_iterations: int = 10
     rollout_horizon: int = 500
     episode_duration: float = 10.0
@@ -58,14 +64,15 @@ class Config:
     historical_opponent_probability: float = 0.75
     opponent_mode: str = "warm_start"
     checkpoint_interval: int = 5
-    naconmax: int = 256
-    njmax: int = 512
+    naconmax: int = 2048
+    njmax: int = 4096
     strategy_learning_rate: float = 3e-4
     locomotion_learning_rate: float = 1e-5
     strategy_update_interval: int = 1
     locomotion_update_interval: int = 5
     maximum_gradient_norm: float = 1.0
     maximum_locomotion_approximate_kl: float = 0.01
+    minibatch_size: int = 1024
     strategy_discount: float = 1.0
     strategy_gae_lambda: float = 0.95
     learner_pursuer_probability: float = 0.5
@@ -76,6 +83,14 @@ class Config:
     wandb_entity: str | None = None
     wandb_name: str | None = None
     wandb_group: str | None = "hierarchical_tag"
+    wandb_videos: bool = True
+    wandb_video_interval_steps: int = 2_048_000
+    wandb_video_duration: float = 10.0
+    wandb_video_fps: int = 20
+    wandb_video_width: int = 960
+    wandb_video_height: int = 720
+    elo_baseline_pursuer_win_probability: float = 0.65
+    elo_learning_rate: float = 24.0
     output_dir: Path = Path("logs/hierarchical/training/tag_joint_smoke_a")
 
 
@@ -108,6 +123,11 @@ def _validate_config(config: Config) -> None:
         "checkpoint_interval",
         "naconmax",
         "njmax",
+        "minibatch_size",
+        "wandb_video_interval_steps",
+        "wandb_video_fps",
+        "wandb_video_width",
+        "wandb_video_height",
     ):
         if getattr(config, name) <= 0:
             raise ValueError(f"{name} must be positive")
@@ -141,6 +161,12 @@ def _validate_config(config: Config) -> None:
         raise ValueError("boundary_command_margin must be positive")
     if config.wandb_mode not in {"disabled", "online", "offline"}:
         raise ValueError("wandb_mode must be disabled, online, or offline")
+    if config.wandb_video_duration <= 0.0:
+        raise ValueError("wandb_video_duration must be positive")
+    if not 0.0 < config.elo_baseline_pursuer_win_probability < 1.0:
+        raise ValueError("elo_baseline_pursuer_win_probability must be in (0, 1)")
+    if config.elo_learning_rate <= 0.0:
+        raise ValueError("elo_learning_rate must be positive")
     if not config.locomotion_checkpoint.is_dir():
         raise FileNotFoundError(
             f"locomotion checkpoint does not exist: {config.locomotion_checkpoint}"
@@ -223,6 +249,7 @@ def main(config: Config) -> None:
         locomotion_update_interval=config.locomotion_update_interval,
         maximum_gradient_norm=config.maximum_gradient_norm,
         maximum_locomotion_approximate_kl=(config.maximum_locomotion_approximate_kl),
+        minibatch_size=config.minibatch_size,
     )
     updater = HierarchicalPpoUpdater(update_config)
     train_state = updater.initialize(parameters)
@@ -352,10 +379,35 @@ def main(config: Config) -> None:
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
+    start_iteration = int(train_state.iteration)
+    elo = TagEloTracker(
+        baseline_pursuer_win_probability=(config.elo_baseline_pursuer_win_probability),
+        learning_rate=config.elo_learning_rate,
+    )
+    progress_callback = TagProgressPlotCallback(
+        logger=logger,
+        output_dir=output_dir,
+    )
+    video_callback = HierarchicalTagVideoCallback(
+        runner=runner,
+        logger=logger,
+        output_dir=output_dir,
+        interval_steps=config.wandb_video_interval_steps,
+        duration=config.wandb_video_duration,
+        fps=config.wandb_video_fps,
+        width=config.wandb_video_width,
+        height=config.wandb_video_height,
+        seed=config.seed,
+    )
+    if config.wandb_videos:
+        video_callback(
+            start_iteration * config.rollout_horizon * config.num_environments,
+            train_state.parameters,
+        )
+
     start_time = time.monotonic()
     checkpoint_entries: list[str] = []
     records: list[dict[str, Any]] = []
-    start_iteration = int(train_state.iteration)
     for local_iteration in range(config.num_iterations):
         iteration = start_iteration + local_iteration
         configure_training_league(train_state.parameters)
@@ -379,6 +431,15 @@ def main(config: Config) -> None:
             "locomotion/entropy": _scalar(
                 iteration_result.update_metrics.locomotion.entropy
             ),
+            "locomotion/policy_loss": _scalar(
+                iteration_result.update_metrics.locomotion.policy_loss
+            ),
+            "locomotion/value_loss": _scalar(
+                iteration_result.update_metrics.locomotion.value_loss
+            ),
+            "locomotion/clip_fraction": _scalar(
+                iteration_result.update_metrics.locomotion.clip_fraction
+            ),
             "locomotion/gradient_norm": _scalar(
                 iteration_result.update_metrics.locomotion_gradient_norm
             ),
@@ -393,6 +454,15 @@ def main(config: Config) -> None:
             ),
             "strategy/entropy": _scalar(
                 iteration_result.update_metrics.strategy.entropy
+            ),
+            "strategy/policy_loss": _scalar(
+                iteration_result.update_metrics.strategy.policy_loss
+            ),
+            "strategy/value_loss": _scalar(
+                iteration_result.update_metrics.strategy.value_loss
+            ),
+            "strategy/clip_fraction": _scalar(
+                iteration_result.update_metrics.strategy.clip_fraction
             ),
             "strategy/gradient_norm": _scalar(
                 iteration_result.update_metrics.strategy_gradient_norm
@@ -412,6 +482,30 @@ def main(config: Config) -> None:
                 iteration_result.update_metrics.locomotion_rejected
             ),
             "training/strategy_updates": int(train_state.strategy_updates),
+            "training/strategy_updated": float(
+                iteration_result.update_metrics.strategy_updated
+            ),
+            "training/locomotion_updated": float(
+                iteration_result.update_metrics.locomotion_updated
+            ),
+            "targets/strategy_advantage_mean": _scalar(
+                iteration_result.strategy_targets.advantages.mean()
+            ),
+            "targets/strategy_advantage_std": _scalar(
+                iteration_result.strategy_targets.advantages.std()
+            ),
+            "targets/strategy_return_mean": _scalar(
+                iteration_result.strategy_targets.returns.mean()
+            ),
+            "targets/locomotion_advantage_mean": _scalar(
+                iteration_result.locomotion_targets.advantages.mean()
+            ),
+            "targets/locomotion_advantage_std": _scalar(
+                iteration_result.locomotion_targets.advantages.std()
+            ),
+            "targets/locomotion_return_mean": _scalar(
+                iteration_result.locomotion_targets.returns.mean()
+            ),
         }
         metrics.update(
             {
@@ -426,6 +520,48 @@ def main(config: Config) -> None:
             * config.rollout_horizon
             * config.num_environments
         )
+        learner_pursuer_win_rate = float(
+            np.clip(metrics["strategy/pursuer/episode_return_mean"], 0.0, 1.0)
+        )
+        opponent_pursuer_win_rate = float(
+            np.clip(-metrics["strategy/evader/episode_return_mean"], 0.0, 1.0)
+        )
+        metrics.update(
+            elo.update(
+                opponent_id=iteration_result.trajectory.opponent_id,
+                learner_pursuer_win_rate=learner_pursuer_win_rate,
+                opponent_pursuer_win_rate=opponent_pursuer_win_rate,
+                pursuer_games=config.num_environments // 2,
+                evader_games=config.num_environments // 2,
+            )
+        )
+        for category in ("historical", "stationary", "scripted", "recent"):
+            metrics[f"opponent/category/{category}"] = float(
+                iteration_result.trajectory.opponent_category == category
+            )
+        elapsed = max(time.monotonic() - start_time, 1e-9)
+        metrics["training/environment_steps_per_second"] = (
+            (local_iteration + 1)
+            * config.rollout_horizon
+            * config.num_environments
+            / elapsed
+        )
+        metrics["parameters/strategy_l2_norm"] = _scalar(
+            jp.sqrt(
+                sum(
+                    jp.sum(jp.square(leaf))
+                    for leaf in jax.tree.leaves(train_state.parameters["strategy"])
+                )
+            )
+        )
+        metrics["parameters/locomotion_l2_norm"] = _scalar(
+            jp.sqrt(
+                sum(
+                    jp.sum(jp.square(leaf))
+                    for leaf in jax.tree.leaves(train_state.parameters["locomotion"])
+                )
+            )
+        )
         finite = all(np.isfinite(value) for value in metrics.values())
         record = {
             "elapsed_seconds": time.monotonic() - start_time,
@@ -439,6 +575,9 @@ def main(config: Config) -> None:
         with metrics_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, sort_keys=True) + "\n")
         logger.log(environment_steps=environment_steps, metrics=metrics)
+        progress_callback(environment_steps, metrics)
+        if config.wandb_videos:
+            video_callback(environment_steps, train_state.parameters)
         print(json.dumps(record, sort_keys=True))
 
         should_checkpoint = (

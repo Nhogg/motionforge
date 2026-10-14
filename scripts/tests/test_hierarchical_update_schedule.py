@@ -129,6 +129,7 @@ def main(config: Config) -> None:
         HierarchicalUpdateConfig(
             strategy_update_interval=config.strategy_update_interval,
             locomotion_update_interval=config.locomotion_update_interval,
+            minibatch_size=4,
         )
     )
     state_0 = updater.initialize(parameters)

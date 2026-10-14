@@ -29,6 +29,7 @@ class HierarchicalUpdateConfig:
     locomotion_update_interval: int = 5
     maximum_gradient_norm: float = 1.0
     maximum_locomotion_approximate_kl: float = 0.01
+    minibatch_size: int | None = None
 
     def __post_init__(self) -> None:
         if self.strategy_learning_rate <= 0.0:
@@ -43,6 +44,8 @@ class HierarchicalUpdateConfig:
             raise ValueError("maximum_gradient_norm must be positive")
         if self.maximum_locomotion_approximate_kl <= 0.0:
             raise ValueError("maximum_locomotion_approximate_kl must be positive")
+        if self.minibatch_size is not None and self.minibatch_size <= 0:
+            raise ValueError("minibatch_size must be positive when provided")
 
 
 @struct.dataclass
@@ -127,12 +130,12 @@ class HierarchicalPpoUpdater:
         """Run whichever level updates are scheduled for this iteration."""
         strategy_due = state.iteration % self.config.strategy_update_interval == 0
         locomotion_due = state.iteration % self.config.locomotion_update_interval == 0
-        _, locomotion_preupdate_metrics = locomotion_ppo_loss(
+        _, locomotion_preupdate_metrics = self._loss(
+            locomotion_ppo_loss,
             state.parameters["locomotion"],
             locomotion_batch,
             locomotion_targets,
-            policy_config=self.policy_config,
-            loss_config=self.locomotion_loss_config,
+            self.locomotion_loss_config,
         )
         locomotion_accepted = (
             locomotion_due
@@ -144,16 +147,13 @@ class HierarchicalPpoUpdater:
         )
 
         def strategy_update(_):
-            (loss, metrics), gradients = jax.value_and_grad(
-                strategy_ppo_loss, has_aux=True
-            )(
+            metrics, gradients = self._loss_and_grad(
+                strategy_ppo_loss,
                 state.parameters["strategy"],
                 strategy_batch,
                 strategy_targets,
-                policy_config=self.policy_config,
-                loss_config=self.strategy_loss_config,
+                self.strategy_loss_config,
             )
-            del loss
             updates, optimizer_state = self.strategy_optimizer.update(
                 gradients,
                 state.strategy_optimizer_state,
@@ -163,12 +163,12 @@ class HierarchicalPpoUpdater:
             return parameters, optimizer_state, metrics, optax.global_norm(gradients)
 
         def strategy_skip(_):
-            _, metrics = strategy_ppo_loss(
+            _, metrics = self._loss(
+                strategy_ppo_loss,
                 state.parameters["strategy"],
                 strategy_batch,
                 strategy_targets,
-                policy_config=self.policy_config,
-                loss_config=self.strategy_loss_config,
+                self.strategy_loss_config,
             )
             return (
                 state.parameters["strategy"],
@@ -178,16 +178,13 @@ class HierarchicalPpoUpdater:
             )
 
         def locomotion_update(_):
-            (loss, metrics), gradients = jax.value_and_grad(
-                locomotion_ppo_loss, has_aux=True
-            )(
+            metrics, gradients = self._loss_and_grad(
+                locomotion_ppo_loss,
                 state.parameters["locomotion"],
                 locomotion_batch,
                 locomotion_targets,
-                policy_config=self.policy_config,
-                loss_config=self.locomotion_loss_config,
+                self.locomotion_loss_config,
             )
-            del loss
             updates, optimizer_state = self.locomotion_optimizer.update(
                 gradients,
                 state.locomotion_optimizer_state,
@@ -197,12 +194,12 @@ class HierarchicalPpoUpdater:
             return parameters, optimizer_state, metrics, optax.global_norm(gradients)
 
         def locomotion_skip(_):
-            _, metrics = locomotion_ppo_loss(
+            _, metrics = self._loss(
+                locomotion_ppo_loss,
                 state.parameters["locomotion"],
                 locomotion_batch,
                 locomotion_targets,
-                policy_config=self.policy_config,
-                loss_config=self.locomotion_loss_config,
+                self.locomotion_loss_config,
             )
             return (
                 state.parameters["locomotion"],
@@ -250,3 +247,118 @@ class HierarchicalPpoUpdater:
             locomotion_updated=locomotion_accepted,
             locomotion_rejected=locomotion_due & ~locomotion_accepted,
         )
+
+    def _loss(self, loss_function, parameters, batch, targets, loss_config):
+        if self.config.minibatch_size is None:
+            return loss_function(
+                parameters,
+                batch,
+                targets,
+                policy_config=self.policy_config,
+                loss_config=loss_config,
+            )
+        minibatches, target_minibatches = self._minibatches(batch, targets)
+
+        def evaluate(current_batch, current_targets):
+            return loss_function(
+                parameters,
+                current_batch,
+                current_targets,
+                policy_config=self.policy_config,
+                loss_config=loss_config,
+            )
+
+        first_loss, first_metrics = evaluate(
+            jax.tree.map(lambda value: value[0], minibatches),
+            jax.tree.map(lambda value: value[0], target_minibatches),
+        )
+
+        def accumulate(carry, values):
+            loss_sum, metric_sum = carry
+            current_batch, current_targets = values
+            loss, metrics = evaluate(current_batch, current_targets)
+            return (
+                loss_sum + loss,
+                jax.tree.map(lambda left, right: left + right, metric_sum, metrics),
+            ), None
+
+        count = minibatches.reward.shape[0]
+        (loss_sum, metric_sum), _ = jax.lax.scan(
+            accumulate,
+            (first_loss, first_metrics),
+            (
+                jax.tree.map(lambda value: value[1:], minibatches),
+                jax.tree.map(lambda value: value[1:], target_minibatches),
+            ),
+        )
+        return loss_sum / count, jax.tree.map(lambda value: value / count, metric_sum)
+
+    def _loss_and_grad(
+        self,
+        loss_function,
+        parameters,
+        batch,
+        targets,
+        loss_config,
+    ):
+        if self.config.minibatch_size is None:
+            (_, metrics), gradients = jax.value_and_grad(loss_function, has_aux=True)(
+                parameters,
+                batch,
+                targets,
+                policy_config=self.policy_config,
+                loss_config=loss_config,
+            )
+            return metrics, gradients
+        minibatches, target_minibatches = self._minibatches(batch, targets)
+
+        def evaluate(current_batch, current_targets):
+            (_, metrics), gradients = jax.value_and_grad(loss_function, has_aux=True)(
+                parameters,
+                current_batch,
+                current_targets,
+                policy_config=self.policy_config,
+                loss_config=loss_config,
+            )
+            return metrics, gradients
+
+        first_metrics, first_gradients = evaluate(
+            jax.tree.map(lambda value: value[0], minibatches),
+            jax.tree.map(lambda value: value[0], target_minibatches),
+        )
+
+        def accumulate(carry, values):
+            metric_sum, gradient_sum = carry
+            current_batch, current_targets = values
+            metrics, gradients = evaluate(current_batch, current_targets)
+            return (
+                jax.tree.map(lambda left, right: left + right, metric_sum, metrics),
+                jax.tree.map(lambda left, right: left + right, gradient_sum, gradients),
+            ), None
+
+        count = minibatches.reward.shape[0]
+        (metric_sum, gradient_sum), _ = jax.lax.scan(
+            accumulate,
+            (first_metrics, first_gradients),
+            (
+                jax.tree.map(lambda value: value[1:], minibatches),
+                jax.tree.map(lambda value: value[1:], target_minibatches),
+            ),
+        )
+        return jax.tree.map(lambda value: value / count, metric_sum), jax.tree.map(
+            lambda value: value / count, gradient_sum
+        )
+
+    def _minibatches(self, batch, targets):
+        size = self.config.minibatch_size
+        sample_count = batch.reward.shape[0]
+        if sample_count % size != 0:
+            raise ValueError(
+                f"sample count {sample_count} must be divisible by minibatch size {size}"
+            )
+        count = sample_count // size
+
+        def reshape(value):
+            return value.reshape((count, size) + value.shape[1:])
+
+        return jax.tree.map(reshape, batch), jax.tree.map(reshape, targets)
