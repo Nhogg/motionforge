@@ -24,8 +24,14 @@ class TagResetConfig:
     maximum_separation: float | None = None
     slope_degrees: float = 0.0
     slope_curriculum_degrees: float = 0.0
+    heading_noise_radians: float = 0.0
 
     def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.heading_noise_radians)
+            or not 0 <= self.heading_noise_radians <= math.pi
+        ):
+            raise ValueError("heading_noise_radians must be finite and within [0, pi]")
         if self.separation <= 0.0:
             raise ValueError("separation must be positive")
         minimum = (
@@ -146,6 +152,17 @@ def sample_tag_reset(
             ),
         ]
     )
+
+    if config.heading_noise_radians > 0.0:
+        # Independent robot headings, without changing the original spawn or
+        # separation streams. Default zero preserves the old reset exactly.
+        headings = headings + jax.random.uniform(
+            jax.random.fold_in(key, 2),
+            shape=(2,),
+            minval=-config.heading_noise_radians,
+            maxval=config.heading_noise_radians,
+        )
+        headings = jp.arctan2(jp.sin(headings), jp.cos(headings))
 
     if config.slope_curriculum_degrees > 0.0:
         terrain_index = jax.random.randint(

@@ -27,6 +27,7 @@ class WarpEnvConfig:
     maximum_separation: float | None = None
     slope_degrees: float = 0.0
     slope_curriculum_degrees: float = 0.0
+    heading_noise_radians: float = 0.0
     naconmax: int = 64
     njmax: int = 256
 
@@ -50,6 +51,7 @@ class WarpEnvConfig:
             maximum_separation=self.maximum_separation,
             slope_degrees=self.slope_degrees,
             slope_curriculum_degrees=self.slope_curriculum_degrees,
+            heading_noise_radians=self.heading_noise_radians,
         )
 
     @property
@@ -95,6 +97,7 @@ class WarpEnv:
             maximum_separation=self.config.maximum_separation,
             slope_degrees=self.config.slope_degrees,
             slope_curriculum_degrees=self.config.slope_curriculum_degrees,
+            heading_noise_radians=self.config.heading_noise_radians,
         )
         self.actuator_ids = jp.asarray(
             [agent.actuator_ids for agent in self.model_bundle.agents],
