@@ -66,6 +66,7 @@ class WarpEnvState:
     data: mjx.Data
     rng: jax.Array
     step_count: jax.Array
+    world_index: jax.Array
 
 
 class WarpEnv:
@@ -109,7 +110,11 @@ class WarpEnv:
     def action_shape(self) -> tuple[int, int]:
         return (2, 29)
 
-    def reset(self, key: jax.Array) -> WarpEnvState:
+    def reset(
+        self,
+        key: jax.Array,
+        world_index: jax.Array | int = 0,
+    ) -> WarpEnvState:
         """Reset physical state without assigning roles or task outcomes."""
         reset_key, next_key = jax.random.split(key)
         sampled = sample_tag_reset(
@@ -131,6 +136,7 @@ class WarpEnv:
             data=data,
             rng=next_key,
             step_count=jp.zeros((), dtype=jp.int32),
+            world_index=jp.asarray(world_index, dtype=jp.int32),
         )
 
     def step(

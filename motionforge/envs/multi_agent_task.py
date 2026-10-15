@@ -173,8 +173,13 @@ class MultiAgentTaskEnv(LeagueEnv):
         self,
         data: mjx.Data,
         step_count: jax.Array,
+        world_index: jax.Array | int = 0,
     ) -> MultiAgentTaskDiagnostics:
-        contact = detect_tag_contact(data, self.contact_layout)
+        contact = detect_tag_contact(
+            data,
+            self.contact_layout,
+            world_index=world_index,
+        )
         falls = detect_falls(data, self.fall_layout, self.fall_config)
         bounds = detect_out_of_bounds(data, self.bounds_layout, self.bounds_config)
         timeout = observe_episode_timeout(step_count, self.timeout_config)
@@ -194,9 +199,17 @@ class MultiAgentTaskEnv(LeagueEnv):
             elapsed_seconds=timeout.elapsed_seconds,
         )
 
-    def reset(self, key: jax.Array) -> MultiAgentTaskState:
-        physics = super().reset(key)
-        diagnostics = self._get_diagnostics(physics.data, physics.step_count)
+    def reset(
+        self,
+        key: jax.Array,
+        world_index: jax.Array | int = 0,
+    ) -> MultiAgentTaskState:
+        physics = super().reset(key, world_index)
+        diagnostics = self._get_diagnostics(
+            physics.data,
+            physics.step_count,
+            physics.world_index,
+        )
         return MultiAgentTaskState(
             physics=physics,
             observation=self._get_observation(physics.data),
@@ -221,7 +234,11 @@ class MultiAgentTaskEnv(LeagueEnv):
         joint_position_targets: jax.Array,
     ) -> MultiAgentTaskState:
         physics = super().step(state.physics, joint_position_targets)
-        diagnostics = self._get_diagnostics(physics.data, physics.step_count)
+        diagnostics = self._get_diagnostics(
+            physics.data,
+            physics.step_count,
+            physics.world_index,
+        )
         fall_counts = jp.where(
             diagnostics.fall_detected,
             state.fall_counts + 1,

@@ -20,6 +20,7 @@ from motionforge.envs.tag_endings import tag_ending_metadata
 from motionforge.evaluation.hierarchical_roles import (
     annotate_hierarchical_frame,
     audit_hierarchical_roles,
+    audit_hierarchical_role_trace,
     color_hierarchical_agents,
 )
 from motionforge.league import FixedLeague, LeagueOpponent
@@ -189,10 +190,12 @@ def main(config: Config) -> None:
     minimum_root_height = float("inf")
     maximum_command_norm = 0.0
     rollout_steps = round(config.duration / environment.config.control_timestep)
+    role_history = [np.asarray(state.roles)]
     try:
         for step_index in range(rollout_steps):
             state = step(segment, state)
             state.environment.physics.data.qpos.block_until_ready()
+            role_history.append(np.asarray(state.roles))
             frame_time = (step_index + 1) * environment.config.control_timestep
             positions = np.asarray(state.environment.diagnostics.planar_position)
             distance = float(np.linalg.norm(positions[1] - positions[0]))
@@ -227,11 +230,16 @@ def main(config: Config) -> None:
 
     if not frames:
         raise RuntimeError("no video frames were captured")
+    role_trace_audit = audit_hierarchical_role_trace(
+        np.stack(role_history),
+        pursuer_index=audit["pursuer_index"],
+    )
     config.output.parent.mkdir(parents=True, exist_ok=True)
     _write_video(config.output, frames, config.fps)
     termination = state.environment.termination
     payload = {
         **audit,
+        **role_trace_audit,
         "colored_geom_counts": colored_geom_counts,
         "opponent_id": opponent_id,
         "initial_separation_range": [minimum_separation, maximum_separation],

@@ -76,7 +76,32 @@ def main() -> None:
             item["agent_roles"] == ["pursuer", "evader"]
             and item["agent_role_encodings"] == [[1.0, 0.0], [0.0, 1.0]]
             and item["selected_strategy_heads"] == ["pursuer_head", "evader_head"]
+            and item["agent_policy_bindings"]
+            == [
+                {
+                    "physical_agent_index": 0,
+                    "role": "pursuer",
+                    "strategy_head": "pursuer_head",
+                    "parameter_source": "learner"
+                    if item["learner_index"] == 0
+                    else "opponent",
+                },
+                {
+                    "physical_agent_index": 1,
+                    "role": "evader",
+                    "strategy_head": "evader_head",
+                    "parameter_source": "learner"
+                    if item["learner_index"] == 1
+                    else "opponent",
+                },
+            ]
             and item["colors"] == {"green": "pursuer", "orange": "evader"}
+            and item["role_trace_validated"]
+            and item["role_trace_steps"] == 3
+            and all(
+                trace == [[1.0, 0.0], [0.0, 1.0]]
+                for trace in item["agent_role_trace"]
+            )
             and item["roles_validated"]
             for item in metadata.values()
         )

@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import jax
+import jax.numpy as jp
 import numpy as np
 
 from motionforge.cli import run_hydra
@@ -78,7 +79,8 @@ def main(config: Config) -> None:
     )
     train_state = updater.initialize(parameters)
     rollout_states = jax.vmap(runner.reset)(
-        jax.random.split(jax.random.PRNGKey(config.seed + 2), config.num_environments)
+        jax.random.split(jax.random.PRNGKey(config.seed + 2), config.num_environments),
+        jp.arange(config.num_environments, dtype=jp.int32),
     )
     next_train_state, next_rollout_states, result = trainer.train_batch_iteration(
         train_state,

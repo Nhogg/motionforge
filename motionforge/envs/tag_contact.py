@@ -65,7 +65,11 @@ def _belongs_to(
     )
 
 
-def _contact_buffers(data) -> tuple[jax.Array, jax.Array, jax.Array]:
+def _contact_buffers(
+    data,
+    *,
+    world_index: jax.Array | int = 0,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     """Return contact geom pairs, distances, and an active-contact mask."""
     if hasattr(data, "contact"):
         contact_geoms = jp.asarray(data.contact.geom)
@@ -77,16 +81,14 @@ def _contact_buffers(data) -> tuple[jax.Array, jax.Array, jax.Array]:
     contact_geoms = jp.asarray(impl.contact__geom)
     distances = jp.asarray(impl.contact__dist)
     world_ids = jp.asarray(impl.contact__worldid)
-    active_counts = jp.asarray(impl.nacon)
-
-    slots = jp.arange(distances.shape[0]) % impl.naconmax
-    # Inactive Warp contact slots do not promise a valid world id.  Indexing
-    # nacon with those sentinel/garbage ids is an out-of-bounds GPU gather and
-    # can poison the CUDA context before the inactive slot is masked below.
-    world_count = active_counts.shape[0]
-    valid_world = (world_ids >= 0) & (world_ids < world_count)
-    safe_world_ids = jp.clip(world_ids, 0, world_count - 1)
-    active = valid_world & (slots < active_counts[safe_world_ids])
+    # Warp stores one globally packed contact buffer for all vmapped worlds.
+    # ``nacon`` is the global number of active entries, not one count per
+    # world.  A vmapped state therefore needs its world id explicitly; without
+    # this mask every vmapped environment observes every world's contacts.
+    active_count = jp.asarray(impl.nacon).reshape(-1)[0]
+    slots = jp.arange(distances.shape[0])
+    active = slots < active_count
+    active = active & (world_ids == jp.asarray(world_index)[..., None])
 
     return contact_geoms, distances, active
 
@@ -94,9 +96,14 @@ def _contact_buffers(data) -> tuple[jax.Array, jax.Array, jax.Array]:
 def detect_tag_contact(
     data,
     layout: TagContactLayout,
+    *,
+    world_index: jax.Array | int = 0,
 ) -> TagContactObservation:
     """Detect active contacts containing one geom from each agent."""
-    contact_geoms, distances, active = _contact_buffers(data)
+    contact_geoms, distances, active = _contact_buffers(
+        data,
+        world_index=world_index,
+    )
     geom1 = contact_geoms[..., 0]
     geom2 = contact_geoms[..., 1]
 
@@ -110,7 +117,10 @@ def detect_tag_contact(
     )
 
     return TagContactObservation(
-        occurred=jp.any(inter_agent_contact),
-        count=jp.sum(inter_agent_contact),
-        minimum_distance=jp.min(jp.where(inter_agent_contact, distances, jp.inf)),
+        occurred=jp.any(inter_agent_contact, axis=-1),
+        count=jp.sum(inter_agent_contact, axis=-1),
+        minimum_distance=jp.min(
+            jp.where(inter_agent_contact, distances, jp.inf),
+            axis=-1,
+        ),
     )

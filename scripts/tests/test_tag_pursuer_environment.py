@@ -262,6 +262,12 @@ def main(config: Config) -> None:
                 np.asarray(repeated_wrapped_next.pipeline_state.tag_state.data.qpos),
             )
         ),
+        "wrapped_world_indices_preserved": bool(
+            np.array_equal(
+                np.asarray(wrapped_next.pipeline_state.tag_state.world_index),
+                np.arange(2, dtype=np.int32),
+            )
+        ),
         "wrapped_timeout_is_truncation": bool(
             np.asarray(wrapped_next.info["truncation"]).all()
             and np.asarray(wrapped_next.info["time_out"]).all()

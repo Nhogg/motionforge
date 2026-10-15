@@ -159,6 +159,7 @@ class TagEnvironmentState:
     step_count: jax.Array
     fall_counts: jax.Array
     done: jax.Array
+    world_index: jax.Array
 
 
 class TwoG1TagEnvironment:
@@ -266,8 +267,13 @@ class TwoG1TagEnvironment:
         self,
         data: mjx.Data,
         step_count: jax.Array,
+        world_index: jax.Array | int = 0,
     ) -> TagEnvironmentDiagnostics:
-        contact = detect_tag_contact(data, self.contact_layout)
+        contact = detect_tag_contact(
+            data,
+            self.contact_layout,
+            world_index=world_index,
+        )
         falls = detect_falls(data, self.fall_layout, self.fall_config)
         bounds = detect_out_of_bounds(data, self.bounds_layout, self.bounds_config)
         timeout = observe_episode_timeout(step_count, self.timeout_config)
@@ -288,7 +294,11 @@ class TwoG1TagEnvironment:
             elapsed_seconds=timeout.elapsed_seconds,
         )
 
-    def reset(self, key: jax.Array) -> TagEnvironmentState:
+    def reset(
+        self,
+        key: jax.Array,
+        world_index: jax.Array | int = 0,
+    ) -> TagEnvironmentState:
         """Create a deterministic episode state from an explicit key."""
         reset_key, next_key = jax.random.split(key)
         sampled = sample_tag_reset(
@@ -308,7 +318,8 @@ class TwoG1TagEnvironment:
         )
         data = mjx.forward(self.model, data)
         step_count = jp.zeros((), dtype=jp.int32)
-        diagnostics = self._get_diagnostics(data, step_count)
+        world_index = jp.asarray(world_index, dtype=jp.int32)
+        diagnostics = self._get_diagnostics(data, step_count, world_index)
 
         return TagEnvironmentState(
             data=data,
@@ -324,6 +335,7 @@ class TwoG1TagEnvironment:
             step_count=step_count,
             fall_counts=jp.zeros((2,), dtype=jp.int32),
             done=jp.zeros((), dtype=bool),
+            world_index=world_index,
         )
 
     def step(
@@ -353,7 +365,7 @@ class TwoG1TagEnvironment:
         )
 
         step_count = state.step_count + 1
-        diagnostics = self._get_diagnostics(data, step_count)
+        diagnostics = self._get_diagnostics(data, step_count, state.world_index)
         fall_counts = jp.where(
             diagnostics.fall_detected,
             state.fall_counts + 1,

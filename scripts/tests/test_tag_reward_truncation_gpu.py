@@ -63,7 +63,10 @@ def main():
     _, final_single, single = trainer.train_iteration(
         state, initial, seed=0, episode_id=0, environment_id=0
     )
-    initial_batch = jax.vmap(runner.reset)(jax.random.split(jax.random.PRNGKey(10), 2))
+    initial_batch = jax.vmap(runner.reset)(
+        jax.random.split(jax.random.PRNGKey(10), 2),
+        jp.arange(2, dtype=jp.int32),
+    )
     print(
         "reset buffer shapes",
         initial_batch.environment.physics.data.qpos.shape,

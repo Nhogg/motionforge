@@ -286,6 +286,12 @@ def main(config: Config) -> None:
                 np.asarray(wrapped_next.pipeline_state.tag_state.data.qpos)
             ).all()
         ),
+        "wrapped_world_indices_preserved": bool(
+            np.array_equal(
+                np.asarray(wrapped_next.pipeline_state.tag_state.world_index),
+                np.arange(2, dtype=np.int32),
+            )
+        ),
     }
     result = {
         "backend": jax.default_backend(),

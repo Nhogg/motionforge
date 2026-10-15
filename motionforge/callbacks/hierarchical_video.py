@@ -18,6 +18,7 @@ from motionforge.envs.tag_endings import tag_ending_metadata
 from motionforge.evaluation.hierarchical_roles import (
     annotate_hierarchical_frame,
     audit_hierarchical_roles,
+    audit_hierarchical_role_trace,
     color_hierarchical_agents,
 )
 from motionforge.evaluation.hierarchical_trajectory import (
@@ -148,6 +149,7 @@ class HierarchicalTagVideoCallback:
         rollout_steps = round(self.duration / control_timestep)
         terminated_at = None
         positions_history = [np.asarray(state.environment.diagnostics.planar_position)]
+        role_history = [np.asarray(state.roles)]
         try:
             for index in range(rollout_steps):
                 state = step(segment, state)
@@ -155,6 +157,7 @@ class HierarchicalTagVideoCallback:
                 simulation_time = (index + 1) * control_timestep
                 positions = np.asarray(state.environment.diagnostics.planar_position)
                 positions_history.append(positions)
+                role_history.append(np.asarray(state.roles))
                 if simulation_time >= next_frame_time:
                     camera.lookat[:2] = positions.mean(axis=0)
                     camera.lookat[2] = 0.7
@@ -179,12 +182,17 @@ class HierarchicalTagVideoCallback:
             renderer.close()
         if not frames:
             raise RuntimeError("no hierarchical video frames were captured")
+        role_trace_audit = audit_hierarchical_role_trace(
+            np.stack(role_history),
+            pursuer_index=audit["pursuer_index"],
+        )
         output.parent.mkdir(parents=True, exist_ok=True)
         mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
         mediapy.write_video(output, frames, fps=self.fps)
         termination = state.environment.termination
         return {
             **audit,
+            **role_trace_audit,
             **trajectory_diagnostics(positions_history, control_timestep, audit),
             "arena_half_extent": self.runner.environment.config.arena_half_extent,
             "termination": {

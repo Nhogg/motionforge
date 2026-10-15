@@ -256,9 +256,22 @@ class TagPursuerEnvironment(Env):
             self.config.relative_velocity_scale,
         )
 
-    def reset(self, rng: jax.Array) -> State:
+    def reset(
+        self,
+        rng: jax.Array,
+        world_index: jax.Array | int | None = None,
+    ) -> State:
         reset_rng, rollout_rng = jax.random.split(rng)
-        tag_state = self.tag_environment.reset(reset_rng)
+        if world_index is None:
+            world_index = (
+                jp.arange(rng.shape[0], dtype=jp.int32)
+                if rng.ndim > 1
+                else jp.asarray(0, dtype=jp.int32)
+            )
+        tag_state = self.tag_environment.reset(
+            reset_rng,
+            world_index=world_index,
+        )
         previous_command = jp.zeros(3, dtype=jp.float32)
         distance = jp.linalg.norm(
             tag_state.observation.relative_position[self.pursuer_index]
@@ -436,6 +449,23 @@ class TagPursuerEnvironment(Env):
         )
 
 
+class TagVmapWrapper(brax_training.Wrapper):
+    """Vectorize TAG environments while preserving each Warp world index."""
+
+    def __init__(self, env: Env, batch_size: int | None = None) -> None:
+        super().__init__(env)
+        self.batch_size = batch_size
+
+    def reset(self, rng: jax.Array) -> State:
+        if self.batch_size is not None:
+            rng = jax.random.split(rng, self.batch_size)
+        world_indices = jp.arange(rng.shape[0], dtype=jp.int32)
+        return jax.vmap(self.env.reset, in_axes=(0, 0))(rng, world_indices)
+
+    def step(self, state: State, action: jax.Array) -> State:
+        return jax.vmap(self.env.step)(state, action)
+
+
 class TagEpisodeWrapper(brax_training.Wrapper):
     """Brax episode accounting that preserves task-provided truncations."""
 
@@ -548,6 +578,7 @@ class TagAutoResetWrapper(brax_training.Wrapper):
             step_count=select(reset_tag.step_count, current_tag.step_count),
             fall_counts=select(reset_tag.fall_counts, current_tag.fall_counts),
             done=select(reset_tag.done, current_tag.done),
+            world_index=select(reset_tag.world_index, current_tag.world_index),
         )
         pipeline_state = current_pipeline.replace(
             tag_state=tag_state,
@@ -585,6 +616,6 @@ def wrap_tag_pursuer_for_training(
     """Vectorize and auto-reset while preserving timeout bootstrapping."""
     if randomization_fn is not None:
         raise ValueError("Tag pursuer training does not support domain randomization")
-    wrapped = brax_training.VmapWrapper(env)
+    wrapped = TagVmapWrapper(env)
     wrapped = TagEpisodeWrapper(wrapped, episode_length, action_repeat)
     return TagAutoResetWrapper(wrapped)

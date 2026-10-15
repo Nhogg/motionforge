@@ -527,7 +527,8 @@ def main(config: Config) -> None:
         configure_training_league(train_state.parameters)
         reset_key = jax.random.fold_in(jax.random.PRNGKey(config.seed), iteration)
         rollout_states = jax.vmap(runner.reset)(
-            jax.random.split(reset_key, config.num_environments)
+            jax.random.split(reset_key, config.num_environments),
+            jp.arange(config.num_environments, dtype=jp.int32),
         )
         train_state, final_rollout_states, iteration_result = (
             trainer.train_batch_iteration(

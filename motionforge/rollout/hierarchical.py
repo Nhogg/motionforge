@@ -56,6 +56,7 @@ class HierarchicalRolloutConfig:
     action_scale: float = 0.5
     learner_pursuer_probability: float = 0.5
     stochastic_actions: bool = False
+    stochastic_locomotion_actions: bool | None = None
     boundary_command_safety_enabled: bool = True
     boundary_command_margin: float = 1.0
     tag_reward: TagRewardConfig = field(default_factory=TagRewardConfig)
@@ -76,6 +77,15 @@ class HierarchicalRolloutConfig:
             raise ValueError("boundary_command_margin must be positive")
         if not 0.0 <= self.learner_pursuer_probability <= 1.0:
             raise ValueError("learner_pursuer_probability must be in [0, 1]")
+
+    @property
+    def sample_locomotion_actions(self) -> bool:
+        """An omitted motor override preserves the historical joint switch."""
+        return (
+            self.stochastic_actions
+            if self.stochastic_locomotion_actions is None
+            else self.stochastic_locomotion_actions
+        )
 
     @property
     def locomotion_steps_per_strategy_step(self) -> int:
@@ -190,9 +200,13 @@ class HierarchicalRolloutRunner:
             * self.config.gait_frequency_hz
         )
 
-    def reset(self, key: jax.Array) -> HierarchicalRolloutState:
+    def reset(
+        self,
+        key: jax.Array,
+        world_index: jax.Array | int = 0,
+    ) -> HierarchicalRolloutState:
         environment_key, policy_key = jax.random.split(key)
-        environment_state = self.environment.reset(environment_key)
+        environment_state = self.environment.reset(environment_key, world_index)
         return HierarchicalRolloutState(
             environment=environment_state,
             strategy_actions=jp.zeros((2, 3), dtype=jp.float32),
@@ -490,7 +504,7 @@ class HierarchicalRolloutRunner:
             normalized_locomotion,
         )
         locomotion_entropy = diagonal_normal_entropy(locomotion.log_std)
-        if self.config.stochastic_actions:
+        if self.config.sample_locomotion_actions:
             action, locomotion_log_probability = jax.vmap(
                 tanh_normal_sample_and_log_prob
             )(

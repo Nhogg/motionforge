@@ -14,6 +14,7 @@ from motionforge.envs import MultiAgentTaskConfig, MultiAgentTaskEnv
 from motionforge.envs.tag_endings import tag_ending_metadata
 from motionforge.evaluation.hierarchical_roles import (
     audit_hierarchical_roles,
+    audit_hierarchical_role_trace,
 )
 from motionforge.evaluation.hierarchical_trajectory import (
     plot_path,
@@ -137,10 +138,10 @@ def main(config: Config) -> None:
         roles.append(np.asarray(state.roles))
         if bool(np.asarray(state.environment.done)):
             break
-    if not np.array_equal(
-        np.asarray(roles), np.broadcast_to(roles[0], np.shape(roles))
-    ):
-        raise RuntimeError("physical-agent role encodings changed during rollout")
+    role_trace_audit = audit_hierarchical_role_trace(
+        np.stack(roles),
+        pursuer_index=audit["pursuer_index"],
+    )
     diagnostics = trajectory_diagnostics(positions, dt, audit)
     diagnostics["trajectory"]["executed_commands_heading_frame"] = np.asarray(
         commands
@@ -148,6 +149,7 @@ def main(config: Config) -> None:
     termination = state.environment.termination
     payload = {
         **audit,
+        **role_trace_audit,
         **diagnostics,
         "checkpoint": str(config.checkpoint.resolve()),
         "checkpoint_iteration": int(learner.iteration),

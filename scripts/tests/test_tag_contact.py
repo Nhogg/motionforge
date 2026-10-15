@@ -12,6 +12,7 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
+import jax.numpy as jp
 
 from motionforge.cli import run_hydra
 from motionforge.envs.tag_contact import (
@@ -74,6 +75,38 @@ def main(config: Config) -> None:
         np.asarray(overlapping_contact.minimum_distance)
     )
 
+    class WarpImpl:
+        def __init__(self, world_ids, active_count):
+            pair = [
+                layout.agent0_geom_ids[0],
+                layout.agent1_geom_ids[0],
+            ]
+            self.contact__geom = jp.asarray([pair] * len(world_ids), dtype=jp.int32)
+            self.contact__dist = jp.asarray(
+                [-0.01] * len(world_ids),
+                dtype=jp.float32,
+            )
+            self.contact__worldid = jp.asarray(world_ids, dtype=jp.int32)
+            self.nacon = jp.asarray([active_count], dtype=jp.int32)
+            self.naconmax = len(world_ids)
+
+    class WarpData:
+        def __init__(self, world_ids, active_count):
+            self._impl = WarpImpl(world_ids, active_count)
+
+    def isolated_worlds(world_ids, active_count):
+        data = WarpData(world_ids, active_count)
+        return tuple(
+            detect_tag_contact(data, layout, world_index=index)
+            for index in (0, 1)
+        )
+
+    world0_only = isolated_worlds([0, 1, 0, 1], 1)
+    world1_only = isolated_worlds([1, 0, 1, 0], 1)
+    both_worlds = isolated_worlds([0, 1, 0, 1], 2)
+    reversed_worlds = isolated_worlds([1, 0, 1, 0], 2)
+    no_worlds = isolated_worlds([0, 1, 0, 1], 0)
+
     checks = {
         "inter_agent_pairs_created": bundle.model.npair == 74,
         "no_tag_when_separated": not separated_occurred,
@@ -81,6 +114,33 @@ def main(config: Config) -> None:
         "tag_contact_count": overlapping_count > 0,
         "tag_distance_finite": bool(np.isfinite(overlapping_minimum_distance)),
         "tag_distance_nonpositive": bool(overlapping_minimum_distance <= 0.0),
+        "warp_world0_only_isolated": (
+            bool(np.asarray(world0_only[0].occurred))
+            and not bool(np.asarray(world0_only[1].occurred))
+            and int(np.asarray(world0_only[0].count)) == 1
+            and int(np.asarray(world0_only[1].count)) == 0
+        ),
+        "warp_world1_only_isolated": (
+            not bool(np.asarray(world1_only[0].occurred))
+            and bool(np.asarray(world1_only[1].occurred))
+            and int(np.asarray(world1_only[0].count)) == 0
+            and int(np.asarray(world1_only[1].count)) == 1
+        ),
+        "warp_both_worlds_detected": all(
+            bool(np.asarray(observation.occurred))
+            and int(np.asarray(observation.count)) == 1
+            for observation in both_worlds
+        ),
+        "warp_reversed_world_order_detected": all(
+            bool(np.asarray(observation.occurred))
+            and int(np.asarray(observation.count)) == 1
+            for observation in reversed_worlds
+        ),
+        "warp_no_active_contacts": all(
+            not bool(np.asarray(observation.occurred))
+            and int(np.asarray(observation.count)) == 0
+            for observation in no_worlds
+        ),
     }
 
     result = {

@@ -12,7 +12,6 @@ from pathlib import Path
 import jax
 import jax.numpy as jp
 from brax.envs.base import Env, State
-from brax.envs.wrappers import training as brax_training
 from flax import struct
 
 from motionforge.controllers import (
@@ -30,6 +29,7 @@ from motionforge.envs.tag_environment import (
 from motionforge.envs.tag_pursuer import (
     TagAutoResetWrapper,
     TagEpisodeWrapper,
+    TagVmapWrapper,
     pursuer_action_to_command,
     pursuer_observation,
 )
@@ -274,9 +274,22 @@ class TagEvaderEnvironment(Env):
             )
         }
 
-    def reset(self, rng: jax.Array) -> State:
+    def reset(
+        self,
+        rng: jax.Array,
+        world_index: jax.Array | int | None = None,
+    ) -> State:
         reset_rng, rollout_rng = jax.random.split(rng)
-        tag_state = self.tag_environment.reset(reset_rng)
+        if world_index is None:
+            world_index = (
+                jp.arange(rng.shape[0], dtype=jp.int32)
+                if rng.ndim > 1
+                else jp.asarray(0, dtype=jp.int32)
+            )
+        tag_state = self.tag_environment.reset(
+            reset_rng,
+            world_index=world_index,
+        )
         zero_command = jp.zeros(3, dtype=jp.float32)
         distance = jp.linalg.norm(
             tag_state.observation.relative_position[self.evader_index]
@@ -445,6 +458,6 @@ def wrap_tag_evader_for_training(
     """Vectorize and fresh-reset the single-agent evader environment."""
     if randomization_fn is not None:
         raise ValueError("Tag evader training does not support domain randomization")
-    wrapped = brax_training.VmapWrapper(env)
+    wrapped = TagVmapWrapper(env)
     wrapped = TagEpisodeWrapper(wrapped, episode_length, action_repeat)
     return TagAutoResetWrapper(wrapped)

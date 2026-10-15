@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import jax
+import jax.numpy as jp
 import numpy as np
 from brax.training import checkpoint
 from brax.training.acme import running_statistics
@@ -58,7 +59,8 @@ def main(config: Config) -> None:
     split_keys = jax.vmap(jax.random.split)(input_keys)
     environment_reset_keys = split_keys[:, 0]
     standalone_observations = jax.vmap(environment.reset)(
-        environment_reset_keys
+        environment_reset_keys,
+        jp.arange(config.batch_size, dtype=jp.int32),
     ).obs
 
     networks = make_tag_pursuer_ppo_networks(running_statistics.normalize)

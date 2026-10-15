@@ -46,10 +46,22 @@ def audit_hierarchical_roles(*, pursuer_index, segment, roles) -> dict:
     if segment.learner_index != expected_learner:
         raise ValueError("learner role disagrees with its physical-agent index")
     names = ["pursuer" if i == pursuer_index else "evader" for i in range(2)]
+    bindings = [
+        {
+            "physical_agent_index": i,
+            "role": name,
+            "strategy_head": f"{name}_head",
+            "parameter_source": (
+                "learner" if i == segment.learner_index else "opponent"
+            ),
+        }
+        for i, name in enumerate(names)
+    ]
     return {
         "agent_roles": names,
         "agent_role_encodings": actual.tolist(),
         "selected_strategy_heads": [f"{name}_head" for name in names],
+        "agent_policy_bindings": bindings,
         "pursuer_index": pursuer_index,
         "evader_index": 1 - pursuer_index,
         "learner_index": segment.learner_index,
@@ -58,6 +70,34 @@ def audit_hierarchical_roles(*, pursuer_index, segment, roles) -> dict:
         "opponent_role": segment.opponent_role,
         "colors": {"green": "pursuer", "orange": "evader"},
         "roles_validated": True,
+    }
+
+
+def audit_hierarchical_role_trace(role_trace, *, pursuer_index) -> dict:
+    """Validate the physical role encoding at every collected rollout sample."""
+    if pursuer_index not in (0, 1):
+        raise ValueError("pursuer_index must be zero or one")
+    expected = np.eye(2, dtype=np.float32)
+    if pursuer_index == 1:
+        expected = expected[::-1]
+    actual = np.asarray(role_trace)
+    if actual.ndim != 3 or actual.shape[1:] != (2, 2):
+        raise ValueError(
+            "role trace must have shape (steps, 2, 2); "
+            f"got {actual.shape}"
+        )
+    if not np.all(np.isin(actual, (0.0, 1.0))):
+        raise ValueError("role trace contains non-binary encodings")
+    if not np.all(np.asarray(actual.sum(axis=-1)) == 1.0):
+        raise ValueError("role trace contains non-one-hot agent encodings")
+    if not np.all(np.asarray(actual.sum(axis=1)) == 1.0):
+        raise ValueError("role trace contains duplicate physical roles")
+    if not np.array_equal(actual, np.broadcast_to(expected, actual.shape)):
+        raise ValueError("physical-agent role encodings changed during rollout")
+    return {
+        "agent_role_trace": actual.tolist(),
+        "role_trace_steps": int(actual.shape[0]),
+        "role_trace_validated": True,
     }
 
 
