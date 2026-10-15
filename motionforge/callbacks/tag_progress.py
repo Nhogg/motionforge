@@ -1,4 +1,7 @@
-"""Live, publication-readable TAG reward/skill/difficulty plots."""
+"""Role-separated TAG return and fixed-reference-calibrated diagnostic plots.
+
+Missing measurements remain missing; success-only legacy Elo is never substituted.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +14,26 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter, MultipleLocator, PercentFormatter
+import numpy as np
+from matplotlib.ticker import FuncFormatter, PercentFormatter
 
 from motionforge.logging.wandb import WandbMetricsLogger
+
+
+def progress_series(history: list[dict], role: str) -> dict[str, list[float]]:
+    if role not in ("pursuer", "evader"):
+        raise ValueError("Benchmark series must remain role separated")
+    keys = {
+        "steps": "environment_steps",
+        "reward": f"strategy/{role}/episode_return_mean",
+        "skill": f"benchmark/{role}/relative_skill",
+        "difficulty": f"benchmark/{role}/opponent_difficulty",
+        "completion": f"benchmark/{role}/observed_completion",
+    }
+    return {
+        name: [float(row.get(key, float("nan"))) for row in history]
+        for name, key in keys.items()
+    }
 
 
 @dataclass
@@ -23,8 +43,7 @@ class TagProgressPlotCallback:
     history: list[dict[str, float]] = field(default_factory=list)
 
     def __call__(self, environment_steps: int, metrics: dict[str, float]) -> None:
-        row = {"environment_steps": float(environment_steps), **metrics}
-        self.history.append(row)
+        self.history.append({**metrics, "environment_steps": float(environment_steps)})
         plot_dir = self.output_dir / "plots"
         plot_dir.mkdir(parents=True, exist_ok=True)
         for role in ("pursuer", "evader", "combined"):
@@ -34,97 +53,75 @@ class TagProgressPlotCallback:
                 environment_steps=environment_steps,
                 path=path,
                 caption=(
-                    f"{role.title()} reward, Bradley–Terry skill, and matchup "
-                    f"difficulty through {environment_steps:,} environment steps"
+                    f"{role}: shaped return; online relative skill calibrated to a "
+                    "frozen reference; difficulty is that reference's failure rate "
+                    "against the sampled opponent, not 1 minus learner skill. "
+                    "Unknown challenges remain missing. Not a game-win probability."
                 ),
                 key=f"progress/{role}",
             )
 
     def _plot_role(self, role: str, path: Path) -> None:
-        steps = [row["environment_steps"] for row in self.history]
-        if role == "combined":
-            rewards = [
-                0.5
-                * (
-                    row["strategy/pursuer/episode_return_mean"]
-                    + row["strategy/evader/episode_return_mean"]
-                    + 1.0
-                )
-                for row in self.history
-            ]
-        else:
-            rewards = [
-                row[f"strategy/{role}/episode_return_mean"] for row in self.history
-            ]
-        running_maximum = []
-        for reward in rewards:
-            running_maximum.append(
-                reward if not running_maximum else max(running_maximum[-1], reward)
+        roles = ("pursuer", "evader") if role == "combined" else (role,)
+        figure, axes = plt.subplots(
+            len(roles), 1, figsize=(12.5, 5.8 * len(roles)), squeeze=False
+        )
+        for current_role, reward_axis in zip(roles, axes[:, 0], strict=True):
+            values = progress_series(self.history, current_role)
+            probability_axis = reward_axis.twinx()
+            reward_axis.plot(
+                values["steps"],
+                values["reward"],
+                color="#2563eb",
+                linewidth=2,
+                label="Shaped episode return",
             )
-        skill = [row[f"elo/{role}/perceived_skill"] for row in self.history]
-        difficulty = [row[f"elo/{role}/task_difficulty"] for row in self.history]
-
-        figure, reward_axis = plt.subplots(figsize=(12.5, 7.0))
-        probability_axis = reward_axis.twinx()
-        reward_axis.plot(
-            steps,
-            rewards,
-            color="#2563eb",
-            linewidth=2.4,
-            marker="o",
-            label="Episode reward",
+            for name, color, label in (
+                ("skill", "#16a34a", "Relative skill estimate (fixed reference = 50%)"),
+                ("difficulty", "#dc2626", "Difficulty (fixed-reference failure rate)"),
+                ("completion", "#6b7280", "Observed window completion"),
+            ):
+                if np.any(np.isfinite(values[name])):
+                    probability_axis.plot(
+                        values["steps"],
+                        values[name],
+                        color=color,
+                        linewidth=1 if name == "completion" else 2,
+                        alpha=0.5 if name == "completion" else 1,
+                        linestyle=":" if name == "completion" else "-",
+                        label=label,
+                    )
+            if not np.any(np.isfinite(values["skill"])):
+                reward_axis.text(
+                    0.02,
+                    0.94,
+                    "Skill / difficulty not calibrated — replay required",
+                    transform=reward_axis.transAxes,
+                    va="top",
+                    color="#b91c1c",
+                )
+            reward_axis.set_title(
+                f"Hierarchical TAG — {current_role.title()}", loc="left"
+            )
+            reward_axis.set_xlabel("Environment steps")
+            reward_axis.set_ylabel("Shaped strategy return (not terminal payoff)")
+            probability_axis.set_ylabel(
+                "Reference-relative estimate / completion fraction"
+            )
+            reward_axis.xaxis.set_major_formatter(
+                FuncFormatter(lambda value, _: f"{value / 1e6:.1f}M")
+            )
+            probability_axis.yaxis.set_major_formatter(PercentFormatter(xmax=1))
+            probability_axis.set_ylim(0, 1)
+            reward_axis.grid(alpha=0.25)
+            left, left_labels = reward_axis.get_legend_handles_labels()
+            right, right_labels = probability_axis.get_legend_handles_labels()
+            reward_axis.legend(left + right, left_labels + right_labels, loc="best")
+        figure.suptitle(
+            "Finite-window benchmarks — role separated; no cancelling combined rating",
+            fontsize=11,
         )
-        reward_axis.plot(
-            steps,
-            running_maximum,
-            color="#1e3a8a",
-            linestyle="--",
-            linewidth=1.8,
-            label="Running maximum reward",
-        )
-        probability_axis.plot(
-            steps,
-            skill,
-            color="#16a34a",
-            linewidth=2.3,
-            marker="o",
-            label="Perceived skill (Elo/BT)",
-        )
-        probability_axis.plot(
-            steps,
-            difficulty,
-            color="#dc2626",
-            linewidth=2.3,
-            marker="o",
-            label="Matchup difficulty (Elo/BT)",
-        )
-        reward_axis.set_title(
-            f"Hierarchical TAG — {role.title()} training progression",
-            loc="left",
-            fontsize=16,
-            fontweight="bold",
-        )
-        reward_axis.set_xlabel("Environment steps")
-        reward_axis.set_ylabel("Terminal episode reward")
-        probability_axis.set_ylabel("Probability / normalized rating")
-        reward_axis.xaxis.set_major_formatter(
-            FuncFormatter(lambda value, _: f"{value / 1e6:.1f}M")
-        )
-        probability_axis.yaxis.set_major_locator(MultipleLocator(0.1))
-        probability_axis.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
-        probability_axis.set_ylim(0.0, 1.0)
-        reward_axis.grid(color="#d1d5db", linewidth=0.8, alpha=0.85)
-        reward_axis.set_axisbelow(True)
-        reward_axis.spines["top"].set_visible(False)
-        probability_axis.spines["top"].set_visible(False)
-        left_handles, left_labels = reward_axis.get_legend_handles_labels()
-        right_handles, right_labels = probability_axis.get_legend_handles_labels()
-        reward_axis.legend(
-            left_handles + right_handles,
-            left_labels + right_labels,
-            loc="best",
-            framealpha=0.95,
-        )
-        figure.tight_layout()
-        figure.savefig(path, bbox_inches="tight", dpi=180)
+        figure.tight_layout(rect=(0, 0, 1, 0.97))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(path, bbox_inches="tight", dpi=150)
         plt.close(figure)

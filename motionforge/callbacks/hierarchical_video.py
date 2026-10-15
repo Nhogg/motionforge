@@ -165,6 +165,9 @@ class HierarchicalTagVideoCallback:
                             renderer.render(),
                             audit,
                             stochastic_actions=self.runner.config.stochastic_actions,
+                            stochastic_locomotion_actions=(
+                                self.runner.config.sample_locomotion_actions
+                            ),
                             matchup="current self-play",
                         )
                     )
@@ -194,6 +197,22 @@ class HierarchicalTagVideoCallback:
             "colored_geom_counts": colored_geom_counts,
             "opponent_id": segment.opponent_id,
             "stochastic_actions": self.runner.config.stochastic_actions,
+            "stochastic_locomotion_actions": (
+                self.runner.config.sample_locomotion_actions
+            ),
+            "strategy_action_mode": (
+                "stochastic"
+                if self.runner.config.stochastic_actions
+                else "deterministic"
+            ),
+            "motor_action_mode": (
+                "stochastic"
+                if self.runner.config.sample_locomotion_actions
+                else "deterministic"
+            ),
+            "initial_heading_noise_radians": getattr(
+                self.runner.environment.config, "heading_noise_radians", 0.0
+            ),
             "duration": len(frames) / self.fps,
             "frames": len(frames),
             "learner_role": role,
