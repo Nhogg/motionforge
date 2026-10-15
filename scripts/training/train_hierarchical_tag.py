@@ -47,6 +47,7 @@ from motionforge.training import (
     save_hierarchical_checkpoint,
     validate_full_episode_rollout,
 )
+from motionforge.training.tag_benchmark_ratings import TagBenchmarkRatings
 
 
 @dataclass
@@ -64,6 +65,7 @@ class Config:
     episode_duration: float = 10.0
     minimum_initial_separation: float = 2.0
     maximum_initial_separation: float = 2.0
+    initial_heading_noise_radians: float = 0.0
     historical_opponent_probability: float = 0.75
     recent_opponent_probability: float | None = None
     opponent_mode: str = "warm_start"
@@ -98,6 +100,7 @@ class Config:
     wandb_video_height: int = 720
     elo_baseline_pursuer_win_probability: float = 0.65
     elo_learning_rate: float = 24.0
+    benchmark_calibration_file: Path | None = None
     output_dir: Path = Path("logs/hierarchical/training/tag_joint_smoke_a")
 
 
@@ -122,6 +125,30 @@ def _scalar(value: Any) -> float:
     return float(np.asarray(value))
 
 
+def benchmark_tracker(config: Config, runner):
+    """Logging only: never substitute an unmeasured difficulty prior."""
+    group = None
+    if config.benchmark_calibration_file is not None:
+        from motionforge.evaluation.tag_progress_calibration import select_calibration
+
+        if config.minimum_initial_separation != config.maximum_initial_separation:
+            raise ValueError("Benchmark calibration requires matching fixed separation")
+        collection = json.loads(config.benchmark_calibration_file.read_text())
+        group = select_calibration(
+            collection,
+            heading_noise_radians=config.initial_heading_noise_radians,
+            stochastic_locomotion_actions=runner.config.sample_locomotion_actions,
+            initial_separation=config.minimum_initial_separation,
+            duration=min(
+                config.episode_duration,
+                config.rollout_horizon * runner.environment.config.control_timestep,
+            ),
+        )
+    return TagBenchmarkRatings(
+        calibration={} if group is None else group["calibration"]
+    ), group
+
+
 def mixed_opponent_probabilities(historical: float, recent: float | None = None):
     """Keep legacy equal auxiliaries unless a current-policy share is explicit."""
     if not 0.0 < historical < 1.0:
@@ -144,6 +171,11 @@ def mixed_opponent_probabilities(historical: float, recent: float | None = None)
 
 
 def _validate_config(config: Config) -> None:
+    if (
+        not np.isfinite(config.initial_heading_noise_radians)
+        or not 0 <= config.initial_heading_noise_radians <= np.pi
+    ):
+        raise ValueError("initial_heading_noise_radians must be within [0, pi]")
     for name in (
         "num_environments",
         "num_iterations",
@@ -255,6 +287,7 @@ def main(config: Config) -> None:
             separation=config.minimum_initial_separation,
             minimum_separation=config.minimum_initial_separation,
             maximum_separation=config.maximum_initial_separation,
+            heading_noise_radians=config.initial_heading_noise_radians,
             naconmax=contact_capacity,
             njmax=config.njmax,
         ),
@@ -427,6 +460,10 @@ def main(config: Config) -> None:
         "restore_checkpoint": restored_from,
         "update_config": asdict(update_config),
     }
+    benchmark, benchmark_group = benchmark_tracker(config, runner)
+    manifest["benchmark_rating_protocol"] = benchmark.protocol
+    manifest["benchmark_calibration"] = benchmark_group
+    manifest["legacy_elo_status"] = "success_only_censored_diagnostic_not_skill"
     logger = WandbMetricsLogger(
         mode=config.wandb_mode,
         project=config.wandb_project,
@@ -622,6 +659,18 @@ def main(config: Config) -> None:
                     evader_games=evader_games,
                 )
             )
+        # Full-window benchmark scores are diagnostics, not terminal payoffs.
+        # Each role updates independently; censored TAGs are not the denominator.
+        metrics.update(
+            benchmark.update_from_training_metrics(
+                iteration_result.trajectory.opponent_id,
+                metrics,
+                {
+                    role: int(metrics[f"strategy/{role}/episodes"])
+                    for role in ("pursuer", "evader")
+                },
+            )
+        )
         for category in ("historical", "stationary", "scripted", "recent"):
             metrics[f"opponent/category/{category}"] = float(
                 iteration_result.trajectory.opponent_category == category
