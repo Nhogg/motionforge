@@ -133,9 +133,16 @@ def plot_path(payload: dict, output: Path) -> None:
         if "environment_steps" in payload
         else f"iter {payload['checkpoint_iteration']}"
     )
+    reset_label = f"heading noise ±{np.degrees(payload.get('initial_heading_noise_radians', 0.0)):.0f}°"
+    intervention_label = (
+        f" | command intervention={payload['diagnostic_mode']}"
+        if payload.get("diagnostic_mode", "learned") != "learned"
+        else ""
+    )
     fig.suptitle(
         f"{name} / {point}\n"
-        f"{payload['opponent_id']} | {mode} | seed {payload['seed']} | tag={payload['termination']['tagged']}",
+        f"{payload['opponent_id']} | {mode} | seed {payload['seed']} | tag={payload['termination']['tagged']}\n"
+        f"{reset_label}{intervention_label}",
         fontsize=10,
     )
     output.parent.mkdir(parents=True, exist_ok=True)

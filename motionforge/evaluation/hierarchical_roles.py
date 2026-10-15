@@ -66,7 +66,9 @@ def _font(size):
     return ImageFont.load_default(size=size)
 
 
-def annotate_hierarchical_frame(frame, audit, *, stochastic_actions, matchup):
+def annotate_hierarchical_frame(
+    frame, audit, *, stochastic_actions, matchup, stochastic_locomotion_actions=None
+):
     """Put the actual roles in the video itself, independent of its caption."""
     result = Image.fromarray(frame)
     draw = ImageDraw.Draw(result)
@@ -86,6 +88,12 @@ def annotate_hierarchical_frame(frame, audit, *, stochastic_actions, matchup):
         fill=tuple(int(255 * v) for v in EVADER_COLOR),
     )
     mode = "stochastic" if stochastic_actions else "deterministic"
+    if (
+        stochastic_locomotion_actions is not None
+        and stochastic_locomotion_actions != stochastic_actions
+    ):
+        motor_mode = "stochastic" if stochastic_locomotion_actions else "deterministic"
+        mode = f"strategy {mode}, motor {motor_mode}"
     draw.text(
         (6, 2 * size + 9),
         f"Learner: {audit['learner_role']} | {matchup} | {mode}",
