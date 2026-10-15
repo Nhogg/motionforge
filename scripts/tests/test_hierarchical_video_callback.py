@@ -75,6 +75,9 @@ def main() -> None:
         checks["physical_roles_and_colors_stay_fixed"] = all(
             item["agent_roles"] == ["pursuer", "evader"]
             and item["agent_role_encodings"] == [[1.0, 0.0], [0.0, 1.0]]
+            and item["opponent_id"] == "current/self-play"
+            and item["opponent_role"]
+            == ("evader" if item["learner_index"] == 0 else "pursuer")
             and item["selected_strategy_heads"] == ["pursuer_head", "evader_head"]
             and item["agent_policy_bindings"]
             == [
