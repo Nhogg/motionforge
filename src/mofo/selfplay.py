@@ -34,6 +34,8 @@ def mirror_params(params: dict, func) -> dict:
       p[k] = _sensor(p[k])
   if "action_name" in p:
     p["action_name"] = ACTION["opponent"]
+  if p.get("command_name") == "twist":  # Gait terms' stand-in command: the opponent's own velocity.
+    p["command_name"] = PREFIX + "twist"
   if func is tag_features:
     p.update(me="opponent", other="robot", role_sign=-1.0)
   elif "asset_cfg" in p or "asset_cfg" in inspect.signature(func.__call__ if inspect.isclass(func) else func).parameters:
@@ -59,6 +61,8 @@ def selfplay_env_cfg(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
   for k, t in list(cfg.rewards.items()):
     if k not in ZERO_SUM:
       cfg.rewards[PREFIX + k] = replace(t, params=mirror_params(t.params, t.func))
+  if "twist" in cfg.commands:
+    cfg.commands[PREFIX + "twist"] = replace(cfg.commands["twist"], entity="opponent")
   for k, e in list(cfg.events.items()):
     if e.mode == "startup":
       cfg.events[PREFIX + k] = replace(e, params=mirror_params(e.params, e.func))

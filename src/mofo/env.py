@@ -10,9 +10,9 @@ from mjlab.terrains.terrain_entity import TerrainEntity
 from omegaconf import DictConfig, OmegaConf
 
 from mofo.selfplay import selfplay_env_cfg
-from mofo.tasks.tag import ResetCfg, ShapingCfg, TagRules, tag_env_cfg
+from mofo.tasks.tag import GaitCfg, ResetCfg, ShapingCfg, TagRules, tag_env_cfg
 
-GAME_SCHEMAS = {"rules": TagRules, "reset": ResetCfg, "shaping": ShapingCfg}  # Typed Hydra groups.
+GAME_SCHEMAS = {"rules": TagRules, "reset": ResetCfg, "shaping": ShapingCfg, "gait": GaitCfg}  # Typed Hydra groups.
 
 
 def game(cfg: DictConfig, **overrides) -> SimpleNamespace:
@@ -24,7 +24,7 @@ def game(cfg: DictConfig, **overrides) -> SimpleNamespace:
 def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfplay=False) -> ManagerBasedRlEnv:
   """``video``: robots tinted by role (cfg.video.*_rgba) and a world camera (cfg.video.camera)
   looking at env 0's arena center from ``back`` m behind (-y) and ``up`` m high."""
-  env_cfg = tag_env_cfg(g.rules, g.reset, g.shaping)
+  env_cfg = tag_env_cfg(g.rules, g.reset, g.shaping, g.gait)
   if selfplay:
     selfplay_env_cfg(env_cfg)
   env_cfg.scene.num_envs, env_cfg.seed, env_cfg.scene.env_spacing = num_envs, cfg.seed, cfg.env_spacing

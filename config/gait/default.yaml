@@ -1,0 +1,12 @@
+# Stock stage-1 gait terms (pose, foot_slip, foot_swing_height) on a stand-in command, the
+# robot's own measured yaw-frame velocity: mofo.tasks.tag.GaitCfg. Off by default.
+defaults:
+  - schema
+  - _self_
+
+enabled: false
+scale: 0.1          # x the stock unitree_g1_flat_env_cfg weights (pose 1.0, foot_slip -0.1, foot_swing_height -0.25).
+weights:            # Per-term overrides; null: stock x scale.
+  pose: null
+  foot_slip: null
+  foot_swing_height: null

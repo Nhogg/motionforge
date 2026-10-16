@@ -7,7 +7,7 @@ role (+1 pursuer, -1 evader) is a per-env command resampled at reset.
 
 import inspect
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import torch
 from mjlab.asset_zoo.robots import get_g1_robot_cfg
@@ -94,6 +94,62 @@ class ShapingCfg:
 
   def __post_init__(self):
     assert self.potential in POTENTIALS, self.potential
+
+
+@dataclass
+class GaitWeights:  # Not frozen: a frozen nested node would be read-only to Hydra overrides.
+  """Per-term weight overrides; null: the stock stage-1 weight x GaitCfg.scale."""
+
+  pose: float | None = None
+  foot_slip: float | None = None
+  foot_swing_height: float | None = None
+
+
+@dataclass(frozen=True)
+class GaitCfg:
+  """Stock stage-1 gait terms (pose, foot_slip, foot_swing_height) on a stand-in command: the
+  robot's own measured velocity, i.e. "move well at whatever velocity you're moving"."""
+
+  enabled: bool = False
+  scale: float = 0.1  # x the stock unitree_g1_flat_env_cfg weights.
+  weights: GaitWeights = field(default_factory=GaitWeights)
+
+
+GAIT_TERMS = ("pose", "foot_slip", "foot_swing_height")
+
+
+@dataclass(kw_only=True)
+class MeasuredVelocityCfg(CommandTermCfg):
+  entity: str = "robot"
+  resampling_time_range: tuple[float, float] = (1e9, 1e9)
+
+  def build(self, env: ManagerBasedRlEnv) -> "MeasuredVelocity":
+    return MeasuredVelocity(self, env)
+
+
+class MeasuredVelocity(CommandTerm):
+  """Stand-in velocity command (lin x, lin y in the yaw frame, ang z), copied from the entity's
+  base after every step and reset. Not an observation: the stock gait terms read it by name."""
+
+  def __init__(self, cfg: MeasuredVelocityCfg, env: ManagerBasedRlEnv):
+    super().__init__(cfg, env)
+    self.vel = torch.zeros(self.num_envs, 3, device=self.device)
+
+  @property
+  def command(self) -> torch.Tensor:
+    return self.vel
+
+  def _resample_command(self, env_ids: torch.Tensor) -> None:
+    pass
+
+  def _update_command(self, env_ids: torch.Tensor | None) -> None:
+    d = self._env.scene[self.cfg.entity].data
+    v = torch.cat([quat_apply_inverse(yaw_quat(d.root_link_quat_w), d.root_link_lin_vel_w)[:, :2], d.root_link_ang_vel_w[:, 2:]], -1)
+    ids = slice(None) if env_ids is None else env_ids
+    self.vel[ids] = v[ids]
+
+  def _update_metrics(self) -> None:
+    pass
 
 
 @dataclass(kw_only=True)
@@ -423,7 +479,8 @@ def _retarget(term: ObservationTermCfg) -> ObservationTermCfg:
 
 
 def tag_env_cfg(
-  rules: TagRules = TagRules(), reset: ResetCfg = ResetCfg(), shaping_cfg: ShapingCfg = ShapingCfg()
+  rules: TagRules = TagRules(), reset: ResetCfg = ResetCfg(), shaping_cfg: ShapingCfg = ShapingCfg(),
+  gait: GaitCfg = GaitCfg(),
 ) -> ManagerBasedRlEnvCfg:
   """Tag task. Reward weights are per episode (divided by dt, as mjlab scales by dt)."""
   room = rules.arena_half_extent - reset.wall_margin
@@ -466,8 +523,12 @@ def tag_env_cfg(
   )
 
   # Command-gated regularizers: drop the ones that require a command, ungate the rest.
-  for k in ("track_linear_velocity", "track_angular_velocity", "pose", "foot_swing_height", "foot_slip", "air_time"):
-    cfg.rewards.pop(k)
+  stock = {k: cfg.rewards.pop(k) for k in ("track_linear_velocity", "track_angular_velocity", "pose", "foot_swing_height", "foot_slip", "air_time")}
+  if gait.enabled:  # Back on the stand-in command "twist" (the name the stock terms read).
+    cfg.commands["twist"] = MeasuredVelocityCfg()
+    for k in GAIT_TERMS:
+      w = getattr(gait.weights, k)
+      cfg.rewards[k] = replace(stock[k], weight=stock[k].weight * gait.scale if w is None else w)
   for k in ("foot_clearance", "soft_landing"):
     cfg.rewards[k].params["command_name"] = None
   cfg.rewards["action_rate_l2"] = replace(
