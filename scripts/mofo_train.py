@@ -180,6 +180,9 @@ def evaluate(cfg: DictConfig) -> None:
   obs = venv.get_observations()
   recorded = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
   dmin = torch.full((env.num_envs,), math.inf, device=env.device)
+  mm = env.metrics_manager
+  nat = {k: torch.zeros(2, device=env.device) for k in mm.active_terms}  # Naturalness sums by role (pursuer, evader).
+  nat_n = torch.zeros(2, device=env.device)
   by_second = {1.0: [], -1.0: []}  # Learner role -> mean robot distance at each whole second.
   with torch.no_grad():
     for t in itertools.count():  # Each env's first episode, so short ones aren't over-sampled.
@@ -194,6 +197,10 @@ def evaluate(cfg: DictConfig) -> None:
           by_second[k].append(round(d[m].mean().item(), 3) if m.any() else None)
       obs, _, dones, _ = venv.step(learner(obs["actor"]))
       speed.append(robot.root_link_lin_vel_w[:, :2].norm(dim=-1)[~recorded])
+      seat = torch.stack([~recorded & (r > 0), ~recorded & (r < 0)]).float()  # Learner's per-step metrics by role.
+      nat_n += seat.sum(-1)
+      for i, k in enumerate(mm.active_terms):
+        nat[k] += seat @ mm._step_values[:, i]
       yaw_rate.append(robot.root_link_ang_vel_w[:, 2].abs()[~recorded])
       done = dones.bool() & ~recorded
       recorded |= done
@@ -220,6 +227,7 @@ def evaluate(cfg: DictConfig) -> None:
     "mean_abs_yaw_rate": torch.cat(yaw_rate).mean().item(),
     "fall_rate": sum(falls) / len(falls), "mean_episode_length_s": sum(lengths) / len(lengths),
     "min_distance_pursuer": near(roles > 0), "min_distance_evader": near(roles < 0),
+    "naturalness": {f"{k}_{role}": (v[i] / nat_n[i].clamp_min(1)).item() for k, v in nat.items() for i, role in enumerate(("pursuer", "evader"))},
     "distance_by_second_pursuer": by_second[1.0], "distance_by_second_evader": by_second[-1.0],
     "rules": asdict(g.rules), "reset": asdict(g.reset), "env_spacing": cfg.env_spacing,
   }

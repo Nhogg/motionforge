@@ -69,24 +69,30 @@ def plot(root: str) -> None:
 
   keys = [("win_rate_pursuer", "pursuer win rate"), ("win_rate_evader", "evader win rate"),
           ("p95_planar_speed", "p95 planar speed (m/s)"), ("fall_rate", "fall rate")]
-  fig, axes = plt.subplots(1, 5, figsize=(24, 4.5))
+  natural = [("pose_dev", "pose deviation"), ("torso_tilt", "torso tilt"), ("foot_slip_speed", "foot slip speed (m/s)"),
+             ("base_height", "base height (m)"), ("feet_air_time", "feet air time (s)")]  # Mean of both roles.
+  fig, grid = plt.subplots(2, 5, figsize=(24, 9))
+  axes, nat_axes = grid
   for run in sorted(d for d in glob.glob(os.path.join(root, "*_s*")) if os.path.isdir(d)):
     rows = []
     for f in glob.glob(os.path.join(run, "eval", "model_*.json")):
-      if f.endswith("_video.json"):
-        continue
-      d = json.load(open(f))
+      m = re.search(r"model_(\d+)\.json$", f)  # Skips _video, _prefix and in-flight _refix files.
+      d = json.load(open(f)) if m else {"error": None}
       if "error" not in d:
-        rows.append((int(re.search(r"model_(\d+)\.json$", f).group(1)), d))
+        rows.append((int(m.group(1)), d))
     rows.sort(key=lambda x: x[0])
     name = os.path.basename(run)
     for ax, (k, _) in zip(axes, keys):
       if rows:
         ax.plot([i for i, _ in rows], [d[k] for _, d in rows], marker="o", markersize=3, linewidth=1.2, label=name)
+    for ax, (k, _) in zip(nat_axes, natural):
+      pts = [(i, [v for r, v in d["naturalness"].items() if r.rsplit("_", 1)[0] == k]) for i, d in rows if d.get("naturalness")]
+      if pts := [(i, sum(v) / len(v)) for i, v in pts if v]:
+        ax.plot(*zip(*pts), marker="o", markersize=3, linewidth=1.2, label=name)
     its, share = scripted_share(run)
     if its:
       axes[4].plot(its, share, linewidth=1, label=name)
-  for ax, (_, title) in zip(axes, keys + [(None, "scripted opponent env share (training)")]):
+  for ax, (_, title) in zip(list(axes) + list(nat_axes), keys + [(None, "scripted opponent env share (training)")] + natural):
     ax.set(title=title, xlabel="iteration")
     ax.spines[["top", "right"]].set_visible(False)
   axes[0].legend(fontsize=7, frameon=False)

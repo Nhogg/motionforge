@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 import torch
 from mjlab.asset_zoo.robots import get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
+from mjlab.envs import mdp
 from mjlab.envs.mdp.events import resolve_env_ids
 from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
@@ -224,6 +225,59 @@ def tag_confirm_fail(env: ManagerBasedRlEnv) -> torch.Tensor:
   return _pending_down(env, 1.0).float()
 
 
+def pose_deviation(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """Mean |q - q_default| over the selected joints."""
+  return mdp.joint_pos_rel(env, asset_cfg=asset_cfg).abs().mean(-1)
+
+
+def foot_slip_speed(env: ManagerBasedRlEnv, sensor_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """Mean foot xy speed over the feet in contact (0 if none)."""
+  c = (env.scene[sensor_name].data.found > 0).float()
+  v = env.scene[asset_cfg.name].data.site_lin_vel_w[:, asset_cfg.site_ids, :2].norm(dim=-1)
+  return (v * c).sum(-1) / c.sum(-1).clamp_min(1)
+
+
+def base_height(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return env.scene["robot"].data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+
+
+def base_drop(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """How far the base is below its default height (episode max: the lowest point)."""
+  return env.scene["robot"].data.default_root_state[:, 2] - base_height(env)
+
+
+def torso_tilt(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Base tilt from vertical (rad)."""
+  return torch.acos((-mdp.projected_gravity(env)[:, 2]).clamp(-1, 1))
+
+
+def feet_contact_ratio(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+  return (env.scene[sensor_name].data.found > 0).float().mean(-1)
+
+
+def feet_air_time(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:
+  """Mean duration of each foot's last swing (s)."""
+  return env.scene[sensor_name].data.last_air_time.mean(-1)
+
+
+def action_magnitude(env: ManagerBasedRlEnv) -> torch.Tensor:
+  return env.action_manager.get_term(ACTION["robot"]).raw_action.abs().mean(-1)
+
+
+FEET = {"sensor_name": "feet_ground_contact"}
+NATURALNESS = {  # Name -> (func, params, episode reduce); logged as Episode_Metrics/*, and in eval JSONs.
+  "pose_dev": (pose_deviation, {"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))}, "mean"),
+  "arm_pose_dev": (pose_deviation, {"asset_cfg": SceneEntityCfg("robot", joint_names=(".*(shoulder|elbow|wrist).*",))}, "mean"),
+  "foot_slip_speed": (foot_slip_speed, {**FEET, "asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))}, "mean"),
+  "base_height": (base_height, {}, "mean"),
+  "base_drop": (base_drop, {}, "max"),  # Episode log: the max (lowest point); eval JSON: per-step mean.
+  "torso_tilt": (torso_tilt, {}, "mean"),
+  "feet_contact_ratio": (feet_contact_ratio, FEET, "mean"),
+  "feet_air_time": (feet_air_time, FEET, "mean"),
+  "action_magnitude": (action_magnitude, {}, "mean"),
+}
+
+
 def seat_end(env: ManagerBasedRlEnv, kind: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
   """1.0 where this seat's own fall ("fell") or exit ("out") ended the episode."""
   name = {"fell": "fell_over", "out": "robot_out"}[kind]
@@ -384,7 +438,7 @@ def tag_env_cfg(
   cfg.is_finite_horizon = True  # Timeout is an evader win, not a truncation.
   cfg.commands = {"role": RoleCommandCfg(rules=rules)}
   cfg.curriculum = {}
-  cfg.metrics = {}  # Stock mean_action_acc mixes both robots' actions.
+  cfg.metrics = {k: MetricsTermCfg(func=f, params=p, reduce=r) for k, (f, p, r) in NATURALNESS.items()}  # Learner seat.
 
   cfg.actions["opponent"] = replace(cfg.actions["joint_pos"], entity_name="opponent")
 
