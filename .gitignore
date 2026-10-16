@@ -4,6 +4,7 @@ __pycache__/
 MUJOCO_LOG.TXT
 logs/
 .venv/
+.venv-mjlab/
 wandb/
 .pytest_cache/
 .ruff_cache/

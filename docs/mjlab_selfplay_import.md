@@ -1,7 +1,7 @@
 # mjlab self-play branch import
 
 - Branch: `mjlab-selfplay` in the original MotionForge repository.
-- Worktree: `/home/nhogg/motionforge-mjlab-selfplay`.
+- Working checkout: `/home/nhogg/motionforge`.
 - Original committed base: `d3640df`.
 - Imported repository: `/home/nhogg/motionforge2`.
 - Imported commit: `7d11a7ebfd64c1dde6d66121f1dd430c80594a5c`.
@@ -18,11 +18,17 @@ dependencies from the original environment; keeping its files is not a claim
 that every historical entry point runs under the new dependency set. Use the
 original checkout/environment for legacy experiments.
 
-The original checkout's dirty worktree was not imported, stashed, reset or
-committed. Those changes remain at `/home/nhogg/motionforge`. No running jobs were
-changed, and no training was started as part of this import. No external push was
-performed. Existing logs, checkpoints and virtual environments remain in their
-original locations; use explicit checkpoint paths from this worktree.
+The initial import was prepared in a temporary worktree. At the user's direction,
+the original checkout was then switched to this branch and that temporary
+worktree removed. The original dirty main changes were saved with untracked files
+in stash `c731bacb33ad7b8c0661028f660429ad7633e2eb`, named
+`main-wip-before-mjlab-selfplay-switch-2026-10-16`. No user edits were committed
+or discarded. `main` itself remains at the original commit.
+
+No running jobs were changed and no training was started. No external push was
+performed. Existing logs, checkpoints and the legacy `.venv` remain in place.
+Use `UV_PROJECT_ENVIRONMENT=.venv-mjlab` for the imported implementation, so
+installing its dependencies does not overwrite the legacy environment.
 
 Scientific interpretation remains unchanged by importing the code: the direct
 joint-action policy is not the old hierarchical method. Symmetric self-play and
@@ -32,7 +38,8 @@ results, not treating total wins as tags.
 
 ## Import validation
 
-- `uv sync --locked`: successful; separate `.venv` created in this worktree.
+- `UV_PROJECT_ENVIRONMENT=.venv-mjlab uv sync --locked`: successful in the
+  original checkout; the old `.venv` was left intact.
 - `uv run --locked scripts/mofo_train.py --cfg job --resolve`: successful.
 - `uv run --locked python -m mofo.league_test`: all 10 checks passed.
 - Generic debug/production Slurm scripts pass `bash -n`.

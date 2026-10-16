@@ -8,16 +8,31 @@ is retained as a reference, not the default trainer.
 ## Working checkout
 
 ```bash
-cd /home/nhogg/motionforge-mjlab-selfplay
+cd /home/nhogg/motionforge
 git branch --show-current  # mjlab-selfplay
+export UV_PROJECT_ENVIRONMENT=.venv-mjlab
 uv sync --locked
 ```
 
-This is a separate worktree of the original MotionForge Git repository. Its
-branch and working files are independent of `/home/nhogg/motionforge` on `main`.
-The original checkout's uncommitted changes remain there; this branch starts
-from committed `main` plus the imported implementation. `/home/nhogg/motionforge2`
-is unchanged. No existing environments, logs, or checkpoints were copied.
+This is the original MotionForge checkout, switched to `mjlab-selfplay`.
+`main` is unchanged. Its previous uncommitted changes, including untracked
+scripts, are preserved in stash `c731bacb33ad7b8c0661028f660429ad7633e2eb`
+(`main-wip-before-mjlab-selfplay-switch-2026-10-16`). `/home/nhogg/motionforge2`
+is unchanged. The temporary extra worktree was removed.
+
+The separate `.venv-mjlab` environment is inside this repository. Keep
+`UV_PROJECT_ENVIRONMENT=.venv-mjlab` exported when using the new code, including
+before submitting jobs, so the existing legacy `.venv` is not overwritten.
+Original logs and checkpoints remain in place.
+
+To return to the previous work, first save any new branch edits, then:
+
+```bash
+git switch main
+git stash apply c731bacb33ad7b8c0661028f660429ad7633e2eb
+```
+
+`apply` keeps the saved stash available until you explicitly remove it.
 
 ## Entry points
 
