@@ -13,6 +13,7 @@ import torch
 from mjlab.asset_zoo.robots import get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.events import resolve_env_ids
+from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
@@ -244,7 +245,7 @@ def shaping(env: ManagerBasedRlEnv, gamma: float, name: str) -> torch.Tensor:
   """gamma*phi(s') - phi(s) with phi(s') = 0 on terminations and timeouts, so each episode's
   discounted shaping sums to -phi(s0): no bias, and nothing carries across an auto-reset."""
   live = ~env.termination_manager.dones
-  return gamma * POTENTIALS[name](env) * live - potential(env)
+  return torch.where(live, gamma * POTENTIALS[name](env), 0.0) - potential(env)  # NaN-safe at nan_reset.
 
 
 def action_rate_l2(env: ManagerBasedRlEnv, action_name: str) -> torch.Tensor:
@@ -390,5 +391,8 @@ def tag_env_cfg(
     tagged=TerminationTermCfg(func=tagged),
     robot_out=TerminationTermCfg(func=out_of_arena, params={"asset_cfg": SceneEntityCfg("robot")}),
     opponent_out=TerminationTermCfg(func=out_of_arena, params={"asset_cfg": SceneEntityCfg("opponent")}),
+    # Physics blew up (NaN/Inf qpos/qvel/qacc/sensordata): reset that env as a draw (outcome 0;
+    # NaN rewards are zeroed by the reward manager). Counted as Episode_Termination/nan_reset.
+    nan_reset=TerminationTermCfg(func=nan_detection),
   )
   return cfg
