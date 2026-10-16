@@ -292,10 +292,29 @@ def check(cfg: DictConfig) -> None:
   assert out == [-1, 1, -1, 1, -1, 1] and all(dones), out
 
   check_shaping(env, venv, g, near)
+  check_scripted_side(env, venv)
   check_spawn(cfg, g)
   check_selfplay(cfg, g, near)
   check_league(cfg, g, near)
   print("check OK")
+
+
+def check_scripted_side(env, venv) -> None:
+  """A scripted league member driving only envs 0-2 draws its turn side (the +-pi tie-break)
+  once per episode, at those envs' resets, and never for envs it doesn't drive."""
+  sp, g1 = ScriptedPolicy(env, None), slice(0, 3)
+  zero = torch.zeros(env.num_envs, venv.num_actions, device=env.device)
+  venv.reset()
+  sp.command(g1)
+  side, t0 = sp.side.clone(), env.common_step_counter
+  sp.command(g1)  # A second call in the same step must not redraw.
+  assert torch.equal(sp.side, side) and sp.drawn[:3].eq(t0).all() and sp.drawn[3:].eq(-1).all(), sp.drawn
+  env.episode_length_buf[[1, 4]] = env.max_episode_length - 1  # Timeouts: envs 1 (group) and 4 (not).
+  venv.step(zero)
+  sp.command(g1)
+  t1 = env.common_step_counter
+  assert sp.drawn.tolist() == [t0, t1, t0, -1, -1, -1], sp.drawn.tolist()
+  print(f"scripted side draws: group envs 0-2 at reset (step {t0}), env 1 again at its reset (step {t1}); envs 3-5 never")
 
 
 def check_shaping(env, venv, g, near) -> None:

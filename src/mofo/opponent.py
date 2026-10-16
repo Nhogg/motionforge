@@ -1,5 +1,7 @@
 """Host-side opponent: rsl-rl sees only the learner; the league drives the opponent."""
 
+import math
+
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
@@ -42,8 +44,14 @@ class ScriptedPolicy:
     r = unitree_g1_flat_env_cfg().commands["twist"].ranges
     lo_hi = list(zip(r.lin_vel_x, r.lin_vel_y, r.ang_vel_z))
     self.lo, self.hi = (torch.tensor(v, device=env.device) for v in lo_hi)
+    # Turn side for a target exactly behind (atan2 at +-pi, e.g. the facing spawn): a per-env
+    # random sign redrawn each episode. A private generator leaves the env's RNG untouched.
+    self.gen = torch.Generator(env.device).manual_seed(0)
+    self.side = torch.ones(env.num_envs, device=env.device)
+    self.drawn = torch.full((env.num_envs,), -1, device=env.device)  # Step counter of the last draw.
 
-  def command(self) -> torch.Tensor:
+  def command(self, ids: slice = slice(None)) -> torch.Tensor:
+    """Commands for every env; ``ids`` (the envs this member drives) only scopes the side draws."""
     env = self.env
     a, b = env.scene[self.me].data, env.scene[self.other].data
     to = b.root_link_pos_w - a.root_link_pos_w
@@ -57,6 +65,11 @@ class ScriptedPolicy:
     pursue = (self.role_sign * role(env) > 0)[:, None]
     v = quat_apply_inverse(yaw_quat(a.root_link_quat_w), torch.where(pursue, to, flee))
     heading = torch.atan2(v[:, 1], v[:, 0])
+    idx = torch.arange(env.num_envs, device=env.device)[ids]
+    new = idx[(env.episode_length_buf[idx] == 0) & (self.drawn[idx] != env.common_step_counter)]  # Once per episode.
+    self.drawn[new] = env.common_step_counter
+    self.side[new] = torch.randint(2, (len(new),), generator=self.gen, device=env.device) * 2.0 - 1
+    heading = torch.where(heading.abs() > math.pi - 1e-3, self.side * math.pi, heading)
     v = v[:, :2] / v[:, :2].norm(dim=-1, keepdim=True).clamp_min(1e-6)
     cmd = torch.cat([v * self.hi[:2], 2.0 * heading[:, None]], -1)
     return torch.maximum(torch.minimum(cmd, self.hi), self.lo)
@@ -65,7 +78,7 @@ class ScriptedPolicy:
     """obs: this robot's tag obs group (stage-1 proprio terms, then tag features) for envs ``ids``."""
     if self.policy is None:
       return torch.zeros(obs.shape[0], self.num_actions, device=obs.device)
-    return self.policy(torch.cat([obs[:, :-TAG_DIM], self.command()[ids]], -1))
+    return self.policy(torch.cat([obs[:, :-TAG_DIM], self.command(ids)[ids]], -1))
 
 
 def _league_log(stats: dict[str, float], top: int = 3) -> dict[str, float]:
