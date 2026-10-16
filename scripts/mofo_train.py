@@ -18,6 +18,7 @@ from types import SimpleNamespace
 os.environ.setdefault("MUJOCO_GL", "disable")  # Before mjlab import (it defaults to egl).
 
 import torch
+import wandb
 from hydra.core.hydra_config import HydraConfig
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner
@@ -26,7 +27,9 @@ from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.utils.lab_api.math import quat_from_euler_xyz
 from omegaconf import DictConfig, OmegaConf
 from rsl_rl.models import MLPModel
+from rsl_rl.utils.wandb_log_writer import WandbLogWriter
 from tensordict import TensorDict
+from torch.utils.tensorboard import SummaryWriter
 
 from mofo.cli import run
 from mofo.env import GAME_SCHEMAS, game, make_env
@@ -56,7 +59,48 @@ class AgentCfg:
   save_interval: int = _STOCK.save_interval
 
 
-SCHEMAS = {**GAME_SCHEMAS, "agent": AgentCfg, "league": LeagueCfg}
+class SharedRunWriter(WandbLogWriter):
+  """rsl-rl's W&B writer, on the run train() started: its own wandb.init passes a Settings field
+  (start_method) that wandb 0.29 rejects. Rows also carry ``iteration``, the evaluators' axis."""
+
+  def __init__(self, log_dir: str, project_name: str) -> None:
+    SummaryWriter.__init__(self, log_dir, flush_secs=10)
+    self.logged_videos: set[str] = set()
+    self.row, self.row_step = {}, None  # One wandb row per iteration, sent when the next begins.
+
+  def add_scalar(self, tag, scalar_value, global_step=None, walltime=None, new_style=False) -> None:
+    SummaryWriter.add_scalar(self, tag, scalar_value, global_step, walltime, new_style)
+    if global_step != self.row_step:
+      self.flush_row()
+    self.row_step, self.row[tag] = global_step, scalar_value
+
+  def flush_row(self) -> None:
+    if self.row:
+      wandb.log({**self.row, "iteration": self.row_step}, step=self.row_step)
+    self.row = {}
+
+  def stop(self) -> None:
+    self.flush_row()
+    super().stop()
+
+  def save_video(self, video, it) -> None:
+    pass  # rsl-rl would upload every *.mp4 under the logdir: evaluators' (logged as eval/*) and wandb's own copies.
+
+
+@dataclass(frozen=True)
+class WandbCfg:
+  """cmd=tag logging through rsl-rl's WandbLogWriter. One run per logdir, id <group>-<name>, in
+  wandb shared mode so evaluators (mofo.watch) can attach to it with x_primary=False."""
+
+  mode: str = "online"  # online | offline | disabled (tensorboard only).
+  project: str = "mofo"
+  entity: str | None = None  # null: the default user.
+  group: str | None = None  # null: basename of cmd.logdir's parent (e.g. v3).
+  name: str | None = None  # null: basename of cmd.logdir (e.g. C1_s1).
+  tags: tuple[str, ...] = ()
+
+
+SCHEMAS = {**GAME_SCHEMAS, "agent": AgentCfg, "league": LeagueCfg, "wandb": WandbCfg}
 
 
 def make_league(cfg, env, lc: LeagueCfg, ckpt) -> League:
@@ -124,7 +168,19 @@ def train(cfg: DictConfig) -> None:
   venv = OpponentEnv(env, league, steps_per_iter=rl.num_steps_per_env)
   rl.seed, rl.max_iterations, rl.logger, rl.upload_model = cfg.seed, cfg.cmd.iterations, "tensorboard", False
   rl.experiment_name = ("tag_shaping" if g.shaping.enabled else "tag") + ("_selfplay" if venv.n_sp else "") + ("_league" if lc.snapshot_every or lc.init_pool else "")
-  runner = MjlabOnPolicyRunner(venv, asdict(rl), cfg.cmd.logdir, cfg.device)
+  train_cfg = asdict(rl)
+  if (w := OmegaConf.to_object(cfg.wandb)).mode != "disabled":
+    logdir = os.path.abspath(cfg.cmd.logdir)
+    group, name = w.group or os.path.basename(os.path.dirname(logdir)), w.name or os.path.basename(logdir)
+    run = wandb.init(  # SharedRunWriter (rsl-rl's WandbLogWriter) logs into this run.
+      project=w.project, entity=w.entity, group=group, name=name, id=f"{group}-{name}", resume="allow",
+      tags=list(w.tags), config=OmegaConf.to_container(cfg, resolve=True), dir=logdir,
+      settings=wandb.Settings(mode="shared" if w.mode == "online" else w.mode, x_label="train"),
+    )
+    run.define_metric("iteration")
+    run.define_metric("*", step_metric="iteration")
+    train_cfg["logger"] = {"class_name": SharedRunWriter, "project_name": w.project}
+  runner = MjlabOnPolicyRunner(venv, train_cfg, cfg.cmd.logdir, cfg.device)
   venv.learner = runner.alg.actor  # Frozen into the league every league.snapshot_every iterations.
   if cfg.cmd.init:
     warm_start(runner, cfg.cmd.init, env)

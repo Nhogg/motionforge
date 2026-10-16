@@ -1,0 +1,13 @@
+# cmd=tag logging to wandb via rsl-rl's WandbLogWriter (WandbCfg in scripts/mofo_train.py).
+# Run id <group>-<name> in shared mode: mofo.watch evaluators attach to the same run (eval/*).
+# Only cmd=tag uses it; eval and check never start wandb.
+defaults:
+  - schema
+  - _self_
+
+mode: online   # online | offline | disabled (tensorboard only).
+project: mofo
+entity: null   # null: the default user.
+group: null    # null: basename of cmd.logdir's parent, e.g. v3.
+name: null     # null: basename of cmd.logdir, e.g. C1_s1.
+tags: []

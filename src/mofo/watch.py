@@ -1,11 +1,15 @@
 """Rolling evaluator: score (and render) every new training checkpoint, newest first.
 
-  python -m mofo.watch --root logs/mofo/tag/v3 --jobs 4701,4702 --opponent STAGE1.pt [--shard 0/2]
+  python -m mofo.watch --root logs/mofo/tag/v3 --jobs 4701,4702 --opponent STAGE1.pt [--shard 0/2] [--wandb online]
 
 Each pass evaluates checkpoints under ``<root>/<run>/model_<it>.pt`` that lack
 ``<run>/eval/model_<it>.json`` with ``scripts/mofo_train.py eval`` (256-env stats; a 16-env
 MP4 for runs whose seed is in ``--video-seeds``), then redraws ``<root>/progress.png``. It
 exits once none of ``--jobs`` is queued and nothing is left to evaluate.
+
+With ``--wandb online|offline`` each owned run also streams to wandb (``WandbRun``): its
+tensorboard scalars, rolling evals (``eval/*``), and the chained final evals (``final/*``,
+``final_legacy/*``), all against ``iteration``.
 """
 
 import argparse
@@ -17,6 +21,7 @@ import subprocess
 import time
 
 EVAL = [".venv/bin/python", "scripts/mofo_train.py", "cmd=eval"]
+RENAME = {"win_rate": "win", "win_rate_pursuer": "pursuer_win", "win_rate_evader": "evader_win"}
 # tag-rules' ScriptedPolicy tie fix went live 2026-10-15 20:09:04 CDT: eval JSONs written before
 # it faced the old scripted opponent (scripted_version 0). Those are re-run (``refix``) and the
 # old ones kept as ``model_<it>_prefix.json``. +120 s: an eval (<= ~90 s) that started before the
@@ -30,6 +35,92 @@ def scripted_version(path: str) -> int:
 
 def prefix_path(path: str) -> str:
   return path[: -len(".json")] + "_prefix.json"
+
+
+def eval_row(d: dict, prefix: str) -> dict:
+  """Scalar eval stats (and the min-distance and naturalness summaries) under ``prefix/``."""
+  row = {}
+  for k, v in d.items():
+    k = RENAME.get(k, k)
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+      row[f"{prefix}/{k}"] = v
+    elif (k.startswith("min_distance") or k == "naturalness") and isinstance(v, dict):
+      row.update({f"{prefix}/{k}/{a}": b for a, b in v.items() if isinstance(b, (int, float))})
+  return row
+
+
+class WandbRun:
+  """One wandb run per training run dir, id ``<group>-<name>``, on an ``iteration`` axis
+  (evals arrive newest-first, so no wandb step). Logs the run's tensorboard scalars
+  incrementally, ``<run>/eval/model_<it>.{json,mp4}`` as ``eval/*``, and the chained
+  ``<root>/eval_<name>_<it>[_legacy].{json,mp4}`` as ``final/*`` / ``final_legacy/*``.
+  What was sent is kept in ``<run>/wandb_<group>.json``, so restarts resume without duplicates.
+  ``shared=True`` joins a run the trainer owns (wandb shared mode) instead of creating it.
+  """
+
+  def __init__(self, root: str, run: str, group: str, mode: str = "online", shared: bool = False):
+    import wandb
+    import yaml
+
+    self.wandb, self.root, self.run, self.name, self.shared = wandb, root, run, os.path.basename(run), shared
+    cfg = yaml.safe_load(open(os.path.join(run, ".hydra", "config.yaml")))
+    lg, arm = cfg.get("league", {}), self.name.rsplit("_s", 1)[0]
+    tags = [arm, f"shaping={'on' if cfg['shaping']['enabled'] else 'off'}", f"selfplay_frac={lg.get('selfplay_frac')}",
+            f"sampling={lg.get('sampling')}", f"spawn={'spread' if cfg['reset']['placement'] == 'uniform' else 'legacy'}"]
+    # Shared: the trainer owns the run (its tags and config); join as a secondary writer only.
+    own = {} if shared else {"tags": tags, "config": cfg}
+    settings = wandb.Settings(mode="shared", x_primary=False, x_label="eval") if shared else None
+    self.wb = wandb.init(project="mofo", id=f"{group}-{self.name}", name=self.name, group=group, resume="allow",
+                         mode=mode, reinit="create_new", dir=run, settings=settings, **own)
+    self.wb.define_metric("iteration")
+    self.wb.define_metric("*", step_metric="iteration")
+    self.state_path = os.path.join(run, f"wandb_{group}.json")
+    self.state = json.load(open(self.state_path)) if os.path.exists(self.state_path) else {"tb_step": -1, "sent": []}
+    self.sent = set(self.state["sent"])
+
+  def _files(self):
+    """(key, path, prefix, iteration): rolling then final evals, json and mp4."""
+    for f in glob.glob(os.path.join(self.run, "eval", "model_*")):
+      if m := re.search(r"model_(\d+)\.(json|mp4)$", f):
+        yield f, f, "eval", int(m.group(1))
+    for f in glob.glob(os.path.join(self.root, f"eval_{self.name}_*")):
+      if m := re.search(rf"eval_{re.escape(self.name)}_(\d+)(_legacy)?\.(json|mp4)$", f):
+        yield f, f, "final_legacy" if m.group(2) else "final", int(m.group(1))
+
+  def sync(self) -> int:
+    """Send everything new; returns the number of rows logged."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+    rows = {}
+    ea = None if self.shared else EventAccumulator(self.run, size_guidance={"scalars": 0}).Reload()  # Shared: the trainer logs these.
+    for tag in ea.Tags()["scalars"] if ea else ():
+      for e in ea.Scalars(tag):
+        if e.step > self.state["tb_step"]:
+          rows.setdefault(e.step, {})[tag] = e.value
+    for it in sorted(rows)[:-1]:  # The newest step may still be filling in; take it next pass.
+      self.wb.log({**rows[it], "iteration": it})
+      self.state["tb_step"] = it
+    n = max(len(rows) - 1, 0)
+    for key, path, prefix, it in sorted(self._files(), key=lambda x: x[3]):
+      if key in self.sent and path.endswith(".json") and os.path.exists(prefix_path(path)):
+        key, prefix = f"{key}:fixed", f"{prefix}_fixed"  # Re-run of a pre-fix eval: its own series.
+      if key in self.sent or time.time() - os.path.getmtime(path) < 30:
+        continue
+      if path.endswith(".json"):
+        d = json.load(open(path))
+        row = {} if "error" in d else {**eval_row(d, prefix), f"{prefix}/scripted_version": scripted_version(path)}
+      else:
+        row = {f"{prefix}/video": self.wandb.Video(path, format="mp4")}
+      if row:
+        self.wb.log({**row, "iteration": it})
+        n += 1
+      self.sent.add(key)
+    self.state["sent"] = sorted(self.sent)
+    json.dump(self.state, open(self.state_path, "w"))
+    return n
+
+  def finish(self) -> None:
+    self.wb.finish()
 
 
 def owned(root: str, shard: tuple[int, int]) -> list[str]:
@@ -141,11 +232,27 @@ def main() -> None:
   p.add_argument("--shard", default="0/1", help="k/n: own the runs whose seed %% n == k")
   p.add_argument("--video-seeds", type=lambda s: [int(x) for x in s.split(",") if x], default=[1, 2])
   p.add_argument("--interval", type=float, default=60, help="seconds between idle passes")
+  p.add_argument("--wandb", choices=("online", "offline", "disabled"), default="online")
+  p.add_argument("--wandb-group", default=None, help="wandb group and run-id prefix (default: basename of --root)")
+  p.add_argument("--wandb-shared", action="store_true", help="join the trainer's run (it logs training; we log evals)")
   p.add_argument("override", nargs="*", help="extra eval overrides, e.g. reset=legacy")
   args = p.parse_args()
   shard = tuple(int(x) for x in args.shard.split("/"))
   jobs = [j for j in args.jobs.split(",") if j]
+  group, wb = args.wandb_group or os.path.basename(os.path.normpath(args.root)), {}
+
+  def sync():  # Attach to each owned run once its config exists, then send what's new.
+    if args.wandb == "disabled":
+      return
+    for run in owned(args.root, shard):
+      if run not in wb and os.path.exists(os.path.join(run, ".hydra", "config.yaml")):
+        wb[run] = WandbRun(args.root, run, group, args.wandb, shared=args.wandb_shared)
+        print(f"[watch] wandb {wb[run].wb.url or wb[run].wb.id}", flush=True)
+      if run in wb:
+        wb[run].sync()
+
   while True:
+    sync()
     todo = pending(args.root, shard)
     if todo:
       it, run, ckpt, refix = todo[0]
@@ -156,6 +263,10 @@ def main() -> None:
     queued = jobs and subprocess.run(["squeue", "-h", "-j", ",".join(jobs)], capture_output=True, text=True).stdout.strip()
     if not queued:
       plot(args.root)
+      time.sleep(31)  # Let the last files settle, then a final sync.
+      sync()
+      for w in wb.values():
+        w.finish()
       return
     time.sleep(args.interval)
 
