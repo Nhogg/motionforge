@@ -21,9 +21,7 @@ import torch
 from hydra.core.hydra_config import HydraConfig
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner
-from mjlab.sensor.camera_sensor import CameraSensorCfg
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
-from mjlab.terrains.terrain_entity import TerrainEntity
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.utils.lab_api.math import quat_from_euler_xyz
 from omegaconf import DictConfig, OmegaConf
@@ -31,10 +29,11 @@ from rsl_rl.models import MLPModel
 from tensordict import TensorDict
 
 from mofo.cli import run
+from mofo.env import GAME_SCHEMAS, game, make_env
 from mofo.league import SCRIPTED, SCRIPTED_ID, FixedLeague, League, LeagueCfg, Opponent
 from mofo.opponent import OpponentEnv, ScriptedPolicy, load_policy
-from mofo.selfplay import PREFIX, ZERO_SUM, selfplay_env_cfg
-from mofo.tasks.tag import POTENTIALS, TAG_DIM, ResetCfg, ShapingCfg, TagRules, distance, outcome, role, tag_env_cfg
+from mofo.selfplay import PREFIX, ZERO_SUM
+from mofo.tasks.tag import POTENTIALS, TAG_DIM, distance, outcome, role
 
 _STOCK = unitree_g1_ppo_runner_cfg()
 
@@ -57,32 +56,7 @@ class AgentCfg:
   save_interval: int = _STOCK.save_interval
 
 
-SCHEMAS = {"rules": TagRules, "reset": ResetCfg, "shaping": ShapingCfg, "agent": AgentCfg, "league": LeagueCfg}
-
-
-def game(cfg: DictConfig, **overrides) -> SimpleNamespace:
-  """The typed rules/reset/shaping groups as dataclasses, with field overrides per group."""
-  g = {k: OmegaConf.to_object(cfg[k]) for k in ("rules", "reset", "shaping")}
-  return SimpleNamespace(**{k: replace(v, **overrides.get(k, {})) for k, v in g.items()})
-
-
-def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfplay=False) -> ManagerBasedRlEnv:
-  env_cfg = tag_env_cfg(g.rules, g.reset, g.shaping)
-  if selfplay:
-    selfplay_env_cfg(env_cfg)
-  env_cfg.scene.num_envs, env_cfg.seed, env_cfg.scene.env_spacing = num_envs, cfg.seed, cfg.env_spacing
-  if eval:
-    for g in ("actor", "opponent"):
-      env_cfg.observations[g].enable_corruption = False
-  if video:  # World camera on env 0's arena; robots tinted by role.
-    env_cfg.commands["role"] = replace(env_cfg.commands["role"], colors=(tuple(cfg.video.pursuer_rgba), tuple(cfg.video.evader_rgba)))
-    o = TerrainEntity._compute_env_origins_grid(SimpleNamespace(_device="cpu"), num_envs, env_cfg.scene.env_spacing)[0]
-    a = math.atan2(9.0, 7.0)  # Look from 9 m behind, 7 m up, at the arena center.
-    env_cfg.scene.sensors += (CameraSensorCfg(
-      name="world_cam", pos=(o[0].item(), o[1].item() - 9.0, 7.0), quat=(math.cos(a / 2), math.sin(a / 2), 0.0, 0.0),
-      width=640, height=480,
-    ),)
-  return ManagerBasedRlEnv(env_cfg, device=cfg.device)
+SCHEMAS = {**GAME_SCHEMAS, "agent": AgentCfg, "league": LeagueCfg}
 
 
 def make_league(cfg, env, lc: LeagueCfg, ckpt) -> League:

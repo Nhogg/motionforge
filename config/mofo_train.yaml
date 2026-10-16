@@ -20,6 +20,13 @@ opponent: null   # Stage-1 ckpt driving the scripted opponent (tag: defaults to 
 video:  # cmd.video only: robots tinted by role (render only).
   pursuer_rgba: [0.85, 0.1, 0.1, 1.0]
   evader_rgba: [0.55, 0.8, 1.0, 1.0]
+  camera:  # World camera at env 0's arena center, `back` m behind (-y) and `up` m high.
+    back: 9.0
+    up: 7.0
+    width: 640
+    height: 480
+    fovy: null        # Degrees; null = MuJoCo default (45).
+    data_types: [rgb]
 
 hydra:
   run:  # cmd=tag runs in its logdir, so <logdir>/.hydra/ holds the resolved config.
