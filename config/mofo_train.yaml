@@ -1,0 +1,26 @@
+# scripts/mofo_train.py: stage-2 tag fine-tuning (cmd=tag), evaluation (cmd=eval), env checks (cmd=check).
+#   mofo_train.py tag rules.arena_half_extent=3 rules.tag_mode=contact shaping.enabled=true reset=legacy
+# A bare first word tag|eval|check is cmd=<word>. rules/reset/shaping are typed (mofo.tasks.tag).
+defaults:
+  - common
+  - cmd: tag
+  - rules: default
+  - reset: default
+  - shaping: default
+  - agent: default
+  - league: default
+  - _self_
+
+seed: 0
+env_spacing: 0.0  # Env origin grid spacing (m). 0: every env at the world origin (worlds never
+                  # interact). Results depend on absolute position (float32), so keep it fixed.
+num_envs: 4096
+opponent: null   # Stage-1 ckpt driving the scripted opponent (tag: defaults to cmd.init; null: zero actions).
+
+video:  # cmd.video only: robots tinted by role (render only).
+  pursuer_rgba: [0.85, 0.1, 0.1, 1.0]
+  evader_rgba: [0.55, 0.8, 1.0, 1.0]
+
+hydra:
+  run:  # cmd=tag runs in its logdir, so <logdir>/.hydra/ holds the resolved config.
+    dir: ${oc.select:cmd.logdir,logs/hydra/${hydra.job.name}/${now:%Y-%m-%d_%H-%M-%S}}

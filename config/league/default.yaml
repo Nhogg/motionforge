@@ -1,0 +1,21 @@
+# Opponent league: mofo.league.LeagueCfg (typed; unknown keys fail). Defaults = scripted only, no self-play.
+#   mofo_train.py tag league.selfplay_frac=0.5 league.groups=8 league.snapshot_every=200
+defaults:
+  - schema
+  - _self_
+
+selfplay_frac: 0.0       # Fraction of envs where the learner plays both seats.
+sampling: pfsp           # pfsp: weight (1 - p)^pfsp_power, p = learner's EMA win rate | uniform | recent
+pfsp_power: 2.0
+win_ema: 0.05            # EMA rate per episode of the learner's win rate vs each member.
+init_win: 0.5            # Win rate assumed for an unseen member.
+min_weight: 0.02         # Floor on every final sampling probability.
+recent_decay: 0.9        # recent: the k-th newest member has weight recent_decay^k.
+snapshot_every: 0        # Iterations between learner snapshots (0: off).
+max_size: 32             # Pool limit: evicts the oldest non-scripted member (scripted/stage1 stays).
+groups: 1                # League env groups, one opponent each.
+resample_every: 1200     # Env steps between redraws of each group's opponent.
+scripted_weight_start: 1.0  # Scripted weight multiplier, linear from start to end over
+scripted_weight_end: 1.0    # scripted_decay_iters iterations (1 -> 1: no effect).
+scripted_decay_iters: 1
+init_pool: []            # Checkpoints preloaded as historical members.

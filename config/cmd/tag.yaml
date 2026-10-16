@@ -1,0 +1,5 @@
+init: null          # Stage-1 checkpoint to warm start from.
+iterations: 500
+logdir: logs/mofo/tag
+lr: null            # Deprecated alias of agent.learning_rate.
+save_interval: null # Deprecated alias of agent.save_interval.

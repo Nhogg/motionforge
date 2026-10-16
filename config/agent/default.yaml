@@ -1,0 +1,9 @@
+# PPO settings for cmd=tag: AgentCfg in scripts/mofo_train.py. Unset keys keep its defaults,
+# the stock mjlab G1 rl_cfg values (num_steps_per_env 24, num_mini_batches 4,
+# num_learning_epochs 5, schedule adaptive, desired_kl 0.01, gamma 0.99, lam 0.95,
+# entropy_coef 0.01, clip_param 0.2, max_grad_norm 1.0, save_interval 50).
+defaults:
+  - schema
+  - _self_
+
+learning_rate: 1.0e-4   # Fine-tune lr for the fresh optimizer (stage 1 starts at 1e-3).

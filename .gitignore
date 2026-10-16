@@ -3,5 +3,9 @@ __pycache__/
 *.py[cod]
 MUJOCO_LOG.TXT
 logs/
+.venv/
 wandb/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
 .sbatch

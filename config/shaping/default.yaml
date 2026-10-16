@@ -1,0 +1,11 @@
+# Potential-based shaping: mofo.tasks.tag.ShapingCfg. F = gamma*phi(s') - phi(s) with
+# phi(s') = 0 at every terminal state (terminations and timeouts), so each episode's
+# discounted shaping sums to -weight*phi(s0) and the optimal policy is unchanged.
+defaults:
+  - schema
+  - _self_
+
+enabled: false
+weight: 1.0             # Per-episode scale (phi in metres).
+gamma: ${agent.gamma}   # The PPO discount; cmd=tag asserts they match.
+potential: distance     # phi = -role * base xy distance (pursuer wants it small).
