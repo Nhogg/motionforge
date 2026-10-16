@@ -51,7 +51,7 @@ class Config:
     boundary_command_safety_enabled: bool = True
     boundary_command_margin: float = 1.0
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     output: Path = Path("logs/hierarchical/trajectories/checkpoint_path.png")
 

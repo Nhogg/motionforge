@@ -47,7 +47,7 @@ class Config:
     initial_separation: float | None = None
     use_training_reset: bool = False
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     role: str = "pursuer"
     seed: int = 0

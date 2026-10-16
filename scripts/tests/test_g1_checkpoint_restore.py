@@ -32,7 +32,7 @@ from motionforge.envs.g1_standing import G1StandingJoystick, default_config
 @dataclass
 class Config:
     checkpoint: Path = Path(
-        "logs/p2/training/g1_standing_full_seed0/checkpoints/000191692800"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     seed: int = 0
     rollout_steps: int = 10

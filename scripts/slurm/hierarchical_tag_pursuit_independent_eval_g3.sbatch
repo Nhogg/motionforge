@@ -29,7 +29,7 @@ else
   OPPONENT=logs/hierarchical/training/tag_ablation_historical_050_strategy_lr_1e3_seed2_job4004/checkpoints/000000000500
   OPPONENT_NAME=ablation_seed2_iter500
 fi
-LOCOMOTION=logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320
+LOCOMOTION=logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640
 for CHECKPOINT in "${LOCOMOTION}" "${LEARNER}" "${OPPONENT}"; do
   if [[ ! -d "${CHECKPOINT}" ]]; then
     echo "Missing checkpoint: ${CHECKPOINT}" >&2

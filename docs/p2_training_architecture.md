@@ -578,10 +578,11 @@ rad/s. After the forward-to-zero switch, mean forward speed during the final
 five seconds was approximately 0.044 m/s. Standing remained stable and nearly
 stationary.
 
-This checkpoint is accepted as the current fixed-command candidate. Additional
-training is not justified before recovery evaluation because the specific
-command-coverage failure motivating continuation has been resolved without
-regressing the other P2 behaviors.
+This checkpoint was accepted as the fixed-command candidate before the artifact
+was lost. Additional training was not justified at that point because the
+specific command-coverage failure motivating continuation had been resolved
+without regressing the other P2 behaviors. The replacement current controller
+is documented below.
 
 - `logs/p2/g1_structured_finetune_40m_evaluation_a.json`
 
@@ -761,3 +762,36 @@ transitions, compared with 289/320 for the candidate; both survived all 80
 rollouts. Consequently, none of the P4 rapid-transition continuations replaces
 the accepted P2 checkpoint. The parent remains the controller baseline, with
 perfect measured physical survival but imperfect two-second tracking recovery.
+
+## Replacement P2 controller after artifact loss
+
+The original structured 40M checkpoint was not recoverable from local storage,
+Git, or W&B. A compatible current-source rebuild therefore trained from
+scratch for 200,000,000 environment steps with seed 0, 8192 Warp training
+environments, 128 evaluation environments, 1000-step episodes, 20-step
+unrolls, batch size 256, 32 minibatches, four PPO updates per batch, and the
+structured command distribution. The run reached 200,048,640 steps, retained
+finite metrics, and created a loadable checkpoint:
+
+- `logs/p2/training/g1_rebuilt_full_seed0/manifest.json`
+- `logs/p2/training/g1_rebuilt_full_seed0/summary.json`
+- `logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640/`
+
+The replacement passed the deterministic ten-scenario command suite across
+four reset seeds: all 40 rollouts remained finite and survived. Mean tracking
+RMSE was 0.076--0.204 m/s for standing, longitudinal, and lateral commands,
+and 0.286--0.539 rad/s for yaw and curved commands. The forward-to-stop,
+lateral, pure-yaw, and diagonal command videos were rendered from this exact
+checkpoint and retained with JSON diagnostics:
+
+- `logs/p2/videos/g1_rebuilt_full_seed0/forward_stop.mp4`
+- `logs/p2/videos/g1_rebuilt_full_seed0/lateral_left.mp4`
+- `logs/p2/videos/g1_rebuilt_full_seed0/turn_left.mp4`
+- `logs/p2/videos/g1_rebuilt_full_seed0/diagonal_turn.mp4`
+
+The hierarchical TAG entrypoint and checkpoint-dependent launchers now default
+to this replacement. A fresh run also defaults to explicit current-policy
+self-play; supplying historical snapshots opts into the documented mixed
+league. Its TAG integration passed the GPU checkpoint-restore, multirate
+rollout, batched-training, and one-iteration end-to-end smoke tests, including
+a category assertion that the fresh-run opponent was `recent`/self-play.

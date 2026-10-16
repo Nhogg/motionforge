@@ -46,7 +46,7 @@ echo "host=$(hostname) gpu=${CUDA_VISIBLE_DEVICES:-unset} learner=${LEARNER} opp
 uv run scripts/evaluation/evaluate_hierarchical_tag.py \
   checkpoint="${LEARNER}" \
   opponent_checkpoint="${OPPONENT}" \
-  locomotion_checkpoint=logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320 \
+  locomotion_checkpoint=logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640 \
   seed=0 \
   seeds=16 \
   duration=10.0 \

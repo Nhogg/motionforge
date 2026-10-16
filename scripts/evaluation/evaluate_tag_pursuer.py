@@ -33,7 +33,7 @@ class Config:
         "logs/p7/training/tag_pursuer_128k_seed0/checkpoints/000000122880"
     )
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     seed: int = 1000
     seeds: int = 32

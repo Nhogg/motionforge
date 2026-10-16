@@ -52,7 +52,7 @@ from motionforge.training import (
 class Config:
     tag_reward: TagRewardConfig = field(default_factory=TagRewardConfig)
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     restore_checkpoint: Path | None = None
     historical_opponent_checkpoints: list[str] = field(default_factory=list)
@@ -66,7 +66,7 @@ class Config:
     initial_heading_noise_radians: float = 0.0
     historical_opponent_probability: float = 0.75
     recent_opponent_probability: float | None = None
-    opponent_mode: str = "warm_start"
+    opponent_mode: str = "self_play"
     checkpoint_interval: int = 5
     save_initial_checkpoint: bool = False
     naconmax_per_environment: int = 64
@@ -197,8 +197,8 @@ def _validate_config(config: Config) -> None:
         mixed_opponent_probabilities(
             config.historical_opponent_probability, config.recent_opponent_probability
         )
-    if config.opponent_mode not in {"warm_start", "stationary"}:
-        raise ValueError("opponent_mode must be warm_start or stationary")
+    if config.opponent_mode not in {"self_play", "warm_start", "stationary"}:
+        raise ValueError("opponent_mode must be self_play, warm_start, or stationary")
     if not 0.0 <= config.learner_pursuer_probability <= 1.0:
         raise ValueError("learner_pursuer_probability must be in [0, 1]")
     if config.strategy_discount != 1.0:
@@ -284,8 +284,11 @@ def main(config: Config) -> None:
         p2_parameters[1],
     )
     opponent_parameters = parameters
-    opponent_id = "warm-start/p2"
-    opponent_category = "warm_start"
+    opponent_id = "current/self-play"
+    opponent_category = "recent"
+    if config.opponent_mode == "warm_start":
+        opponent_id = "warm-start/p2"
+        opponent_category = "warm_start"
     if config.opponent_mode == "stationary":
         opponent_parameters = make_stationary_hierarchical_opponent(parameters)
         opponent_id = "curriculum/stationary"
@@ -351,6 +354,14 @@ def main(config: Config) -> None:
 
     def configure_training_league(current_parameters) -> None:
         if not historical_opponents:
+            if config.opponent_mode == "self_play":
+                environment.league = FixedLeague(
+                    LeagueOpponent(
+                        opponent_id="current/self-play",
+                        category="recent",
+                        policy=jax.tree.map(lambda value: value, current_parameters),
+                    )
+                )
             return
         probabilities = mixed_opponent_probabilities(
             config.historical_opponent_probability, config.recent_opponent_probability

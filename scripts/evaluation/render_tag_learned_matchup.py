@@ -33,7 +33,7 @@ class Config:
     pursuer_checkpoint: Path = Path("???")
     evader_checkpoint: Path = Path("???")
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     pursuer_fixed_noise_std: float = 0.2
     evader_fixed_noise_std: float = 0.2

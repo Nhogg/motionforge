@@ -28,7 +28,7 @@ class Config:
     current_pursuer_generation: int | None = None
     current_evader_generation: int | None = None
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     round_index: int = 1
     seed: int = 0

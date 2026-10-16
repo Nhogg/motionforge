@@ -22,7 +22,7 @@ VARIANT_INDEX="$((TASK_ID / 2))"
 FREEZE=false
 OPPONENT_MODE=warm_start
 LEAGUE_ARGS=()
-LOCOMOTION=logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320
+LOCOMOTION=logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640
 HBASE=logs/hierarchical/training/tag_sparse_terminal_640k_seed0/checkpoints
 HISTORICAL="[$HBASE/000000000005,$HBASE/000000000010,$HBASE/000000000015,$HBASE/000000000020]"
 

@@ -15,6 +15,89 @@ def _sigmoid(value: float) -> float:
 
 
 @dataclass
+class TagCheckpointElo:
+    """Role-conditioned Elo ratings from complete TAG outcomes only.
+
+    A valid TAG is a pursuer win. Timeouts, physical failures, and nonfinite
+    endings are recorded by the evaluator but are deliberately not rating
+    games.
+    """
+
+    baseline_pursuer_win_probability: float = 0.65
+    learning_rate: float = 24.0
+    rating_scale: float = 400.0 / math.log(10.0)
+    initial_rating: float = 1_000.0
+    ratings: dict[str, dict[str, float]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.baseline_pursuer_win_probability < 1.0:
+            raise ValueError("baseline pursuer win probability must be in (0, 1)")
+        if self.learning_rate <= 0.0 or self.rating_scale <= 0.0:
+            raise ValueError("Elo learning rate and rating scale must be positive")
+
+    @property
+    def role_bias(self) -> float:
+        probability = self.baseline_pursuer_win_probability
+        return math.log(probability / (1.0 - probability))
+
+    def _checkpoint(self, checkpoint_id: str) -> dict[str, float]:
+        return self.ratings.setdefault(
+            checkpoint_id,
+            {
+                "pursuer": self.initial_rating,
+                "evader": self.initial_rating,
+            },
+        )
+
+    def expected_pursuer_win(
+        self,
+        pursuer_id: str,
+        evader_id: str,
+    ) -> float:
+        pursuer = self._checkpoint(pursuer_id)["pursuer"]
+        evader = self._checkpoint(evader_id)["evader"]
+        return _sigmoid((pursuer - evader) / self.rating_scale + self.role_bias)
+
+    def update(
+        self,
+        *,
+        pursuer_id: str,
+        evader_id: str,
+        pursuer_won: bool,
+    ) -> dict[str, float]:
+        expected = self.expected_pursuer_win(pursuer_id, evader_id)
+        score = 1.0 if pursuer_won else 0.0
+        delta = self.learning_rate * (score - expected)
+        self._checkpoint(pursuer_id)["pursuer"] += delta
+        self._checkpoint(evader_id)["evader"] -= delta
+        return {
+            "expected_pursuer_win": expected,
+            "rating_delta": delta,
+        }
+
+    def snapshot(self, checkpoint_id: str) -> dict[str, float]:
+        values = self._checkpoint(checkpoint_id)
+        pursuer = values["pursuer"]
+        evader = values["evader"]
+        return {
+            "pursuer_elo": pursuer,
+            "evader_elo": evader,
+            "combined_elo": 0.5 * (pursuer + evader),
+            "pursuer_relative_skill": _sigmoid(
+                (pursuer - self.initial_rating) / self.rating_scale
+            ),
+            "evader_relative_skill": _sigmoid(
+                (evader - self.initial_rating) / self.rating_scale
+            ),
+            "combined_relative_skill": 0.5
+            * (
+                _sigmoid((pursuer - self.initial_rating) / self.rating_scale)
+                + _sigmoid((evader - self.initial_rating) / self.rating_scale)
+            ),
+        }
+
+
+@dataclass
 class TagEloTracker:
     """Track separate pursuer and evader ratings with structural role bias."""
 

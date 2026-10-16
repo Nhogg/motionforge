@@ -50,7 +50,7 @@ CONDITIONS = ("learned_tag", "scripted_tag", "random_commands")
 @dataclass
 class Config:
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     pursuer_checkpoint: Path = Path(
         "logs/p7/training/tag_pursuer_fixed_noise_1m_seed0/checkpoints/000001146880"

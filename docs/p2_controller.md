@@ -116,9 +116,10 @@ self-balancing static controller, so fixed pose hold is also rejected.
 
 ## MotionForge controller boundary
 
-After structured-command training and acceptance evaluation, MotionForge uses
-checkpoint `g1_structured_finetune_40m_seed0/000040632320` as the current
-locomotion prior. The public high-level command is a three-element vector:
+After the original P2 artifact was lost, MotionForge rebuilt the locomotion
+prior with the current source and uses checkpoint
+`g1_rebuilt_full_seed0/000200048640` as the current controller. The public
+high-level command is a three-element vector:
 
 ```text
 [desired pelvis-frame forward velocity (m/s),

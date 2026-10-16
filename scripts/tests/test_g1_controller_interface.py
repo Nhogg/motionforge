@@ -21,8 +21,8 @@ from motionforge.envs.g1_standing import G1StandingJoystick, default_config
 @dataclass
 class Config:
     checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/"
-        "000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/"
+        "000200048640"
     )
     seed: int = 0
     command_x: float = 0.3

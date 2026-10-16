@@ -26,7 +26,7 @@ export MUJOCO_GL=egl
 echo "host=$(hostname) gpu=${CUDA_VISIBLE_DEVICES:-unset} seed=${SEED} run=${RUN}"
 
 uv run scripts/training/train_hierarchical_tag.py \
-  locomotion_checkpoint=logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320 \
+  locomotion_checkpoint=logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640 \
   "historical_opponent_checkpoints=${HISTORICAL}" \
   historical_opponent_probability=0.75 \
   minimum_initial_separation=1.5 \

@@ -21,7 +21,7 @@ if (( TASK % 2 == 1 )); then
   VARIANT=potential025
 fi
 PYTHON=/home/nhogg/motionforge/.venv/bin/python
-LOCOMOTION=logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320
+LOCOMOTION=logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640
 HBASE=logs/hierarchical/training/tag_sparse_terminal_640k_seed0/checkpoints
 HISTORICAL="[$HBASE/000000000005,$HBASE/000000000010,$HBASE/000000000015,$HBASE/000000000020]"
 for CHECKPOINT in "${LOCOMOTION}" "${HBASE}"/{000000000005,000000000010,000000000015,000000000020}; do

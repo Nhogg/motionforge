@@ -42,7 +42,7 @@ class Config:
     initial_separation: float = 2.0
     episode_duration: float = 20.0
     locomotion_checkpoint: Path = Path(
-        "logs/p2/training/g1_structured_finetune_40m_seed0/checkpoints/000040632320"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     seed: int = 0
     seeds: int = 4

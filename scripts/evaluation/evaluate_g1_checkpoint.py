@@ -33,7 +33,7 @@ COMMAND_OBSERVATION_SLICE = slice(9, 12)
 @dataclass
 class Config:
     checkpoint: Path = Path(
-        "logs/p2/training/g1_standing_full_seed0/checkpoints/000191692800"
+        "logs/p2/training/g1_rebuilt_full_seed0/checkpoints/000200048640"
     )
     seed: int = 0
     seeds: int = 4
