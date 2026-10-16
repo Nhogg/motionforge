@@ -1,0 +1,32 @@
+# scripts/eval.py: one tag policy plays both seats in num_envs worlds, rendered overlaid in one MP4.
+#   eval.py policy=CKPT [stochastic=true] [freeze=false steps=1500] [reset=legacy] [rules.tag_mode=contact]
+defaults:
+  - common
+  - rules: default
+  - reset: default
+  - shaping: default
+  - gait: default
+  - _self_
+
+policy: ???
+seed: 0
+num_envs: 16
+env_spacing: 0.0   # Every world at the origin, so one fixed camera sees all of them.
+stochastic: false  # Sample actions from the checkpoint's Gaussian (std = distribution.std_param).
+freeze: true       # Hold each world's last frame once its first episode ends: num_envs complete games.
+steps: null        # Steps to record; null = until every world has finished (freeze) or one episode.
+alpha: 0.5         # Robot opacity per world; frozen (finished) worlds at 0.6x.
+out: logs/mofo/evalviz/selfplay.mp4  # Also <out>.png (base trails) and <out>.json (outcomes).
+shaping:
+  gamma: 0.99      # Unused here (no training); replaces the ${agent.gamma} interpolation.
+
+video:
+  pursuer_rgba: [0.85, 0.1, 0.1, 1.0]
+  evader_rgba: [0.55, 0.8, 1.0, 1.0]
+  camera:          # Looks at the arena center from `back` m behind (-y) and `up` m high.
+    back: 7.0
+    up: 8.0
+    width: 960
+    height: 720
+    fovy: null     # Degrees; null = MuJoCo default (45).
+    data_types: [rgb, segmentation]
