@@ -281,9 +281,11 @@ def check(cfg: DictConfig) -> None:
   out, rew, dones = step_with_roles([1, -1, 1, -1, 1, -1])
   print("distance", [round(x, 2) for x in d])
   print("teleport outcome", out, "reward", [round(x, 2) for x in rew], "dones", dones)
-  assert out == [1, -1, -1, 1, 0, 0], out
-  assert dones == [1, 1, 1, 1, 0, 0], dones
-  assert all(x > win for x in rew[0::3]) and all(x < -win for x in rew[1:3]), rew
+  now = int(rules.tag_confirm_s == 0)  # A confirm window defers the tags (check_v4_rules covers them).
+  assert out == [now, -now, -1, 1, 0, 0], out
+  assert dones == [now, now, 1, 1, 0, 0], dones
+  wins, losses = ([0, 3], [1, 2]) if now else ([3], [2])
+  assert all(rew[i] > win for i in wins) and all(rew[i] < -win for i in losses), rew
 
   venv.reset()  # Fresh spawns, then timeout: evader wins.
   env.episode_length_buf[:] = env.max_episode_length - 1
@@ -293,10 +295,77 @@ def check(cfg: DictConfig) -> None:
 
   check_shaping(env, venv, g, near)
   check_scripted_side(env, venv)
+  if not contact:
+    check_v4_rules(cfg)
   check_spawn(cfg, g)
-  check_selfplay(cfg, g, near)
-  check_league(cfg, g, near)
+  g0 = SimpleNamespace(**{**vars(g), "rules": replace(g.rules, tag_confirm_s=0.0)})  # Their forced tags end at once.
+  check_selfplay(cfg, g0, near)
+  check_league(cfg, g0, near)
   print("check OK")
+
+
+def check_v4_rules(cfg) -> None:
+  """v4 rules, forced on: tag_confirm_s=0.2 (10 steps), fall_reward=-1.5*win_reward, in a
+  self-play env (envs 0-2 self-play seats, 3-5 vs the scripted placeholder). A tag counts only
+  if the pursuer stays up through the window; an own fall pays fall_reward; both seats and the
+  league read one outcome()."""
+  g = game(cfg, rules={"tag_confirm_s": 0.2, "fall_reward": -1.5 * cfg.rules.win_reward})
+  w, fall = g.rules.win_reward, g.rules.fall_reward
+  env = make_env(cfg, 8, g, eval=True, selfplay=True)
+  venv = OpponentEnv(env, scripted_league(env, None, cfg.device), selfplay_frac=0.5)
+  N, n = env.num_envs, venv.n_sp
+  a, b, ids = env.scene["robot"], env.scene["opponent"], torch.arange(N, device=env.device)
+  names = env.reward_manager.active_terms
+  zero = torch.zeros(N + n, venv.num_actions, device=env.device)
+  lying = torch.tensor([0.7071, 0.0, 0.7071, 0.0], device=env.device)  # Pitched 90 deg: fell_over.
+
+  def put(ent, e, pos=None, quat=None):
+    s = _root(ent)
+    if pos is not None:
+      s[e, :3] = pos
+    if quat is not None:
+      s[e, 3:7] = quat
+    ent.write_root_state_to_sim(s[e : e + 1], env_ids=ids[e : e + 1])
+
+  venv.reset()
+  env.command_manager.get_term("role").role[:, 0] = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, 1.0], device=env.device)
+  r0 = role(env).clone()
+  sa, sb = _root(a), _root(b)
+  for e in (0, 1, 2, 3, 6, 7):  # Contact at 0.49 m (< tag radius, bodies just clear).
+    put(b, e, pos=sa[e, :3] + 0.49 * (sb[e, :3] - sa[e, :3]) / (sb[e, :3] - sa[e, :3]).norm())
+  put(a, 4, quat=lying)  # Env 4: the learner falls, no tag.
+  env.episode_length_buf[7] = env.max_episode_length - 4  # Env 7: timeout inside the window.
+  env.sim.forward()
+  log, metrics = [], {}
+  for step in range(1, 13):
+    if step == 4:  # Inside the window: pursuers fall in envs 0 (learner) and 3 (opponent); env 6's evader falls.
+      put(a, 0, quat=lying)
+      put(b, 3, quat=lying)
+      put(b, 6, quat=lying)
+    _, rew, dones, extras = venv.step(zero)
+    for k, v in extras["log"].items():
+      if "tag_confirm" in k and dones[:N].any():
+        metrics.setdefault(k, []).append((step, round(float(v), 3)))
+    out = outcome(env, r0)
+    r = env.reward_manager._step_reward * env.step_dt
+    for e in [e for e in dones[:N].nonzero()[:, 0].tolist() if e not in {x[0] for x in log}]:  # First episode only.
+      seat = {"robot": rew[e].item(), **({"opponent": rew[N + e].item()} if e < n else {})}
+      log.append((e, step, out[e].item(), seat, {k: round(r[e, names.index(k)].item(), 2) for k in ("tag", "fell_extra", PREFIX + "fell_extra") if k in names}))
+  for row in log:
+    print("  v4: env %d ends at step %d, learner outcome %+.0f, seat rewards %s, terms %s" % (row[0], row[1], row[2], {k: round(v, 2) for k, v in row[3].items()}, row[4]))
+  ends = {e: (step, o, terms) for e, step, o, _, terms in log}
+  assert ends[4][:2] == (1, -1) and abs(ends[4][2]["tag"] + ends[4][2]["fell_extra"] - fall) < 1e-4, ends[4]
+  assert ends[0][:2] == (4, -1) and abs(ends[0][2]["tag"] + ends[0][2]["fell_extra"] - fall) < 1e-4, ends[0]  # Lunge, then fell.
+  assert ends[3][:2] == (4, 1) and abs(ends[3][2]["tag"] - w) < 1e-4, ends[3]  # Opponent pursuer fell in its window.
+  assert ends[1][:2] == (11, -1) and ends[2][:2] == (11, 1), (ends[1], ends[2])  # Tags confirmed after 10 steps.
+  assert ends[6][:2] == (4, 1) and ends[7][:2] == (4, 1), (ends[6], ends[7])  # Evader fell / timeout: tag stands.
+  assert 5 not in ends
+  print("  v4 metrics (step, mean over envs ending then):", metrics)
+  m = {k.split("/")[-1]: dict(v) for k, v in metrics.items()}
+  assert m["tag_confirmed"][4] == 0.5 and m["tag_confirm_fail"][4] == 0.5 and m["tag_confirmed"][11] == 1.0, m  # Step 4: envs 0,3 fail; 6,7 win.
+  seats = {e: s for e, _, _, s, _ in log}
+  assert seats[0]["opponent"] > w / 2 and seats[1]["opponent"] > w / 2 and seats[2]["opponent"] < -w / 2, seats
+  print("v4 rules OK")
 
 
 def check_scripted_side(env, venv) -> None:
@@ -339,7 +408,7 @@ def check_shaping(env, venv, g, near) -> None:
   phi0, ret, t = prev.clone(), torch.zeros_like(prev), torch.zeros_like(prev)
   fresh = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
   err, err_fresh, episodes = 0.0, 0.0, []
-  for step in range(1, 21):
+  for step in range(1, 21 + round(g.rules.tag_confirm_s / env.step_dt)):  # Deferred tags end later.
     for e, (k, how) in force.items():  # Teleport just before the forced terminal step.
       if step == k and how != "time":
         sa, sb, i = _root(a)[e : e + 1], _root(b)[e : e + 1], ids[e : e + 1]

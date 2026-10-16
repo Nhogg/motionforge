@@ -17,6 +17,7 @@ from mjlab.envs.mdp.terminations import nan_detection
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
@@ -46,6 +47,10 @@ class TagRules:
   fall_loses: bool = True  # Otherwise falling ends the episode as a draw.
   out_loses: bool = True  # Otherwise leaving the arena ends the episode as a draw.
   learner_role: str = "random"  # random (50/50 per episode) | pursuer | evader.
+  fall_reward: float | None = None  # A seat's reward when it falls (null: -win_reward).
+  out_reward: float | None = None  # A seat's reward when it leaves the arena (null: -win_reward).
+  tag_confirm_s: float = 0.0  # A tag counts once the pursuer stays up this long after contact.
+  alive_reward: float = 0.0  # Per-step reward per seat while upright.
 
   def __post_init__(self):
     assert self.tag_mode in ("distance", "contact"), self.tag_mode
@@ -178,6 +183,55 @@ def tagged(env: ManagerBasedRlEnv) -> torch.Tensor:
   if rules.tag_mode == "distance":
     return distance(env) < rules.tag_radius
   return torch.where(role(env) > 0, touching(env, "tag_robot"), touching(env, "tag_opponent"))
+
+
+class tag_confirmed:
+  """Tag termination when ``tag_confirm_s`` > 0: the first contact locks the tag and starts a
+  window; the episode runs on and the tag ends it once the pursuer has stayed up for
+  ``tag_confirm_s``, or at the timeout (a pending tag counts if the pursuer is still up). A
+  fall/exit inside the window ends it at once through the normal fall/out terminations, which
+  outcome() ranks above the tag: the pursuer's loses, the evader's still loses to the tag.
+  outcome() and Phi(terminal)=0 need no change."""
+
+  def __init__(self, cfg: TerminationTermCfg, env: ManagerBasedRlEnv):
+    self.start = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
+    self.steps = round(tag_rules(env).tag_confirm_s / env.step_dt)
+
+  def __call__(self, env: ManagerBasedRlEnv) -> torch.Tensor:
+    t = env.episode_length_buf
+    self.start = torch.where(tagged(env) & (self.start < 0), t, self.start)
+    return (self.start >= 0) & ((t - self.start >= self.steps) | (t >= env.max_episode_length))
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    self.start[slice(None) if env_ids is None else env_ids] = -1
+
+
+def _pending_down(env: ManagerBasedRlEnv, seat_sign: float) -> torch.Tensor:
+  """A locked tag is pending and the pursuer (+1) / evader (-1) fell or left this step."""
+  t, start = env.termination_manager.get_term, env.termination_manager.get_term_cfg("tagged").func.start
+  robot = t("fell_over") | t("robot_out")
+  other = t("opponent_fell_over") | t("opponent_out")
+  return (start >= 0) & torch.where(seat_sign * role(env) > 0, robot, other)
+
+
+def tag_confirmed_now(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """1 where a tag won: confirmed by the window, or standing because the evader went down in it."""
+  return (env.termination_manager.get_term("tagged") | (_pending_down(env, -1.0) & ~_pending_down(env, 1.0))).float()
+
+
+def tag_confirm_fail(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """1 where a locked tag ended because the pursuer fell or left inside the window."""
+  return _pending_down(env, 1.0).float()
+
+
+def seat_end(env: ManagerBasedRlEnv, kind: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+  """1.0 where this seat's own fall ("fell") or exit ("out") ended the episode."""
+  name = {"fell": "fell_over", "out": "robot_out"}[kind]
+  return env.termination_manager.get_term(name if asset_cfg.name == "robot" else f"opponent_{name.removeprefix('robot_')}").float()
+
+
+def alive(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+  return 1.0 - seat_end(env, "fell", asset_cfg)
 
 
 def out_of_arena(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -366,6 +420,13 @@ def tag_env_cfg(
     cfg.rewards["action_rate_l2"], func=action_rate_l2, params={"action_name": ACTION["robot"]}
   )
   cfg.rewards["tag"] = RewardTermCfg(func=tag_result, weight=rules.win_reward / dt)
+  # Own fall/exit on top of the tag term's -win_reward (0 if it is a draw): totals fall/out_reward.
+  for kind, total, loses in (("fell", rules.fall_reward, rules.fall_loses), ("out", rules.out_reward, rules.out_loses)):
+    if total is not None:
+      extra = total + (rules.win_reward if loses else 0.0)
+      cfg.rewards[f"{kind}_extra"] = RewardTermCfg(func=seat_end, weight=extra / dt, params={"kind": kind})
+  if rules.alive_reward:
+    cfg.rewards["alive"] = RewardTermCfg(func=alive, weight=rules.alive_reward / dt)
   if shaping_cfg.enabled:
     cfg.commands["potential"] = PotentialCfg(potential=shaping_cfg.potential)  # After role.
     cfg.rewards["shaping"] = RewardTermCfg(
@@ -388,11 +449,16 @@ def tag_env_cfg(
   fell = cfg.terminations["fell_over"]
   cfg.terminations.update(
     opponent_fell_over=replace(fell, params={**fell.params, "asset_cfg": SceneEntityCfg("opponent")}),
-    tagged=TerminationTermCfg(func=tagged),
+    tagged=TerminationTermCfg(func=tag_confirmed if rules.tag_confirm_s > 0 else tagged),
     robot_out=TerminationTermCfg(func=out_of_arena, params={"asset_cfg": SceneEntityCfg("robot")}),
     opponent_out=TerminationTermCfg(func=out_of_arena, params={"asset_cfg": SceneEntityCfg("opponent")}),
     # Physics blew up (NaN/Inf qpos/qvel/qacc/sensordata): reset that env as a draw (outcome 0;
     # NaN rewards are zeroed by the reward manager). Counted as Episode_Termination/nan_reset.
     nan_reset=TerminationTermCfg(func=nan_detection),
   )
+  if rules.tag_confirm_s > 0:  # Per-episode rates, logged as Episode_Metrics/*.
+    cfg.metrics.update(
+      tag_confirmed=MetricsTermCfg(func=tag_confirmed_now, reduce="max"),
+      tag_confirm_fail=MetricsTermCfg(func=tag_confirm_fail, reduce="max"),
+    )
   return cfg

@@ -12,3 +12,9 @@ tag_bodies: [pelvis]    # contact mode: pursuer body subtrees (regex) that tag; 
 win_reward: 10.0        # Sparse +-reward per episode outcome.
 fall_loses: true        # Falling loses; false: it ends the episode as a draw.
 out_loses: true         # Leaving the arena loses; false: it ends the episode as a draw.
+learner_role: random    # random (50/50 per episode) | pursuer | evader (eval).
+fall_reward: null       # A seat's total reward when it falls; null: -win_reward (a plain loss).
+out_reward: null        # Same for leaving the arena; null: -win_reward.
+tag_confirm_s: 0.0      # A tag counts only once the pursuer stays up this long after contact (the
+                        # episode runs on; a pursuer fall in the window is its loss). 0: immediate.
+alive_reward: 0.0       # Per-step reward per seat while upright.
