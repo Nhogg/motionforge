@@ -1,0 +1,12 @@
+# scripts/demo.py: two-G1 zero-action smoke test.
+defaults:
+  - common
+  - _self_
+
+steps: 100
+video: null      # MP4 path: record env 0 from a fixed world camera (forces num_envs=1).
+no_fall: false   # Drop fell_over terminations.
+policy: null     # Stage-1 checkpoint: drive both robots with it (else zero actions = hold pose).
+commands:        # Per-robot stage-1 velocity command (vx, vy, wz) when policy is set: opposite circles.
+  g1_a: [0.5, 0.0, 0.5]
+  g1_b: [0.5, 0.0, -0.5]

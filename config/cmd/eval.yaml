@@ -1,0 +1,5 @@
+policy: null      # Tag checkpoint, or stage-1 checkpoint with baseline=true.
+baseline: false   # Drive policy with scripted commands.
+out: logs/mofo/eval.json
+video: null       # MP4 path.
+opponent_policy: null  # Tag checkpoint as the opponent (head-to-head), instead of the scripted one.

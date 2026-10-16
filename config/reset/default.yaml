@@ -1,0 +1,17 @@
+# Spawn distribution: mofo.tasks.tag.ResetCfg. Separation d ~ density falling linearly from
+# d_min to d_max (p_min_ratio = 0.1: d_max keeps 10% of the peak density, so 5 m still gets
+# ~1% of spawns per 0.25 m bin); uniform direction; the pair placed uniformly with both
+# robots >= wall_margin inside the arena.
+defaults:
+  - schema
+  - _self_
+
+placement: uniform      # uniform | centered (pair midpoint at the arena center).
+separation: linear      # linear | exponential (truncated, decay `scale`) | fixed (always d_min).
+d_min: 0.75             # Must exceed rules.tag_radius (and G1_CLEARANCE = 0.6 in contact mode).
+d_max: 5.0              # <= arena diagonal minus margins (side minus margins if centered).
+p_min_ratio: 0.1        # linear: density at d_max / density at d_min, in (0, 1].
+scale: 1.5              # exponential: decay length (m).
+wall_margin: 0.5        # Min distance (m) from each robot's base to the arena wall.
+heading: facing         # facing | random (independent uniform yaws).
+yaw_noise: 0.0          # facing: uniform +-yaw_noise (rad) per robot.

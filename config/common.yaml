@@ -1,0 +1,9 @@
+# @package _global_
+# Shared by every script config: pulled in through `defaults: [common]`.
+device: null  # null = cuda:0 if available, else cpu.
+
+hydra:
+  run:
+    dir: logs/hydra/${hydra.job.name}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false  # Run in the submit dir, so relative paths stay repo-relative.

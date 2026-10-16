@@ -1,0 +1,11 @@
+# The original spawn, reproduced exactly: 2 m apart, centered, random angle, facing each other.
+defaults:
+  - schema
+  - _self_
+
+placement: centered
+separation: fixed
+d_min: 2.0
+d_max: 2.0
+heading: facing
+yaw_noise: 0.0

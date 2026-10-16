@@ -1,0 +1,5 @@
+num_envs: 6         # Teleport and shaping tests use six fixed envs.
+spawn_envs: 2048    # Spawn-distribution test: envs x resets samples (fits an 8 GB RTX 2080).
+spawn_resets: 16
+plots: null         # Directory for the spawn histogram/scatter PNGs (null: no plots).
+stage1: logs/mofo/stage1_snapshot/model_4350.pt  # Scripted opponent for the default-league equivalence test (null: zero actions).
