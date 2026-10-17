@@ -1,7 +1,7 @@
 {
   "experiment_id": "E002",
   "date": "2026-10-17",
-  "status": "submitted; eight training jobs verified running on g4, ninth waiting for resources; evaluation dependencies verified",
+  "status": "completed; nine training runs and all 36 scheduled held-out evaluations finished successfully",
   "source_base": "01c7ace9866d452372f2850510ebfb3b7f4057f5",
   "source_patch": "Each run/git/motionforge.diff",
   "config": "+experiment=recovery",

@@ -56,7 +56,7 @@ unchanged. Test post-TAG recovery separately. The proposed causal explanation is
 that immediate reset hides later falls; E002 tests this explanation rather than
 assuming it has been proven. Evader learning remains a separate unresolved issue.
 
-## E002 — Post-TAG recovery training (protocol frozen 2026-10-17)
+## E002 — Post-TAG recovery training (completed 2026-10-17)
 
 - Hypothesis: exposing post-contact falls to the existing own-failure penalty
   reduces hurling without changing the valid TAG payoff.
@@ -93,8 +93,8 @@ assuming it has been proven. Evader learning remains a separate unresolved issue
   each training run records its source diff in `git/motionforge.diff`.
 - Launch manifest: [E002_launch.json](experiments/E002_launch.json). Submitted
   through `bash scripts/slurm/prod.sbatch uv run ...`, one GPU per training run,
-  on g4. Eight training jobs verified running; the ninth waits for resources.
-  Thirty-six held-out evaluation jobs wait on verified `afterok` dependencies,
+  on g4. All nine training jobs and all 36 held-out evaluations completed.
+  Evaluations ran through verified `afterok` dependencies,
   four per training run (250/999 x self-play/scripted). W&B group:
   `MotionForge / recovery_antihurl`. Checkpoint videos remain enabled.
 - Submission hiccup: jobs 5003–5047 were the failed/cancelled first attempt;
@@ -102,10 +102,55 @@ assuming it has been proven. Evader learning remains a separate unresolved issue
   variable. The template now validates uv and translates dependencies explicitly;
   replacement training uses the explicit `.venv-mjlab` environment. These failed
   jobs are not scientific experiment results and did not complete training.
-- Results pending. No claim that this has solved hurling or evasion yet.
+- Results: [E002_recovery_results.json](experiments/E002_recovery_results.json)
+  contains all 36 evaluation summaries, three-seed means, own-fall/OOB rates by
+  role and training-log means over the last 100 logged iterations. Trial rows
+  remain in the original per-run evaluation JSON files.
 
 | Recovery seconds | Seed 0 training job | Seed 1 training job | Seed 2 training job |
 |---|---:|---:|---:|
 | 0.0 (control) | 5048 | 5053 | 5058 |
 | 0.5 | 5063 | 5068 | 5073 |
 | 1.0 | 5078 | 5083 | 5088 |
+
+### E002 outcome
+
+Three-seed averages; controlled TAG always uses the **same one-second audit**.
+
+| Training recovery | Self-play controlled TAG, 250 | Self-play raw TAG, 999 | Self-play controlled TAG, 999 | Fixed-opponent controlled TAG, 999 |
+|---|---:|---:|---:|---:|
+| 0 s | 69.7% | 100.0% | 18.5% | 35.1% |
+| 0.5 s | 49.7% | 4.4% | 0.0% | 47.2% |
+| 1.0 s | 31.0% | 4.4% | 0.0% | 48.5% |
+
+- Both recovery settings deteriorate in self-play across all three seeds.
+  Either-agent pre-TAG failure is about 95–96% at the final checkpoint; final
+  controlled TAG is zero. Final evader healthy-timeout wins remain zero.
+- The failing agent is the evader, not the pursuer: in the final self-play
+  evaluations, **zero pursuer own-falls** were recorded across all nine runs.
+  Recovery-arm evader own-falls account for about 95% of evader trials; against
+  the fixed opponent, recovery-arm learner-as-evader trials physically fail
+  100% of the time. Do not interpret `physical_failure_rate_pursuer` (which
+  counts either agent ending a learner-as-pursuer episode) as the pursuer falling.
+- Training itself also deteriorates: last-100-iteration physical-failure metrics
+  approach 98–100% in recovery arms, versus about 2.2–2.4% in controls. This is
+  not explained solely by deterministic-vs-stochastic evaluation differences.
+- Video `recovery_g0.5_s0-5063/videos/model_999.mp4` was inspected: the evader
+  tips over before contact. Its trial reports 0 N inter-agent force and 0.93 m
+  separation at failure. This example supports, but does not replace, batch data.
+- Plausible incentive problem: losing a TAG already costs the evader -10;
+  falling during post-TAG recovery can add another -10. Falling before TAG
+  terminates with only the own-failure penalty. This can make early episode
+  abortion less costly than TAG plus a subsequent fall. Intention/causality is
+  not proven by these outcomes; the unobserved recovery phase is another
+  methodological limitation. The tested recovery intervention is therefore
+  rejected, not evidence that all anti-hurling interventions must fail.
+- Fixed-opponent pursuit remains strong in raw TAG terms (93–95% final mean),
+  despite self-play failure. Do not select by that benchmark alone or call this
+  a general loss of the pursuer's locomotion capability.
+
+Decision: do not promote or extend the recovery arms. Keep the previous early
+E001 candidates and immediate-reset reference. The next candidate should address
+contact quality before immediate reset, without adding a second loss exposure
+to the already-tagged evader. No new training was submitted during this analysis;
+that follow-up protocol still needs to be specified and validated separately.
