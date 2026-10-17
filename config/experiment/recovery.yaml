@@ -1,0 +1,9 @@
+# @package _global_
+# Inherit the shaping protocol; vary ONLY rules.post_tag_s and paired training seed.
+defaults:
+  - shaping
+  - _self_
+
+shaping:
+  enabled: true
+  weight: 0.25

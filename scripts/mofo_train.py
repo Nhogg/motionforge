@@ -68,7 +68,9 @@ def game(cfg: DictConfig, **overrides) -> SimpleNamespace:
 
 
 def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfplay=False) -> ManagerBasedRlEnv:
-  env_cfg = tag_env_cfg(g.rules, g.reset, g.shaping)
+  # Evaluation owns its independent first-TAG/recovery audit; never combine it
+  # with the training grace phase or shorten a late TAG's audit at the game limit.
+  env_cfg = tag_env_cfg(replace(g.rules, post_tag_s=0.0) if eval else g.rules, g.reset, g.shaping)
   if selfplay:
     selfplay_env_cfg(env_cfg)
   env_cfg.scene.num_envs, env_cfg.seed, env_cfg.scene.env_spacing = num_envs, cfg.seed, cfg.env_spacing

@@ -51,3 +51,6 @@ failures log `Render/success=0` and a warning; use
 
 See [the shaping ablation protocol](docs/shaping_ablation.md) for TAG versus
 failure semantics, hurling diagnostics, evaluation and the g4 Slurm array.
+
+See the [experiment ledger](docs/experiments.md) for recorded results, decisions
+and the next isolated experiment's protocol and job IDs.

@@ -16,12 +16,15 @@ set -euo pipefail
 if [[ -z ${SLURM_JOB_ID:-} ]]; then
   [[ $# -gt 0 ]] || { echo 'Supply a command to run.' >&2; exit 2; }
   mkdir -p logs/slurm
-  if [[ $1 == uv ]]; then shift; set -- "$(command -v uv)" "$@"; fi
-  # This cluster's sbatch does not recognize SBATCH_NODELIST itself.
-  if [[ -n ${SBATCH_NODELIST:-} ]]; then
-    exec sbatch --nodelist="$SBATCH_NODELIST" "${BASH_SOURCE[0]}" "$@"
+  if [[ $1 == uv ]]; then
+    MOFO_UV=$(command -v uv) || { echo 'uv is not on the submission PATH.' >&2; exit 127; }
+    shift; set -- "$MOFO_UV" "$@"
   fi
-  exec sbatch "${BASH_SOURCE[0]}" "$@"
+  # This cluster does not recognize these SBATCH_* variables itself.
+  MOFO_SUBMIT_FLAGS=()
+  [[ -z ${SBATCH_NODELIST:-} ]] || MOFO_SUBMIT_FLAGS+=(--nodelist="$SBATCH_NODELIST")
+  [[ -z ${SBATCH_DEPENDENCY:-} ]] || MOFO_SUBMIT_FLAGS+=(--dependency="$SBATCH_DEPENDENCY")
+  exec sbatch "${MOFO_SUBMIT_FLAGS[@]}" "${BASH_SOURCE[0]}" "$@"
 fi
 export MUJOCO_GL=disable  # Render with Warp; never load EGL.
 export UV_NO_SYNC=1 XLA_PYTHON_CLIENT_PREALLOCATE=false PYTHONUNBUFFERED=1

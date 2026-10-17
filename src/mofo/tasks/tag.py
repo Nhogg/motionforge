@@ -46,11 +46,13 @@ class TagRules:
   fall_loses: bool = True  # Apply own failure penalty; never award an opponent win.
   out_loses: bool = True  # Apply own failure penalty; never award an opponent win.
   learner_role: str = "random"  # random (50/50 per episode) | pursuer | evader.
+  post_tag_s: float = 0.0  # Training recovery after the one-time TAG payoff; 0 = immediate reset.
 
   def __post_init__(self):
     assert self.tag_mode in ("distance", "contact"), self.tag_mode
     assert self.learner_role in ("random", "pursuer", "evader"), self.learner_role
     assert self.win_reward > 0 and self.episode_s > 0
+    assert math.isfinite(self.post_tag_s) and self.post_tag_s >= 0
     object.__setattr__(self, "tag_bodies", tuple(self.tag_bodies))
 
 
@@ -110,6 +112,9 @@ class RoleCommand(CommandTerm):
   def __init__(self, cfg: RoleCommandCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg, env)
     self.role = torch.ones(self.num_envs, 1, device=self.device)
+    self.tag_step = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
+    self.tag_pulse = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+    self.game_result = torch.zeros(self.num_envs, device=self.device)
     if cfg.colors:  # Per-world mat_rgba (the Warp renderer reads it per world).
       env.sim.expand_model_fields(("mat_rgba",))
       self.mat = [env.sim.mj_model.material(f"{k}/silver").id for k in ("robot", "opponent")]
@@ -120,6 +125,9 @@ class RoleCommand(CommandTerm):
     return self.role
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
+    self.tag_step[env_ids] = -1
+    # Keep game_result until the next termination computation: the league reads
+    # the completed outcome after mjlab has already auto-reset these worlds.
     forced = {"pursuer": 1.0, "evader": -1.0}.get(self.cfg.rules.learner_role)
     self.role[env_ids] = torch.randint_like(self.role[env_ids], 2) * 2 - 1 if forced is None else forced
     if self.cfg.colors:
@@ -167,7 +175,9 @@ def tag_features(env: ManagerBasedRlEnv, me: str, other: str, role_sign: float):
 
 
 def episode_progress(env: ManagerBasedRlEnv) -> torch.Tensor:
-  return (env.episode_length_buf / env.max_episode_length)[:, None].float()
+  # A recovery window must not change the pre-TAG critic observation.
+  horizon = math.ceil(tag_rules(env).episode_s / env.step_dt)
+  return (env.episode_length_buf / horizon)[:, None].float()
 
 
 def touching(env: ManagerBasedRlEnv, sensor: str) -> torch.Tensor:
@@ -192,6 +202,28 @@ def failed(env: ManagerBasedRlEnv) -> torch.Tensor:
   return t("fell_over") | t("opponent_fell_over") | t("robot_out") | t("opponent_out")
 
 
+def game_timeout(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Healthy game deadline, allowing a late TAG its complete recovery window."""
+  state = env.command_manager.get_term("role")
+  return ((env.episode_length_buf * env.step_dt >= tag_rules(env).episode_s - 1e-8)
+          & (state.tag_step < 0) & ~tagged(env))
+
+
+def tag_termination(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Latch the first valid TAG, pay once, and end after recovery or own failures.
+
+  Runs LAST, after all failure/timeout terms. TAG remains the game outcome even
+  if a robot later falls; that robot still receives its separate failure penalty.
+  """
+  state, rules = env.command_manager.get_term("role"), tag_rules(env)
+  state.tag_pulse[:] = (state.tag_step < 0) & tagged(env) & ~failed(env)
+  state.tag_step[state.tag_pulse] = env.episode_length_buf[state.tag_pulse]
+  latched = state.tag_step >= 0
+  state.game_result[:] = game_outcome(latched, env.termination_manager.get_term("time_out"),
+                                      failed(env) & ~latched, role(env))
+  return latched & ((env.episode_length_buf - state.tag_step) * env.step_dt >= rules.post_tag_s - 1e-8)
+
+
 def game_outcome(tag: torch.Tensor, timeout: torch.Tensor, failure: torch.Tensor,
                  learner_role: torch.Tensor) -> torch.Tensor:
   """Only healthy TAG/timeout are game outcomes. Physical failures are censored."""
@@ -200,11 +232,18 @@ def game_outcome(tag: torch.Tensor, timeout: torch.Tensor, failure: torch.Tensor
 
 
 def outcome(env: ManagerBasedRlEnv, learner_role: torch.Tensor) -> torch.Tensor:
+  if tag_rules(env).post_tag_s > 0:
+    return env.command_manager.get_term("role").game_result
   t = env.termination_manager.get_term
   return game_outcome(t("tagged"), t("time_out"), failed(env), learner_role)
 
 
 def tag_result(env: ManagerBasedRlEnv) -> torch.Tensor:
+  if tag_rules(env).post_tag_s > 0:
+    state = env.command_manager.get_term("role")
+    # The +/-10 payoff is paid at first contact, NOT again at recovery completion.
+    return game_outcome(state.tag_pulse, env.termination_manager.get_term("time_out"),
+                        failed(env) & (state.tag_step < 0), role(env))
   return outcome(env, role(env))
 
 
@@ -239,8 +278,10 @@ def quality_metric(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
 
 def ending_metric(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
   t = env.termination_manager.get_term
-  flags = {"valid_tag": t("tagged") & ~failed(env),
-           "healthy_timeout": t("time_out") & ~t("tagged") & ~failed(env), "physical_failure": failed(env)}
+  hit = (env.command_manager.get_term("role").tag_step >= 0) if tag_rules(env).post_tag_s > 0 else t("tagged") & ~failed(env)
+  flags = {"valid_tag": hit,
+           "healthy_timeout": t("time_out") & ~hit & ~failed(env), "physical_failure": failed(env),
+           "post_tag_failure": hit & failed(env), "post_tag_survived": hit & t("tagged") & ~failed(env)}
   return flags[name].float()
 
 
@@ -300,6 +341,12 @@ def shaping(env: ManagerBasedRlEnv, gamma: float, name: str) -> torch.Tensor:
   """gamma*phi(s') - phi(s) with phi(s') = 0 on terminations and timeouts, so each episode's
   discounted shaping sums to -phi(s0): no bias, and nothing carries across an auto-reset."""
   live = ~env.termination_manager.dones
+  if tag_rules(env).post_tag_s > 0:
+    state = env.command_manager.get_term("role")
+    # Close the game potential once on TAG, then no chase reward during recovery.
+    active = (state.tag_step < 0) | state.tag_pulse
+    live = live & (state.tag_step < 0)
+    return torch.where(active, gamma * POTENTIALS[name](env) * live - potential(env), 0.0)
   return gamma * POTENTIALS[name](env) * live - potential(env)
 
 
@@ -381,12 +428,15 @@ def tag_env_cfg(
   dt = cfg.sim.mujoco.timestep * cfg.decimation
   cfg.scene.entities["opponent"] = get_g1_robot_cfg()
   cfg.sim.njmax = 600  # Two robots.
-  cfg.episode_length_s = rules.episode_s
+  cfg.episode_length_s = rules.episode_s + rules.post_tag_s
   cfg.is_finite_horizon = True  # Timeout is an evader win, not a truncation.
   cfg.commands = {"role": RoleCommandCfg(rules=rules)}
   cfg.curriculum = {}
   cfg.metrics = {name: MetricsTermCfg(func=ending_metric, params={"name": name}, reduce="last")
                  for name in ("valid_tag", "healthy_timeout", "physical_failure")}
+  if rules.post_tag_s > 0:
+    cfg.metrics.update({name: MetricsTermCfg(func=ending_metric, params={"name": name}, reduce="last")
+                        for name in ("post_tag_failure", "post_tag_survived")})
   cfg.metrics.update({name: MetricsTermCfg(func=quality_metric, params={"name": name}, reduce="last")
                       for name in ("distance_m", "closing_speed_mps", "pursuer_root_tilt_deg",
                                    "pursuer_angular_speed_radps", "interagent_peak_force_N")})
@@ -455,4 +505,9 @@ def tag_env_cfg(
     robot_out=TerminationTermCfg(func=out_of_arena, params={"asset_cfg": SceneEntityCfg("robot")}),
     opponent_out=TerminationTermCfg(func=out_of_arena, params={"asset_cfg": SceneEntityCfg("opponent")}),
   )
+  if rules.post_tag_s > 0:
+    cfg.terminations["time_out"] = replace(cfg.terminations["time_out"], func=game_timeout, params={})
+    # All current-step failures must be available before deciding valid contact.
+    cfg.terminations.pop("tagged")
+    cfg.terminations["tagged"] = TerminationTermCfg(func=tag_termination)
   return cfg
