@@ -10,7 +10,15 @@
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm/%x-%j.log
+#SBATCH --reservation=tag
 set -euo pipefail
+# Direct invocation submits; Slurm execution runs the supplied command.
+if [[ -z ${SLURM_JOB_ID:-} ]]; then
+  [[ $# -gt 0 ]] || { echo 'Supply a command to run.' >&2; exit 2; }
+  mkdir -p logs/slurm
+  if [[ $1 == uv ]]; then shift; set -- "$(command -v uv)" "$@"; fi
+  exec sbatch "${BASH_SOURCE[0]}" "$@"
+fi
 export MUJOCO_GL=disable  # Render with Warp; never load EGL.
 export UV_NO_SYNC=1 XLA_PYTHON_CLIENT_PREALLOCATE=false PYTHONUNBUFFERED=1
 cd "$SLURM_SUBMIT_DIR"
