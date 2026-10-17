@@ -15,6 +15,7 @@ from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.events import resolve_env_ids
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
+from mjlab.managers.metrics_manager import MetricsTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -42,13 +43,14 @@ class TagRules:
   tag_radius: float = 0.5  # distance: base xy distance below this tags.
   tag_bodies: tuple[str, ...] = ("pelvis",)  # contact: pursuer subtrees (regex) that tag.
   win_reward: float = 10.0
-  fall_loses: bool = True  # Otherwise falling ends the episode as a draw.
-  out_loses: bool = True  # Otherwise leaving the arena ends the episode as a draw.
+  fall_loses: bool = True  # Apply own failure penalty; never award an opponent win.
+  out_loses: bool = True  # Apply own failure penalty; never award an opponent win.
   learner_role: str = "random"  # random (50/50 per episode) | pursuer | evader.
 
   def __post_init__(self):
     assert self.tag_mode in ("distance", "contact"), self.tag_mode
     assert self.learner_role in ("random", "pursuer", "evader"), self.learner_role
+    assert self.win_reward > 0 and self.episode_s > 0
     object.__setattr__(self, "tag_bodies", tuple(self.tag_bodies))
 
 
@@ -87,6 +89,8 @@ class ShapingCfg:
 
   def __post_init__(self):
     assert self.potential in POTENTIALS, self.potential
+    assert math.isfinite(self.weight) and self.weight >= 0
+    assert 0 < self.gamma <= 1
 
 
 @dataclass(kw_only=True)
@@ -183,18 +187,70 @@ def out_of_arena(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Ten
   return wall_distance(env, asset_cfg.name) < 0.0
 
 
+def failed(env: ManagerBasedRlEnv) -> torch.Tensor:
+  t = env.termination_manager.get_term
+  return t("fell_over") | t("opponent_fell_over") | t("robot_out") | t("opponent_out")
+
+
+def game_outcome(tag: torch.Tensor, timeout: torch.Tensor, failure: torch.Tensor,
+                 learner_role: torch.Tensor) -> torch.Tensor:
+  """Only healthy TAG/timeout are game outcomes. Physical failures are censored."""
+  result = torch.where(tag, learner_role, torch.where(timeout, -learner_role, 0.0))
+  return torch.where(failure, 0.0, result)
+
+
 def outcome(env: ManagerBasedRlEnv, learner_role: torch.Tensor) -> torch.Tensor:
-  """+1 learner win, -1 loss, 0 if the episode goes on. Read after terminations."""
-  t, rules = env.termination_manager.get_term, tag_rules(env)
-  lose = (t("fell_over") & rules.fall_loses) | (t("robot_out") & rules.out_loses)
-  win = (t("opponent_fell_over") & rules.fall_loses) | (t("opponent_out") & rules.out_loses)
-  r = learner_role
-  end = torch.where(t("tagged"), r, torch.where(t("time_out"), -r, torch.zeros_like(r)))
-  return torch.where(lose, -1.0, torch.where(win, 1.0, end))
+  t = env.termination_manager.get_term
+  return game_outcome(t("tagged"), t("time_out"), failed(env), learner_role)
 
 
 def tag_result(env: ManagerBasedRlEnv) -> torch.Tensor:
   return outcome(env, role(env))
+
+
+def own_failure(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """Individual penalty, mirrored per seat (NOT a zero-sum game reward)."""
+  t, rules = env.termination_manager.get_term, tag_rules(env)
+  fall, out = ("fell_over", "robot_out") if asset_cfg.name == "robot" else ("opponent_fell_over", "opponent_out")
+  return -((t(fall) & rules.fall_loses) | (t(out) & rules.out_loses)).float()
+
+
+def motion_quality(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
+  """Physical diagnostics only; these do not modify actions or rewards."""
+  a, b = env.scene["robot"].data, env.scene["opponent"].data
+  p = role(env) > 0
+  q = torch.where(p[:, None], a.root_link_quat_w, b.root_link_quat_w)
+  tilt = torch.acos((1 - 2 * (q[:, 1].square() + q[:, 2].square())).clamp(-1, 1))
+  angular = torch.where(p[:, None], a.root_link_ang_vel_w, b.root_link_ang_vel_w).norm(dim=-1)
+  delta, velocity = b.root_link_pos_w[:, :2] - a.root_link_pos_w[:, :2], b.root_link_lin_vel_w[:, :2] - a.root_link_lin_vel_w[:, :2]
+  closing = -(delta * velocity).sum(-1) / delta.norm(dim=-1).clamp_min(1e-6)
+  force = torch.zeros_like(closing)
+  if tag_rules(env).tag_mode == "contact":
+    force = torch.stack([env.scene[name].data.force_history.norm(dim=-1).flatten(1).max(-1).values
+                         for name in ("tag_robot", "tag_opponent")]).max(0).values
+  return {"distance_m": delta.norm(dim=-1), "closing_speed_mps": closing,
+          "pursuer_root_tilt_deg": torch.rad2deg(tilt), "pursuer_angular_speed_radps": angular,
+          "interagent_peak_force_N": force}
+
+
+def quality_metric(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
+  return motion_quality(env)[name]
+
+
+def ending_metric(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
+  t = env.termination_manager.get_term
+  flags = {"valid_tag": t("tagged") & ~failed(env),
+           "healthy_timeout": t("time_out") & ~t("tagged") & ~failed(env), "physical_failure": failed(env)}
+  return flags[name].float()
+
+
+def reward_component(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
+  """True episode sums, unlike stock Episode_Reward's per-max-duration rates."""
+  manager = env.reward_manager
+  if name not in manager.active_terms:
+    return torch.zeros(env.num_envs, device=env.device)
+  scale = env.step_dt if env.cfg.scale_rewards_by_dt else 1.0
+  return manager._step_reward[:, manager.active_terms.index(name)] * scale
 
 
 def qpos_distance(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -329,7 +385,11 @@ def tag_env_cfg(
   cfg.is_finite_horizon = True  # Timeout is an evader win, not a truncation.
   cfg.commands = {"role": RoleCommandCfg(rules=rules)}
   cfg.curriculum = {}
-  cfg.metrics = {}  # Stock mean_action_acc mixes both robots' actions.
+  cfg.metrics = {name: MetricsTermCfg(func=ending_metric, params={"name": name}, reduce="last")
+                 for name in ("valid_tag", "healthy_timeout", "physical_failure")}
+  cfg.metrics.update({name: MetricsTermCfg(func=quality_metric, params={"name": name}, reduce="last")
+                      for name in ("distance_m", "closing_speed_mps", "pursuer_root_tilt_deg",
+                                   "pursuer_angular_speed_radps", "interagent_peak_force_N")})
 
   cfg.actions["opponent"] = replace(cfg.actions["joint_pos"], entity_name="opponent")
 
@@ -365,12 +425,16 @@ def tag_env_cfg(
     cfg.rewards["action_rate_l2"], func=action_rate_l2, params={"action_name": ACTION["robot"]}
   )
   cfg.rewards["tag"] = RewardTermCfg(func=tag_result, weight=rules.win_reward / dt)
+  cfg.rewards["failure"] = RewardTermCfg(func=own_failure, weight=rules.win_reward / dt,
+                                       params={"asset_cfg": SceneEntityCfg("robot")})
   if shaping_cfg.enabled:
     cfg.commands["potential"] = PotentialCfg(potential=shaping_cfg.potential)  # After role.
     cfg.rewards["shaping"] = RewardTermCfg(
       func=shaping, weight=shaping_cfg.weight / dt,
       params={"gamma": shaping_cfg.gamma, "name": shaping_cfg.potential},
     )
+  cfg.metrics.update({f"reward_{name}_episode_sum": MetricsTermCfg(
+    func=reward_component, params={"name": name}, reduce="sum") for name in ("tag", "shaping", "failure")})
   if rules.tag_mode == "contact":  # Pursuer's tag_bodies subtrees vs. the other's whole body.
     cfg.scene.sensors += tuple(
       ContactSensorCfg(

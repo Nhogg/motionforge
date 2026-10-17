@@ -17,6 +17,10 @@ if [[ -z ${SLURM_JOB_ID:-} ]]; then
   [[ $# -gt 0 ]] || { echo 'Supply a command to run.' >&2; exit 2; }
   mkdir -p logs/slurm
   if [[ $1 == uv ]]; then shift; set -- "$(command -v uv)" "$@"; fi
+  # This cluster's sbatch does not recognize SBATCH_NODELIST itself.
+  if [[ -n ${SBATCH_NODELIST:-} ]]; then
+    exec sbatch --nodelist="$SBATCH_NODELIST" "${BASH_SOURCE[0]}" "$@"
+  fi
   exec sbatch "${BASH_SOURCE[0]}" "$@"
 fi
 export MUJOCO_GL=disable  # Render with Warp; never load EGL.

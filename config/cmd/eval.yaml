@@ -3,3 +3,4 @@ baseline: false   # Drive policy with scripted commands.
 out: logs/mofo/eval.json
 video: null       # MP4 path.
 opponent_policy: null  # Tag checkpoint as the opponent (head-to-head), instead of the scripted one.
+post_tag_seconds: 1.0  # Evaluation-only continuation; never changes the recorded game outcome.

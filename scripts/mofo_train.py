@@ -20,7 +20,6 @@ os.environ.setdefault("MUJOCO_GL", "disable")  # Before mjlab import (it default
 import torch
 from hydra.core.hydra_config import HydraConfig
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.rl import MjlabOnPolicyRunner
 from mjlab.sensor.camera_sensor import CameraSensorCfg
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.terrains.terrain_entity import TerrainEntity
@@ -31,10 +30,12 @@ from rsl_rl.models import MLPModel
 from tensordict import TensorDict
 
 from mofo.cli import run
+from mofo.checkpoint_video import CheckpointVideoRunner, evaluation_config
 from mofo.league import SCRIPTED, SCRIPTED_ID, FixedLeague, League, LeagueCfg, Opponent
 from mofo.opponent import OpponentEnv, ScriptedPolicy, load_policy
 from mofo.selfplay import PREFIX, ZERO_SUM, selfplay_env_cfg
-from mofo.tasks.tag import POTENTIALS, TAG_DIM, ResetCfg, ShapingCfg, TagRules, distance, outcome, role, tag_env_cfg
+from mofo.evaluation import TagTrials, summarize_trials
+from mofo.tasks.tag import POTENTIALS, TAG_DIM, ResetCfg, ShapingCfg, TagRules, distance, outcome, role, tag_env_cfg, tagged, failed, motion_quality
 
 _STOCK = unitree_g1_ppo_runner_cfg()
 
@@ -74,6 +75,11 @@ def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfpla
   if eval:
     for g in ("actor", "opponent"):
       env_cfg.observations[g].enable_corruption = False
+  if eval and 'post_tag_seconds' in cfg.cmd:
+    # Capture the actual end state, then continue TAGs for a recovery audit.
+    env_cfg.auto_reset = False
+    env_cfg.terminations['tagged'] = replace(env_cfg.terminations['tagged'], func=lambda e: torch.zeros(e.num_envs, device=e.device, dtype=torch.bool))
+    env_cfg.episode_length_s += cfg.cmd.post_tag_seconds
   if video:  # World camera on env 0's arena; robots tinted by role.
     env_cfg.commands["role"] = replace(env_cfg.commands["role"], colors=(tuple(cfg.video.pursuer_rgba), tuple(cfg.video.evader_rgba)))
     o = TerrainEntity._compute_env_origins_grid(SimpleNamespace(_device="cpu"), num_envs, env_cfg.scene.env_spacing)[0]
@@ -136,6 +142,27 @@ def warm_start(runner, ckpt: str, env: ManagerBasedRlEnv) -> None:
   print(f"[warm start] loaded {ckpt}; dropped '{dropped}' columns, zero-init new tag columns")
 
 
+def configure_logging(rl, cfg: DictConfig) -> dict:
+  """Use rsl-rl's shared W&B/TensorBoard writer; keep the resolved task config."""
+  if cfg.cmd.logger not in ("tensorboard", "wandb"):
+    raise ValueError("cmd.logger must be tensorboard or wandb")
+  rl.logger, rl.upload_model = cfg.cmd.logger, False
+  rl.run_name = os.path.basename(os.path.normpath(cfg.cmd.logdir))
+  if cfg.cmd.logger == "wandb":
+    wb = cfg.cmd.wandb
+    if wb.mode not in ("online", "offline", "disabled"):
+      raise ValueError("cmd.wandb.mode must be online, offline or disabled")
+    os.environ["WANDB_MODE"] = wb.mode
+    if wb.entity:
+      # rsl-rl's writer reads WANDB_USERNAME and passes it as wandb.init(entity=...).
+      os.environ["WANDB_USERNAME"] = wb.entity
+    if wb.group:
+      os.environ["WANDB_RUN_GROUP"] = wb.group
+    rl.logger = {"class_name": "mofo.logging:WandbWriter", "project_name": wb.project}
+    rl.upload_model = wb.upload_model
+  return {**asdict(rl), "motionforge": OmegaConf.to_container(cfg, resolve=True)}
+
+
 def train(cfg: DictConfig) -> None:
   """Runs in its logdir (the Hydra run dir), so <logdir>/.hydra/ records the full config."""
   g, agent = game(cfg), OmegaConf.to_object(cfg.agent)
@@ -145,12 +172,16 @@ def train(cfg: DictConfig) -> None:
     setattr(rl.algorithm if hasattr(rl.algorithm, k) else rl, k, v)
   assert g.shaping.gamma == rl.algorithm.gamma, f"shaping.gamma {g.shaping.gamma} != PPO gamma {rl.algorithm.gamma}"
   lc: LeagueCfg = OmegaConf.to_object(cfg.league)
+  rl.seed, rl.max_iterations = cfg.seed, cfg.cmd.iterations
+  train_cfg = configure_logging(rl, cfg)  # Validate before allocating the simulator.
+  if cfg.cmd.render.enabled:
+    evaluation_config(train_cfg["motionforge"], os.path.join(cfg.cmd.logdir, "model_0.pt"))
   env = make_env(cfg, cfg.num_envs, g, selfplay=lc.selfplay_frac > 0)
   league = make_league(cfg, env, lc, cfg.opponent or cfg.cmd.init)
   venv = OpponentEnv(env, league, steps_per_iter=rl.num_steps_per_env)
-  rl.seed, rl.max_iterations, rl.logger, rl.upload_model = cfg.seed, cfg.cmd.iterations, "tensorboard", False
   rl.experiment_name = ("tag_shaping" if g.shaping.enabled else "tag") + ("_selfplay" if venv.n_sp else "") + ("_league" if lc.snapshot_every or lc.init_pool else "")
-  runner = MjlabOnPolicyRunner(venv, asdict(rl), cfg.cmd.logdir, cfg.device)
+  train_cfg["experiment_name"] = rl.experiment_name
+  runner = CheckpointVideoRunner(venv, train_cfg, cfg.cmd.logdir, cfg.device)
   venv.learner = runner.alg.actor  # Frozen into the league every league.snapshot_every iterations.
   if cfg.cmd.init:
     warm_start(runner, cfg.cmd.init, env)
@@ -161,6 +192,7 @@ def train(cfg: DictConfig) -> None:
     print(f"[warm start] max |a_tag - a_stage1(cmd=0)| = {err:.2e}")
     assert err < 1e-3
   # Fixed start lengths: the timeout decides the game, so don't randomize episode length.
+  runner.save(os.path.join(cfg.cmd.logdir, 'initial.pt'))  # Before any PPO updates.
   runner.learn(cfg.cmd.iterations, init_at_random_ep_len=False)  # Saves model_<iters - 1>.pt.
 
 
@@ -176,50 +208,48 @@ def evaluate(cfg: DictConfig) -> None:
   policy = load_policy(cfg.cmd.policy, cfg.device) if cfg.cmd.policy else None
   learner = ScriptedPolicy(env, policy, me="robot") if cfg.cmd.baseline or policy is None else policy
   robot = env.scene["robot"].data
-  wins, roles, falls, lengths, speed, yaw_rate, frames, dmins = [], [], [], [], [], [], [], []
+  if cfg.cmd.post_tag_seconds < 0:
+    raise ValueError('post_tag_seconds must be nonnegative')
+  trials = TagTrials(env.num_envs, env.device, env.step_dt, g.rules.episode_s, cfg.cmd.post_tag_seconds, distance(env))
+  speed, yaw_rate, frames = [], [], []
   obs = venv.get_observations()
-  recorded = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-  dmin = torch.full((env.num_envs,), math.inf, device=env.device)
   by_second = {1.0: [], -1.0: []}  # Learner role -> mean robot distance at each whole second.
   with torch.no_grad():
     for t in itertools.count():  # Each env's first episode, so short ones aren't over-sampled.
-      if recorded.all():
+      if trials.finished.all():
         break
-      r, length = role(env).clone(), env.episode_length_buf.clone() + 1
+      r = role(env).clone()
       d = distance(env)
-      dmin = torch.minimum(dmin, d)
       if t % round(1 / env.step_dt) == 0:
         for k in by_second:
-          m = ~recorded & (r == k)
+          m = (trials.cause == 0) & (r == k)
           by_second[k].append(round(d[m].mean().item(), 3) if m.any() else None)
+      live = trials.cause == 0
+      speed.append(robot.root_link_lin_vel_w[:, :2].norm(dim=-1)[live].clone())
+      yaw_rate.append(robot.root_link_ang_vel_w[:, 2].abs()[live].clone())
       obs, _, dones, _ = venv.step(learner(obs["actor"]))
-      speed.append(robot.root_link_lin_vel_w[:, :2].norm(dim=-1)[~recorded])
-      yaw_rate.append(robot.root_link_ang_vel_w[:, 2].abs()[~recorded])
-      done = dones.bool() & ~recorded
-      recorded |= done
-      if done.any():
-        wins += (outcome(env, r)[done] > 0).tolist()
-        roles += r[done].tolist()
-        dmins += dmin[done].tolist()
-        falls += env.termination_manager.get_term("fell_over")[done].tolist()
-        lengths += (length[done] * env.step_dt).tolist()
-      if cfg.cmd.video and len(frames) < 50 * 30:
+      tm = env.termination_manager.get_term
+      ready = trials.update(step=t+1, roles=r, tag=tagged(env), failure=failed(env),
+                            physics_done=dones.bool(), quality=motion_quality(env),
+                            fallen=tm('fell_over').clone(), oob=tm('robot_out').clone())
+      if cfg.cmd.video and not (trials.finished[0] and not ready[0]):
         frames.append(env.scene["world_cam"].data.rgb[0].cpu().numpy())
-  wins, roles, dmins = torch.tensor(wins, dtype=torch.float), torch.tensor(roles), torch.tensor(dmins)
-  near = lambda m: {  # Closest approach per episode (pre-step states; a tag ends below the radius).
-    "mean": dmins[m].mean().item(), "p10": dmins[m].quantile(0.1).item(), "p50": dmins[m].median().item(),
-    "frac_below_tag_radius": (dmins[m] < g.rules.tag_radius).float().mean().item(),
-  } if m.any() else None
+      ids = (dones.bool() | ready).nonzero().flatten()
+      if len(ids) and not trials.finished.all():
+        env.reset(env_ids=ids)
+        obs = venv.get_observations()
+  rows = sorted(trials.records, key=lambda r:r['env_id'])
+  def near(sign):
+    values = torch.tensor([r['minimum_distance_m'] for r in rows if r['role']==sign])
+    return {'mean': values.mean().item(), 'p10':values.quantile(.1).item(), 'p50':values.median().item(),
+            'frac_below_tag_radius':(values < g.rules.tag_radius).float().mean().item()} if len(values) else None
   speed = torch.cat(speed)
-  rate = lambda m: wins[m].mean().item() if m.any() else float("nan")
   result = {
+    **summarize_trials(rows), 'trials':rows, 'post_tag_seconds':cfg.cmd.post_tag_seconds,
     "policy": cfg.cmd.policy, "baseline": cfg.cmd.baseline, "opponent": cfg.opponent, "opponent_policy": cfg.cmd.opponent_policy,
-    "episodes": len(wins), "win_rate": wins.mean().item(),
-    "win_rate_pursuer": rate(roles > 0), "win_rate_evader": rate(roles < 0),
     "mean_planar_speed": speed.mean().item(), "p95_planar_speed": speed.quantile(0.95).item(),
     "mean_abs_yaw_rate": torch.cat(yaw_rate).mean().item(),
-    "fall_rate": sum(falls) / len(falls), "mean_episode_length_s": sum(lengths) / len(lengths),
-    "min_distance_pursuer": near(roles > 0), "min_distance_evader": near(roles < 0),
+    "min_distance_pursuer": near(1), "min_distance_evader": near(-1),
     "distance_by_second_pursuer": by_second[1.0], "distance_by_second_evader": by_second[-1.0],
     "rules": asdict(g.rules), "reset": asdict(g.reset), "env_spacing": cfg.env_spacing,
   }
@@ -234,6 +264,7 @@ def evaluate(cfg: DictConfig) -> None:
     mediapy.set_ffmpeg(imageio_ffmpeg.get_ffmpeg_exe())
     mediapy.write_video(cfg.cmd.video, frames, fps=1 / env.step_dt)
     print(f"saved {cfg.cmd.video} ({len(frames)} frames)")
+  env.close()
 
 
 def _root(ent):
@@ -281,9 +312,9 @@ def check(cfg: DictConfig) -> None:
   out, rew, dones = step_with_roles([1, -1, 1, -1, 1, -1])
   print("distance", [round(x, 2) for x in d])
   print("teleport outcome", out, "reward", [round(x, 2) for x in rew], "dones", dones)
-  assert out == [1, -1, -1, 1, 0, 0], out
+  assert out == [1, -1, 0, 0, 0, 0], out
   assert dones == [1, 1, 1, 1, 0, 0], dones
-  assert all(x > win for x in rew[0::3]) and all(x < -win for x in rew[1:3]), rew
+  assert rew[0] > win and rew[1] < -win and rew[2] < -win and abs(rew[3]) < win, rew
 
   venv.reset()  # Fresh spawns, then timeout: evader wins.
   env.episode_length_buf[:] = env.max_episode_length - 1
@@ -516,6 +547,16 @@ def check_league(cfg, g, near) -> None:
   _, _, dones, extras = venv.step(torch.zeros(N + n, venv.num_actions, device=env.device))
   print(f"  outcome: {o0.opponent_id} games {games0} -> {lg.games[o0.opponent_id]}, win EMA {win0:.3f} -> {lg.win[o0.opponent_id]:.3f}; log keys {sorted(k for k in extras['log'] if k.startswith('league/win_rate'))}")
   assert dones[s0.start] and lg.games[o0.opponent_id] == games0 + 1 and lg.win[o0.opponent_id] > win0
+  # Physical failures incur own penalties, but are not game wins/draws for PFSP.
+  games_before = dict(lg.games)
+  sa = _root(a)
+  sa[:, 0] = env.scene.env_origins[:, 0] + g.rules.arena_half_extent + 0.5
+  a.write_root_state_to_sim(sa, env_ids=torch.arange(N, device=env.device))
+  env.sim.forward()
+  _, rew, dones, _ = venv.step(torch.zeros(N+n, A, device=env.device))
+  assert dones[:N].all() and (outcome(env, role(env)) == 0).all()
+  assert all(lg.games[k] == count for k, count in games_before.items())
+  assert (rew[:N] < -g.rules.win_reward/2).all(), 'own OOB penalty missing'
   print("league OK")
 
 

@@ -10,5 +10,5 @@ tag_radius: 0.5         # distance mode: base xy distance (m) below which the pu
 tag_bodies: [pelvis]    # contact mode: pursuer body subtrees (regex) that tag; pelvis = whole
                         # body, '.*_wrist_yaw_link' = hands only. The evader is hit anywhere.
 win_reward: 10.0        # Sparse +-reward per episode outcome.
-fall_loses: true        # Falling loses; false: it ends the episode as a draw.
-out_loses: true         # Leaving the arena loses; false: it ends the episode as a draw.
+fall_loses: true        # Own fall penalty; physical failures never award opponent game wins.
+out_loses: true         # Own OOB penalty; not a TAG or a healthy evader timeout.

@@ -153,10 +153,11 @@ class OpponentEnv(RslRlVecEnvWrapper):
       done, out = terminated | truncated, outcome(env, learner_role)
       wins: dict[str, list] = {}
       for o, s in zip(self.opponents, self.part.groups):
-        if done[s].any():
-          self.league.record(o.opponent_id, out[s][done[s]])
-          wins.setdefault(o.category, []).append((out[s][done[s]] > 0).float())
-      sp = done[:n]
+        valid = done[s] & (out[s] != 0)
+        if valid.any():
+          self.league.record(o.opponent_id, out[s][valid])
+          wins.setdefault(o.category, []).append((out[s][valid] > 0).float())
+      sp = done[:n] & (out[:n] != 0)
       if sp.any():  # Self-play: how often the pursuer seat wins.
         wins["selfplay_pursuer"] = [(out[:n][sp] * learner_role[:n][sp] > 0).float()]
       log.update({f"league/win_rate/{k}": torch.cat(v) for k, v in wins.items()})

@@ -1,0 +1,20 @@
+# @package _global_
+# Shared protocol: +experiment=shaping. Array changes ONLY seed and shaping weight.
+# TAG/timeout game reward is +/-10; own failures are separate individual penalties.
+num_envs: 4096
+rules:
+  tag_mode: contact
+  tag_bodies: [pelvis]
+  episode_s: 20.0
+  win_reward: 10.0
+  fall_loses: true
+  out_loses: true
+agent:
+  gamma: 0.99
+league:
+  selfplay_frac: 0.5
+  groups: 8
+  snapshot_every: 100
+  sampling: pfsp
+shaping:
+  gamma: ${agent.gamma}

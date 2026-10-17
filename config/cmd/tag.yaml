@@ -3,3 +3,17 @@ iterations: 500
 logdir: logs/mofo/tag
 lr: null            # Deprecated alias of agent.learning_rate.
 save_interval: null # Deprecated alias of agent.save_interval.
+logger: tensorboard # tensorboard | wandb (W&B also writes local TensorBoard events).
+render:
+  enabled: true     # Render each saved model checkpoint, including the final one.
+  seed: 30000       # Same reset at every checkpoint; not a selected successful trial.
+  matchup: selfplay # selfplay | scripted (fixed stage-1 opponent).
+  post_tag_seconds: 1.0
+  timeout_s: 300
+  fail_on_error: false # Log failures and keep training; true is useful for smoke tests.
+wandb:
+  project: MotionForge
+  entity: null      # null: use the authenticated account/default team.
+  group: null
+  mode: online     # online | offline | disabled
+  upload_model: false # Checkpoints are always saved locally.

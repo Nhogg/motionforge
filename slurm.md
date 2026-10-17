@@ -40,6 +40,11 @@ Surveyed 2026-10-15 from `head0` with read-only commands and one 2-minute test j
 
 ## Submitting jobs: `debug.sbatch` / `prod.sbatch`
 
+Repository convention: use these shared templates for all future submissions.
+Put experiment logic in reusable worker scripts/configs, and pass resource,
+node and array overrides as `sbatch` flags; do not copy the template into a new
+experiment-specific `.sbatch` file.
+
 Two generic launchers live in `scripts/slurm/`. Each one runs its arguments as a command (`"$@"`) in the directory you submitted from (`$SLURM_SUBMIT_DIR`). Any `{job}` in the arguments becomes the job id. Both set `MUJOCO_GL=disable` (Warp rendering) and `UV_NO_SYNC=1`.
 
 | file | job name | partition | gres | time |
