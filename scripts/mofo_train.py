@@ -12,6 +12,7 @@ import itertools
 import json
 import math
 import os
+from pathlib import Path
 from dataclasses import asdict, dataclass, replace
 from types import SimpleNamespace
 
@@ -35,7 +36,8 @@ from mofo.league import SCRIPTED, SCRIPTED_ID, FixedLeague, League, LeagueCfg, O
 from mofo.opponent import OpponentEnv, ScriptedPolicy, load_policy
 from mofo.selfplay import PREFIX, ZERO_SUM, selfplay_env_cfg
 from mofo.evaluation import TagTrials, summarize_trials
-from mofo.tasks.tag import POTENTIALS, TAG_DIM, ResetCfg, ShapingCfg, TagRules, distance, outcome, role, tag_env_cfg, tagged, failed, motion_quality
+from mofo.role_model import RoleModel
+from mofo.tasks.tag import POTENTIALS, ResetCfg, ShapingCfg, TagRules, distance, outcome, role, tag_env_cfg, tagged, failed, motion_quality, wall_distance, tag_observation_dim
 
 _STOCK = unitree_g1_ppo_runner_cfg()
 
@@ -56,6 +58,8 @@ class AgentCfg:
   clip_param: float = _STOCK.algorithm.clip_param
   max_grad_norm: float = _STOCK.algorithm.max_grad_norm
   save_interval: int = _STOCK.save_interval
+  separate_roles: bool = False  # Independent actor/critic parameters and normalization per role.
+  max_learning_rate: float | None = None  # Ceiling for the adaptive schedule (rsl-rl default 1e-2).
 
 
 SCHEMAS = {"rules": TagRules, "reset": ResetCfg, "shaping": ShapingCfg, "agent": AgentCfg, "league": LeagueCfg}
@@ -82,6 +86,13 @@ def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfpla
     env_cfg.auto_reset = False
     env_cfg.terminations['tagged'] = replace(env_cfg.terminations['tagged'], func=lambda e: torch.zeros(e.num_envs, device=e.device, dtype=torch.bool))
     env_cfg.episode_length_s += cfg.cmd.post_tag_seconds
+    if cfg.cmd.post_tag_ignore_oob:
+      recovery_mask = torch.zeros(num_envs, dtype=torch.bool, device=cfg.device)
+      for name in ('robot_out', 'opponent_out'):
+        term = env_cfg.terminations[name]
+        def boundary_before_tag(e, func=term.func, **kwargs):
+          return func(e, **kwargs) & ~recovery_mask
+        env_cfg.terminations[name] = replace(term, func=boundary_before_tag)
   if video:  # World camera on env 0's arena; robots tinted by role.
     env_cfg.commands["role"] = replace(env_cfg.commands["role"], colors=(tuple(cfg.video.pursuer_rgba), tuple(cfg.video.evader_rgba)))
     o = TerrainEntity._compute_env_origins_grid(SimpleNamespace(_device="cpu"), num_envs, env_cfg.scene.env_spacing)[0]
@@ -90,12 +101,15 @@ def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfpla
       name="world_cam", pos=(o[0].item(), o[1].item() - 9.0, 7.0), quat=(math.cos(a / 2), math.sin(a / 2), 0.0, 0.0),
       width=640, height=480,
     ),)
-  return ManagerBasedRlEnv(env_cfg, device=cfg.device)
+  env = ManagerBasedRlEnv(env_cfg, device=cfg.device)
+  if eval and cfg.cmd.get('post_tag_ignore_oob', False):
+    env._post_tag_recovery = recovery_mask
+  return env
 
 
 def make_league(cfg, env, lc: LeagueCfg, ckpt) -> League:
   """Training pool: the scripted stage-1 opponent (never evicted), cfg.init_pool, and learner snapshots."""
-  league = League(lc, seed=cfg.seed, load=lambda p: load_policy(p, cfg.device), snapshot_dir=os.path.join(cfg.cmd.logdir, "league"))
+  league = League(lc, seed=cfg.seed, load=lambda p: load_policy(p, cfg.device, env), snapshot_dir=os.path.join(cfg.cmd.logdir, "league"))
   league.add(Opponent(SCRIPTED_ID, ScriptedPolicy(env, load_policy(ckpt, cfg.device) if ckpt else None), SCRIPTED, ckpt))
   return league
 
@@ -141,6 +155,9 @@ def warm_start(runner, ckpt: str, env: ManagerBasedRlEnv) -> None:
       if k not in ("mlp.0.weight", "mlp.0.bias") and not k.startswith("obs_normalizer."):
         new[k] = v
     model.load_state_dict(new)
+    if isinstance(model, RoleModel):
+      model.evader.load_state_dict({k: v for k, v in new.items()
+                                   if not k.startswith("evader.") and k != "_role_column"})
   print(f"[warm start] loaded {ckpt}; dropped '{dropped}' columns, zero-init new tag columns")
 
 
@@ -167,11 +184,19 @@ def configure_logging(rl, cfg: DictConfig) -> dict:
 
 def train(cfg: DictConfig) -> None:
   """Runs in its logdir (the Hydra run dir), so <logdir>/.hydra/ records the full config."""
+  if cfg.cmd.resume:
+    if cfg.cmd.init:
+      raise ValueError('cmd.init is stage1-only; use cmd.resume for TAG and opponent=STAGE1.pt')
+    if not cfg.opponent:
+      raise ValueError('TAG resume requires opponent=STAGE1.pt for the scripted league/render reference')
+    if Path(cfg.cmd.resume).resolve().parent == Path(cfg.cmd.logdir).resolve():
+      raise ValueError('Resume into a new logdir to preserve the source checkpoint and configuration')
   g, agent = game(cfg), OmegaConf.to_object(cfg.agent)
   agent = replace(agent, **{k: v for k, v in (("learning_rate", cfg.cmd.lr), ("save_interval", cfg.cmd.save_interval)) if v is not None})
   rl = unitree_g1_ppo_runner_cfg()
   for k, v in asdict(agent).items():
-    setattr(rl.algorithm if hasattr(rl.algorithm, k) else rl, k, v)
+    if k not in ("separate_roles", "max_learning_rate"):
+      setattr(rl.algorithm if hasattr(rl.algorithm, k) else rl, k, v)
   assert g.shaping.gamma == rl.algorithm.gamma, f"shaping.gamma {g.shaping.gamma} != PPO gamma {rl.algorithm.gamma}"
   lc: LeagueCfg = OmegaConf.to_object(cfg.league)
   rl.seed, rl.max_iterations = cfg.seed, cfg.cmd.iterations
@@ -183,37 +208,64 @@ def train(cfg: DictConfig) -> None:
   venv = OpponentEnv(env, league, steps_per_iter=rl.num_steps_per_env)
   rl.experiment_name = ("tag_shaping" if g.shaping.enabled else "tag") + ("_selfplay" if venv.n_sp else "") + ("_league" if lc.snapshot_every or lc.init_pool else "")
   train_cfg["experiment_name"] = rl.experiment_name
+  if agent.max_learning_rate is not None:
+    if agent.max_learning_rate < agent.learning_rate:
+      raise ValueError("agent.max_learning_rate must be >= agent.learning_rate")
+    train_cfg["algorithm"].update(class_name="mofo.ppo:CappedPPO", max_learning_rate=agent.max_learning_rate)
+  if agent.separate_roles:
+    om = env.observation_manager
+    for group in ("actor", "critic"):
+      index = om.active_terms[group].index("tag")
+      column = sum(d[0] for d in om.group_obs_term_dim[group][:index]) + 4
+      train_cfg[group].update(class_name="mofo.role_model:RoleModel", role_column=column)
   runner = CheckpointVideoRunner(venv, train_cfg, cfg.cmd.logdir, cfg.device)
   venv.learner = runner.alg.actor  # Frozen into the league every league.snapshot_every iterations.
-  if cfg.cmd.init:
+  if cfg.cmd.resume:
+    runner.resume(cfg.cmd.resume, restore_league=cfg.cmd.resume_league,
+                  restore_optimizer=cfg.cmd.resume_optimizer, evader_path=cfg.cmd.resume_evader)
+  elif cfg.cmd.init:
     warm_start(runner, cfg.cmd.init, env)
     obs = venv.get_observations().to(cfg.device)  # Must match stage 1 under a zero command.
-    proprio = obs["actor"][:, :-TAG_DIM]
+    proprio = obs["actor"][:, :-tag_observation_dim(env)]
     ref = load_policy(cfg.cmd.init, cfg.device)(torch.cat([proprio, proprio.new_zeros(len(proprio), 3)], -1))
     err = (runner.alg.actor(obs) - ref).abs().max().item()
     print(f"[warm start] max |a_tag - a_stage1(cmd=0)| = {err:.2e}")
     assert err < 1e-3
   # Fixed start lengths: the timeout decides the game, so don't randomize episode length.
   runner.save(os.path.join(cfg.cmd.logdir, 'initial.pt'))  # Before any PPO updates.
-  runner.learn(cfg.cmd.iterations, init_at_random_ep_len=False)  # Saves model_<iters - 1>.pt.
+  runner.learn(cfg.cmd.iterations, init_at_random_ep_len=False)
 
 
 def evaluate(cfg: DictConfig) -> None:
+  if not math.isfinite(cfg.cmd.scripted_speed_scale) or not 0 < cfg.cmd.scripted_speed_scale <= 1:
+    raise ValueError('cmd.scripted_speed_scale must be finite and in (0, 1]')
+  if cfg.cmd.opponent_policy and cfg.cmd.scripted_speed_scale != 1:
+    raise ValueError('Scripted speed scaling cannot be applied to a learned opponent')
   g = game(cfg)
   env = make_env(cfg, cfg.num_envs, g, eval=True, video=bool(cfg.cmd.video))
   if cfg.cmd.opponent_policy:  # Head-to-head: a tag checkpoint acts on the opponent obs group directly.
     p = cfg.cmd.opponent_policy
-    league = FixedLeague(Opponent(f"learner:{p}", load_policy(p, cfg.device), "historical", p))
+    league = FixedLeague(Opponent(f"learner:{p}", load_policy(p, cfg.device, env), "historical", p))
   else:
     league = scripted_league(env, cfg.opponent, cfg.device)
+    league.opponent.policy.speed_scale = cfg.cmd.scripted_speed_scale
   venv = OpponentEnv(env, league)
-  policy = load_policy(cfg.cmd.policy, cfg.device) if cfg.cmd.policy else None
+  policy = load_policy(cfg.cmd.policy, cfg.device, None if cfg.cmd.baseline else env) if cfg.cmd.policy else None
   learner = ScriptedPolicy(env, policy, me="robot") if cfg.cmd.baseline or policy is None else policy
   robot = env.scene["robot"].data
   if cfg.cmd.post_tag_seconds < 0:
     raise ValueError('post_tag_seconds must be nonnegative')
   trials = TagTrials(env.num_envs, env.device, env.step_dt, g.rules.episode_s, cfg.cmd.post_tag_seconds, distance(env))
   speed, yaw_rate, frames = [], [], []
+  # Own-seat motor costs only: evaluation suppresses TAG termination, so its
+  # reward buffer is NOT a faithful total game return. Keep these separate.
+  names = env.reward_manager.active_terms
+  motor_names = [k for k in names if k not in ('tag', 'shaping', 'failure', 'contact_speed') and not k.startswith('opp_')]
+  motor_columns = [names.index(k) for k in motor_names]
+  motor_sums = torch.zeros((env.num_envs, len(motor_names)), device=env.device)
+  motor_discounted = torch.zeros(env.num_envs, device=env.device)
+  path_length = torch.zeros_like(motor_discounted)
+  initial_xy = robot.root_link_pos_w[:, :2].clone()
   obs = venv.get_observations()
   by_second = {1.0: [], -1.0: []}  # Learner role -> mean robot distance at each whole second.
   with torch.no_grad():
@@ -227,16 +279,34 @@ def evaluate(cfg: DictConfig) -> None:
           m = (trials.cause == 0) & (r == k)
           by_second[k].append(round(d[m].mean().item(), 3) if m.any() else None)
       live = trials.cause == 0
-      speed.append(robot.root_link_lin_vel_w[:, :2].norm(dim=-1)[live].clone())
+      planar_speed = robot.root_link_lin_vel_w[:, :2].norm(dim=-1)
+      speed.append(planar_speed[live].clone())
+      path_length += planar_speed * env.step_dt * live
       yaw_rate.append(robot.root_link_ang_vel_w[:, 2].abs()[live].clone())
+      if cfg.cmd.post_tag_ignore_oob:
+        env._post_tag_recovery.copy_(trials.cause == 1)
       obs, _, dones, _ = venv.step(learner(obs["actor"]))
       tm = env.termination_manager.get_term
-      ready = trials.update(step=t+1, roles=r, tag=tagged(env), failure=failed(env),
-                            physics_done=dones.bool(), quality=motion_quality(env),
-                            fallen=tm('fell_over').clone(), oob=tm('robot_out').clone())
+      failure, physics_done = failed(env), dones.bool()
+      scale = env.step_dt if env.cfg.scale_rewards_by_dt else 1.0
+      motor_step = env.reward_manager._step_reward[:, motor_columns] * scale * live[:, None]
+      motor_sums += motor_step
+      motor_discounted += cfg.agent.gamma**t * motor_step.sum(-1)
+      quality = {**motion_quality(env),
+                 'learner_path_length_m': path_length,
+                 'learner_displacement_m': (robot.root_link_pos_w[:, :2] - initial_xy).norm(dim=-1),
+                 'motor_return': motor_sums.sum(-1), 'discounted_motor_return': motor_discounted,
+                 **{f'motor_{name}_sum': motor_sums[:, i] for i, name in enumerate(motor_names)}}
+      ready = trials.update(step=t+1, roles=r, tag=tagged(env), failure=failure,
+                            physics_done=physics_done, quality=quality,
+                            fallen=tm('fell_over').clone(), oob=tm('robot_out').clone(),
+                            failure_flags={"robot_fall": tm('fell_over').clone(),
+                                           "opponent_fall": tm('opponent_fell_over').clone(),
+                                           "robot_oob": wall_distance(env, 'robot') < 0,
+                                           "opponent_oob": wall_distance(env, 'opponent') < 0})
       if cfg.cmd.video and not (trials.finished[0] and not ready[0]):
         frames.append(env.scene["world_cam"].data.rgb[0].cpu().numpy())
-      ids = (dones.bool() | ready).nonzero().flatten()
+      ids = (physics_done | ready).nonzero().flatten()
       if len(ids) and not trials.finished.all():
         env.reset(env_ids=ids)
         obs = venv.get_observations()
@@ -248,6 +318,11 @@ def evaluate(cfg: DictConfig) -> None:
   speed = torch.cat(speed)
   result = {
     **summarize_trials(rows), 'trials':rows, 'post_tag_seconds':cfg.cmd.post_tag_seconds,
+    'recovery_failure_definition': 'fall_only_post_tag' if cfg.cmd.post_tag_ignore_oob else 'fall_or_oob',
+    'scripted_opponent_speed_scale': cfg.cmd.scripted_speed_scale if not cfg.cmd.opponent_policy else None,
+    'motor_return_definition': 'own-seat regularizers through first game endpoint; excludes TAG, shaping, failure and contact-speed terms',
+    'actor_observation_dim': env.observation_manager.group_obs_dim['actor'][0],
+    'tag_observation_dim': tag_observation_dim(env),
     "policy": cfg.cmd.policy, "baseline": cfg.cmd.baseline, "opponent": cfg.opponent, "opponent_policy": cfg.cmd.opponent_policy,
     "mean_planar_speed": speed.mean().item(), "p95_planar_speed": speed.quantile(0.95).item(),
     "mean_abs_yaw_rate": torch.cat(yaw_rate).mean().item(),
@@ -409,7 +484,7 @@ def check_selfplay(cfg, g, near) -> None:
   for k, opp in (("actor", "opponent"), ("critic", "opponent_critic")):
     assert om[opp].shape[1] == om[k].shape[1], (k, om[opp].shape, om[k].shape)
     assert torch.equal(obs[k][:N], om[k]) and torch.equal(obs[k][N:], om[opp][:n]), k
-  assert torch.equal(obs["actor"][N:, -2], -role(env)[:n]), "opponent seat sees the negated role"
+  assert torch.equal(obs["actor"][N:, -tag_observation_dim(env) + 4], -role(env)[:n]), "opponent seat sees the negated role"
   assert set(names) >= {PREFIX + k for k in names if not k.startswith(PREFIX) and k not in ZERO_SUM}
 
   # Actions: seat k -> its robot; league (zero placeholder) drives non-self-play opponents.

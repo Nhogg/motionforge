@@ -1,0 +1,10 @@
+# @package _global_
+# E005: isolate discount horizon under the lower-noise E004 setup.
+# Sweep agent.gamma=.99/.995/.999; shaping.gamma follows automatically.
+defaults:
+  - stability
+  - _self_
+
+agent:
+  entropy_coef: 0.0
+  schedule: adaptive

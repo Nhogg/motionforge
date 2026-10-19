@@ -172,6 +172,31 @@ def test_state_dict():
   print("10 state_dict round-trip:", [m[0] for m in b.state_dict()["members"]])
 
 
+def test_balanced_anchors():
+  p = list(league(2, (0.0, 0.5, 0.3), min_weight=0.0, sampling="balanced").probs(0).values())
+  w = [0.0, 0.25, 0.21]
+  assert close(p, [x / sum(w) for x in w]), p
+  with tempfile.TemporaryDirectory() as d:
+    path = os.path.join(d, "anchor.pt")
+    torch.save({"actor_state_dict": torch.nn.Linear(3, 2).state_dict()}, path)
+    load = lambda _: zero
+    lg = League(replace(CFG, max_size=3, init_pool=[path], anchor_init_pool=True), load=load)
+    lg.add(Opponent(SCRIPTED_ID, zero, "scripted"))
+    for i in range(4):
+      lg.snapshot(torch.nn.Linear(3, 2), i)
+    ids = [o.opponent_id for o in lg.members]
+    assert ids == [f"historical/{path}", SCRIPTED_ID, "learner/3"], ids
+  for bad in ({"league_role": "both"}, {"sampling": "even"}):
+    try:
+      League(replace(CFG, **bad))
+    except ValueError:
+      continue
+    raise AssertionError(bad)
+  mixed = league(2, (0.0, 0.5, 0.3), min_weight=0.0, sampling="balanced", scripted_share=0.25).probs(0)
+  assert close(mixed.values(), [0.25, 0.75 * 0.25 / 0.46, 0.75 * 0.21 / 0.46]), mixed
+  print("11 balanced", [round(x, 4) for x in p], "; anchors kept:", ids)
+
+
 if __name__ == "__main__":
   test_pfsp()
   test_floor()
@@ -183,4 +208,5 @@ if __name__ == "__main__":
   test_determinism()
   test_snapshot_frozen()
   test_state_dict()
+  test_balanced_anchors()
   print("league OK")

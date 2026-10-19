@@ -4,3 +4,5 @@ out: logs/mofo/eval.json
 video: null       # MP4 path.
 opponent_policy: null  # Tag checkpoint as the opponent (head-to-head), instead of the scripted one.
 post_tag_seconds: 1.0  # Evaluation-only continuation; never changes the recorded game outcome.
+post_tag_ignore_oob: false # Separate fall-only recovery audit; pre-TAG OOB still ends the game.
+scripted_speed_scale: 1.0 # Explicit easier-opponent audit only; never inherit training speed curriculum.

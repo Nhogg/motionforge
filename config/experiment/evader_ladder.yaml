@@ -1,0 +1,31 @@
+# @package _global_
+# Evader-weighted training over a fixed pursuer ladder. Frozen E012 recipe otherwise.
+# League worlds always seat the learner as evader; self-play worlds keep random roles,
+# so at .25 self-play about 80% of learner seats are evaders. Pass the ladder
+# checkpoints as league.init_pool=[...]; they are never evicted.
+defaults:
+  - stability
+  - _self_
+
+num_envs: 4096
+agent:
+  learning_rate: 1.0e-4
+  max_learning_rate: 1.0e-4  # Adaptive schedule may only lower the rate.
+  schedule: adaptive
+  gamma: 0.999
+  entropy_coef: 0.003
+  save_interval: 250
+rules:
+  upright_reward_offset: 1
+  arena_observation: false
+  learner_role: random
+league:
+  selfplay_frac: 0.25
+  groups: 8
+  snapshot_every: 100
+  max_size: 48
+  sampling: balanced
+  league_role: evader
+  anchor_init_pool: true
+  scripted_speed_start: 1.0
+  scripted_speed_end: 1.0

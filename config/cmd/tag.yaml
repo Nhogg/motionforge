@@ -1,5 +1,9 @@
 init: null          # Stage-1 checkpoint to warm start from.
-iterations: 500
+resume: null        # TAG checkpoint: restore actor, critic and optimizer. Use a new logdir and opponent=STAGE1.pt.
+resume_evader: null # Separate roles only: shared TAG checkpoint for the evader branch; cmd.resume sets the pursuer.
+resume_league: true # New checkpoints restore league state; legacy checkpoints rebuild sibling snapshots (EMA resets).
+resume_optimizer: true # Set false explicitly for a fresh optimizer or shared-to-separate-role initialization.
+iterations: 500     # Additional PPO updates when resuming; checkpoint iteration numbering continues.
 logdir: logs/mofo/tag
 lr: null            # Deprecated alias of agent.learning_rate.
 save_interval: null # Deprecated alias of agent.save_interval.
@@ -8,6 +12,7 @@ render:
   enabled: true     # Render each saved model checkpoint, including the final one.
   seed: 30000       # Same reset at every checkpoint; not a selected successful trial.
   matchup: selfplay # selfplay | scripted (fixed stage-1 opponent).
+  learner_role: pursuer # pursuer | evader; red remains pursuer, blue remains evader.
   post_tag_seconds: 1.0
   timeout_s: 300
   fail_on_error: false # Log failures and keep training; true is useful for smoke tests.

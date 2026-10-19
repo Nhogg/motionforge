@@ -1,0 +1,11 @@
+# @package _global_
+# E004: 2x2 entropy (0/.01) x LR schedule (fixed/adaptive), paired seeds.
+# Reuse E003's strongest contact-cost arm; no reward or architecture changes.
+defaults:
+  - contact
+  - _self_
+
+rules:
+  contact_speed_weight: 1.0
+agent:
+  learning_rate: 1.0e-4

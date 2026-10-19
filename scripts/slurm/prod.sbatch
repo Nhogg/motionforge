@@ -10,7 +10,6 @@
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm/%x-%j.log
-#SBATCH --reservation=tag
 set -euo pipefail
 # Direct invocation submits; Slurm execution runs the supplied command.
 if [[ -z ${SLURM_JOB_ID:-} ]]; then
@@ -24,6 +23,9 @@ if [[ -z ${SLURM_JOB_ID:-} ]]; then
   MOFO_SUBMIT_FLAGS=()
   [[ -z ${SBATCH_NODELIST:-} ]] || MOFO_SUBMIT_FLAGS+=(--nodelist="$SBATCH_NODELIST")
   [[ -z ${SBATCH_DEPENDENCY:-} ]] || MOFO_SUBMIT_FLAGS+=(--dependency="$SBATCH_DEPENDENCY")
+  # Reservation "tag" by default; SBATCH_RESERVATION= (empty) submits outside any reservation.
+  MOFO_RESERVATION=${SBATCH_RESERVATION-tag}
+  [[ -z $MOFO_RESERVATION ]] || MOFO_SUBMIT_FLAGS+=(--reservation="$MOFO_RESERVATION")
   exec sbatch "${MOFO_SUBMIT_FLAGS[@]}" "${BASH_SOURCE[0]}" "$@"
 fi
 export MUJOCO_GL=disable  # Render with Warp; never load EGL.

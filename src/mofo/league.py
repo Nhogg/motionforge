@@ -3,6 +3,7 @@ frozen learner snapshots and the scripted stage-1 baseline, plus the env partiti
 symmetric self-play and league groups. No simulator code; testable on CPU."""
 
 import copy
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ import torch
 
 SCRIPTED = "scripted"
 SCRIPTED_ID = "scripted/stage1"
+ANCHOR = "anchor"  # init_pool members kept with anchor_init_pool; never evicted.
 
 
 @dataclass(frozen=True)
@@ -19,7 +21,7 @@ class Opponent:
 
   opponent_id: str
   policy: Callable[[torch.Tensor], torch.Tensor]
-  category: str = SCRIPTED  # scripted (never evicted) | learner | historical
+  category: str = SCRIPTED  # scripted, anchor (never evicted) | learner | historical
   path: str | None = None  # rsl-rl-format checkpoint, so a resumed run can reload it.
 
 
@@ -28,7 +30,7 @@ class LeagueCfg:
   """Hydra group ``league``. The defaults reproduce scripted-only play without self-play."""
 
   selfplay_frac: float = 0.0  # Fraction of envs where the learner plays both seats.
-  sampling: str = "pfsp"  # pfsp: weight (1 - p)^pfsp_power, p = learner's EMA win rate | uniform | recent
+  sampling: str = "pfsp"  # pfsp: weight (1 - p)^pfsp_power, p = learner's EMA win rate | balanced: p(1 - p) | uniform | recent
   pfsp_power: float = 2.0
   win_ema: float = 0.05  # EMA rate per episode of the learner's win rate vs each member.
   init_win: float = 0.5  # Win rate assumed for an unseen member.
@@ -41,7 +43,23 @@ class LeagueCfg:
   scripted_weight_start: float = 1.0  # Scripted weight multiplier, linear from start to end
   scripted_weight_end: float = 1.0  # over scripted_decay_iters iterations (1 -> 1: no effect).
   scripted_decay_iters: int = 1
+  scripted_share: float = 0.0  # Probability reserved for scripted members before matchmaking (0: off).
   init_pool: list[str] = field(default_factory=list)  # Checkpoints preloaded as historical members.
+  anchor_init_pool: bool = False  # Keep init_pool members for the whole run (category anchor).
+  league_role: str = "random"  # Learner role in league-group worlds: random (rules.learner_role) | pursuer | evader.
+  scripted_speed_start: float = 1.0 # Linear command scale, training scripted opponent only; yaw unchanged.
+  scripted_speed_end: float = 1.0
+  scripted_speed_ramp_iters: int = 1
+
+  def __post_init__(self):
+    if self.league_role not in ("random", "pursuer", "evader"):
+      raise ValueError(f"unknown league_role {self.league_role!r}")
+    if not all(math.isfinite(x) and 0 < x <= 1 for x in (self.scripted_speed_start, self.scripted_speed_end)):
+      raise ValueError("Scripted speed scales must be finite and in (0, 1]")
+    if not 0 <= self.scripted_share < 1:
+      raise ValueError("scripted_share must be in [0, 1)")
+    if self.scripted_speed_ramp_iters < 1:
+      raise ValueError("scripted_speed_ramp_iters must be positive")
 
 
 @dataclass(frozen=True)
@@ -62,7 +80,7 @@ class League:
 
   def __init__(self, cfg: LeagueCfg, seed: int = 0, load: Callable[[str], Callable] | None = None,
                snapshot_dir: str | None = None) -> None:
-    if cfg.sampling not in ("pfsp", "uniform", "recent"):
+    if cfg.sampling not in ("pfsp", "balanced", "uniform", "recent"):
       raise ValueError(f"unknown league sampling {cfg.sampling!r}")
     self.cfg, self.load, self.snapshot_dir = cfg, load, snapshot_dir
     self.members: list[Opponent] = []
@@ -71,15 +89,15 @@ class League:
     self.rng = torch.Generator().manual_seed(seed)
     self.partition, self.current = Partition(slice(0, 0), ()), []
     for path in cfg.init_pool:
-      self.add(Opponent(f"historical/{path}", load(path), "historical", path))
+      self.add(Opponent(f"historical/{path}", load(path), ANCHOR if cfg.anchor_init_pool else "historical", path))
 
   def add(self, opponent: Opponent) -> None:
-    """Append a member; past ``max_size`` the oldest non-scripted member is evicted."""
+    """Append a member; past ``max_size`` the oldest non-scripted, non-anchor member is evicted."""
     if opponent.opponent_id in self.win:
       raise ValueError(f"duplicate opponent {opponent.opponent_id}")
     self.members.append(opponent)
     self.win[opponent.opponent_id], self.games[opponent.opponent_id] = self.cfg.init_win, 0
-    evictable = [o for o in self.members if o.category != SCRIPTED]
+    evictable = [o for o in self.members if o.category not in (SCRIPTED, ANCHOR)]
     if len(self.members) > self.cfg.max_size and evictable:
       self.members.remove(evictable[0])
       del self.win[evictable[0].opponent_id], self.games[evictable[0].opponent_id]
@@ -105,12 +123,20 @@ class League:
     t = min(max(iteration / max(c.scripted_decay_iters, 1), 0.0), 1.0)
     return c.scripted_weight_start + t * (c.scripted_weight_end - c.scripted_weight_start)
 
+  def scripted_speed(self, iteration: int) -> float:
+    c = self.cfg
+    t = min(max(iteration / c.scripted_speed_ramp_iters, 0.0), 1.0)
+    return c.scripted_speed_start + t * (c.scripted_speed_end - c.scripted_speed_start)
+
   def probs(self, iteration: int) -> dict[str, float]:
     """Sampling weights, times the scripted multiplier, normalized, then floored at min_weight."""
     c, n = self.cfg, len(self.members)
     if c.sampling == "pfsp":
       win = torch.tensor([self.win[o.opponent_id] for o in self.members], dtype=torch.float64)
       w = (1 - win).clamp_min(0) ** c.pfsp_power
+    elif c.sampling == "balanced":  # Favor opponents the learner beats about half the time.
+      win = torch.tensor([self.win[o.opponent_id] for o in self.members], dtype=torch.float64)
+      w = (win * (1 - win)).clamp_min(0)
     elif c.sampling == "uniform":
       w = torch.ones(n, dtype=torch.float64)
     else:  # recent: members are in insertion order, newest last.
@@ -123,6 +149,9 @@ class League:
     while (new := (p < floor) & ~low).any():  # Lift members to the floor; rescale the rest.
       low |= new
       p = torch.where(low, floor, w * (1 - floor * low.sum().item()) / w[~low].sum())
+    scripted = torch.tensor([o.category == SCRIPTED for o in self.members], dtype=torch.float64)
+    if c.scripted_share and scripted.any():  # Mix in a fixed scripted share, whatever its win rate.
+      p = (1 - c.scripted_share) * p + c.scripted_share * scripted / scripted.sum()
     return dict(zip([o.opponent_id for o in self.members], p.tolist()))
 
   def sample(self, iteration: int) -> Opponent:
@@ -159,6 +188,7 @@ class League:
     p, sp = self.probs(iteration), self.cfg.selfplay_frac
     out = {"league/size": len(self.members), "league/share/selfplay": sp,
            "league/scripted_weight": self.scripted_weight(iteration),
+           "league/scripted_speed_scale": self.scripted_speed(iteration),
            "league/p_scripted": sum(p[o.opponent_id] for o in self.members if o.category == SCRIPTED)}
     for o in self.members:
       key = f"league/share/{o.category}"
@@ -179,7 +209,7 @@ class League:
     ids = {o.opponent_id for o in self.members}
     self.win = {i: sd["win"].get(i, self.win.get(i, self.cfg.init_win)) for i in ids}
     self.games = {i: sd["games"].get(i, self.games.get(i, 0)) for i in ids}
-    self.rng.set_state(sd["rng"])
+    self.rng.set_state(sd["rng"].cpu()) # Checkpoint map_location may have moved the sampler state to CUDA.
 
 
 class FixedLeague:

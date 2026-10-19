@@ -9,21 +9,45 @@ from rsl_rl.models import MLPModel
 from tensordict import TensorDict
 
 from mofo.league import SCRIPTED_ID, League, Partition
+from mofo.role_model import RoleModel
 from mofo.selfplay import SeatRewards
-from mofo.tasks.tag import ACTION, TAG_DIM, outcome, role, tag_rules
+from mofo.tasks.tag import ACTION, outcome, role, tag_rules, tag_observation_dim
 
 
-def load_policy(path: str, device: str) -> torch.nn.Module:
+class _LegacyObservation(torch.nn.Module):
+  """A frozen legacy actor ignores explicitly appended arena inputs; no weights change."""
+
+  def __init__(self, policy, input_dim):
+    super().__init__()
+    self.policy, self.input_dim = policy, input_dim
+
+  def forward(self, obs):
+    return self.policy(obs[:, :self.input_dim])
+
+
+def load_policy(path: str, device: str, env=None) -> torch.nn.Module:
   """Deterministic actor (normalizer + MLP) from an rsl-rl checkpoint."""
   sd = torch.load(path, map_location=device, weights_only=False)["actor_state_dict"]
   ws = [v for k, v in sd.items() if k.startswith("mlp.") and k.endswith(".weight")]
   obs = TensorDict({"actor": torch.zeros(1, ws[0].shape[1])}, batch_size=[1])
-  model = MLPModel(
+  cls = RoleModel if "_role_column" in sd else MLPModel
+  options = {"role_column": int(sd["_role_column"])} if cls is RoleModel else {}
+  model = cls(
     obs, {"actor": ["actor"]}, "actor", ws[-1].shape[0], [w.shape[0] for w in ws[:-1]],
     obs_normalization="obs_normalizer._mean" in sd,
+    **options,
   )
-  model.load_state_dict({k: v for k, v in sd.items() if not k.startswith("distribution.")})
-  return model.as_jit().to(device).eval()
+  model.load_state_dict({k: v for k, v in sd.items()
+                         if not k.startswith("distribution.") and ".distribution." not in k})
+  policy = model.as_jit().to(device).eval()
+  if env is not None:
+    expected, actual = ws[0].shape[1], env.observation_manager.group_obs_dim['actor'][0]
+    if expected != actual:
+      if tag_rules(env).arena_observation and expected == actual - 4:
+        print(f'[policy] legacy actor {path}: ignore appended arena inputs ({actual}->{expected})')
+        return _LegacyObservation(policy, expected).eval()
+      raise ValueError(f'Checkpoint expects {expected} actor inputs, environment supplies {actual}; use matching observation config')
+  return policy
 
 
 class ScriptedPolicy:
@@ -36,6 +60,7 @@ class ScriptedPolicy:
 
   def __init__(self, env: ManagerBasedRlEnv, policy=None, me="opponent", margin=1.5):
     self.env, self.policy, self.me, self.margin = env, policy, me, margin
+    self.speed_scale = 1.0 # Training league may schedule linear commands; evaluation defaults to full speed.
     self.other = "robot" if me == "opponent" else "opponent"
     self.role_sign = -1.0 if me == "opponent" else 1.0
     self.num_actions = env.action_manager.get_term(ACTION[me]).action_dim
@@ -59,13 +84,15 @@ class ScriptedPolicy:
     heading = torch.atan2(v[:, 1], v[:, 0])
     v = v[:, :2] / v[:, :2].norm(dim=-1, keepdim=True).clamp_min(1e-6)
     cmd = torch.cat([v * self.hi[:2], 2.0 * heading[:, None]], -1)
-    return torch.maximum(torch.minimum(cmd, self.hi), self.lo)
+    cmd = torch.maximum(torch.minimum(cmd, self.hi), self.lo)
+    cmd[:, :2] *= self.speed_scale
+    return cmd
 
   def __call__(self, obs: torch.Tensor, ids: slice = slice(None)) -> torch.Tensor:
     """obs: this robot's tag obs group (stage-1 proprio terms, then tag features) for envs ``ids``."""
     if self.policy is None:
       return torch.zeros(obs.shape[0], self.num_actions, device=obs.device)
-    return self.policy(torch.cat([obs[:, :-TAG_DIM], self.command()[ids]], -1))
+    return self.policy(torch.cat([obs[:, :-tag_observation_dim(self.env)], self.command()[ids]], -1))
 
 
 def _league_log(stats: dict[str, float], top: int = 3) -> dict[str, float]:
@@ -92,14 +119,18 @@ class OpponentEnv(RslRlVecEnvWrapper):
 
   def __init__(self, env: ManagerBasedRlEnv, league, resample_every: int = 24 * 50, selfplay_frac: float = 0.0, steps_per_iter: int = 24):
     self.league, self.steps, self.steps_per_iter, self.learner = league, 0, steps_per_iter, None
-    super().__init__(env)
     N = env.num_envs
     self.pool = isinstance(league, League)
     if self.pool:
       self.part, self.resample_every = league.assign(N), league.cfg.resample_every
+      # Before the wrapper's initial reset, so the first episodes already use these roles.
+      sign = {"pursuer": 1.0, "evader": -1.0}.get(league.cfg.league_role)
+      if sign is not None:
+        env.command_manager.get_term("role").forced[self.part.selfplay.stop:] = sign
     else:
       n = round(selfplay_frac * N)
       self.part, self.resample_every = Partition(slice(0, n), (slice(n, N),) if n < N else ()), resample_every
+    super().__init__(env)
     self.n_sp = self.part.selfplay.stop
     self.num_envs += self.n_sp
     self.num_actions = env.action_manager.get_term(ACTION["robot"]).action_dim
@@ -124,9 +155,14 @@ class OpponentEnv(RslRlVecEnvWrapper):
     once per iteration log the league stats and the actual env share per opponent category."""
     it, log, boundary = self.steps // self.steps_per_iter, {}, self.steps % self.steps_per_iter == 0
     c = self.league.cfg if self.pool else None
+    if self.pool and boundary:
+      for o in self.league.members:
+        if isinstance(o.policy, ScriptedPolicy):
+          o.policy.speed_scale = self.league.scripted_speed(it)
     if self.pool and boundary and c.snapshot_every and it and it % c.snapshot_every == 0 and self.learner is not None:
       self.league.snapshot(self.learner, it)
-    if self.steps % self.resample_every == 0:
+    # Resumed physics starts fresh, potentially between opponent resampling boundaries.
+    if self.steps % self.resample_every == 0 or not hasattr(self, "opponents"):
       self.opponents = (
         self.league.resample_groups(it) if self.pool else [self.league.sample(seed=self.steps // self.resample_every)] * len(self.part.groups)
       )
@@ -151,6 +187,21 @@ class OpponentEnv(RslRlVecEnvWrapper):
     obs, rew, terminated, truncated, extras = self.env.step(torch.cat([actions[:N], torch.cat(opp)], -1))
     if self.pool:
       done, out = terminated | truncated, outcome(env, learner_role)
+      # Log every ending by learner role; failed episodes remain in the denominator.
+      # Self-play contributes one record per learning seat, not two physical worlds.
+      tm = env.termination_manager.get_term
+      seat_roles = torch.cat([learner_role, -learner_role[:n]])
+      seat_done = torch.cat([done, done[:n]])
+      tag = torch.cat([out * learner_role > 0, (out * learner_role > 0)[:n]])
+      timeout = torch.cat([out * learner_role < 0, (out * learner_role < 0)[:n]])
+      fall = torch.cat([tm('fell_over'), tm('opponent_fell_over')[:n]])
+      oob = torch.cat([tm('robot_out'), tm('opponent_out')[:n]])
+      for name, sign in (('pursuer', 1), ('evader', -1)):
+        mask = seat_done & (seat_roles == sign)
+        if mask.any():
+          for key, value in (('tag_rate', tag), ('healthy_timeout_rate', timeout),
+                             ('own_fall_rate', fall), ('own_oob_rate', oob)):
+            log[f'Role/{name}/{key}'] = value[mask].float()
       wins: dict[str, list] = {}
       for o, s in zip(self.opponents, self.part.groups):
         valid = done[s] & (out[s] != 0)

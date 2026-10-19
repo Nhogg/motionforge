@@ -13,3 +13,5 @@ win_reward: 10.0        # Sparse +-reward per episode outcome.
 fall_loses: true        # Own fall penalty; physical failures never award opponent game wins.
 out_loses: true         # Own OOB penalty; not a TAG or a healthy evader timeout.
 post_tag_s: 0.0         # Recovery-training ablation only; TAG payoff stays immediate and one-time.
+arena_observation: false # Append center xy and arena +X axis in body yaw frame (four inputs).
+contact_speed_weight: 0.0 # Individual excess inward-speed cost at first TAG; disabled by default.

@@ -1,0 +1,13 @@
+# @package _global_
+# Immediate reset, shaping .25; sweep ONLY contact_speed_weight and paired seeds.
+defaults:
+  - shaping
+  - _self_
+
+rules:
+  post_tag_s: 0.0
+  contact_speed_limit_mps: 1.0
+  contact_speed_max_penalty: 2.0
+shaping:
+  enabled: true
+  weight: 0.25

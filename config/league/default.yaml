@@ -5,7 +5,7 @@ defaults:
   - _self_
 
 selfplay_frac: 0.0       # Fraction of envs where the learner plays both seats.
-sampling: pfsp           # pfsp: weight (1 - p)^pfsp_power, p = learner's EMA win rate | uniform | recent
+sampling: pfsp           # pfsp: weight (1 - p)^pfsp_power, p = learner's EMA win rate | balanced: p(1 - p) | uniform | recent
 pfsp_power: 2.0
 win_ema: 0.05            # EMA rate per episode of the learner's win rate vs each member.
 init_win: 0.5            # Win rate assumed for an unseen member.
@@ -18,4 +18,10 @@ resample_every: 1200     # Env steps between redraws of each group's opponent.
 scripted_weight_start: 1.0  # Scripted weight multiplier, linear from start to end over
 scripted_weight_end: 1.0    # scripted_decay_iters iterations (1 -> 1: no effect).
 scripted_decay_iters: 1
+scripted_share: 0.0      # Probability reserved for scripted members before matchmaking (0: off).
 init_pool: []            # Checkpoints preloaded as historical members.
+anchor_init_pool: false  # Never evict init_pool members (a fixed opponent ladder).
+league_role: random      # Learner role in league-group worlds: random (rules.learner_role) | pursuer | evader.
+scripted_speed_start: 1.0 # Training scripted opponent linear command scale; yaw and learned opponents unchanged.
+scripted_speed_end: 1.0
+scripted_speed_ramp_iters: 1

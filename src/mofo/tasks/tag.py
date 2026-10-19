@@ -25,7 +25,7 @@ from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.utils.lab_api.math import quat_apply_inverse, quat_from_euler_xyz, yaw_quat
 
 ACTION = {"robot": "joint_pos", "opponent": "opponent"}  # Entity -> action term.
-TAG_DIM = 6  # rel pos xy, rel vel xy, role, distance to arena wall.
+TAG_DIM = 6  # Legacy prefix: rel pos xy, rel vel xy, role, distance to arena wall.
 # Two default-pose G1s at base distance >= this don't touch (rules_debug/probe.py: facing
 # each other clear from 0.50 m, side by side from 0.55 m).
 G1_CLEARANCE = 0.6
@@ -46,13 +46,25 @@ class TagRules:
   fall_loses: bool = True  # Apply own failure penalty; never award an opponent win.
   out_loses: bool = True  # Apply own failure penalty; never award an opponent win.
   learner_role: str = "random"  # random (50/50 per episode) | pursuer | evader.
+  arena_observation: bool = False # Append body-frame center xy and arena +X axis xy (four inputs).
   post_tag_s: float = 0.0  # Training recovery after the one-time TAG payoff; 0 = immediate reset.
+  contact_speed_weight: float = 0.0 # Own inward-speed cost at valid first TAG (not zero-sum).
+  contact_speed_limit_mps: float = 1.0
+  contact_speed_max_penalty: float = 2.0
+  upright_reward_offset: float = 0.0 # TAG-only ablation: 1 makes perfect upright worth zero, not a living bonus.
 
   def __post_init__(self):
     assert self.tag_mode in ("distance", "contact"), self.tag_mode
     assert self.learner_role in ("random", "pursuer", "evader"), self.learner_role
     assert self.win_reward > 0 and self.episode_s > 0
     assert math.isfinite(self.post_tag_s) and self.post_tag_s >= 0
+    assert math.isfinite(self.contact_speed_weight) and self.contact_speed_weight >= 0
+    assert math.isfinite(self.contact_speed_limit_mps) and self.contact_speed_limit_mps >= 0
+    assert math.isfinite(self.contact_speed_max_penalty) and self.contact_speed_max_penalty > 0
+    assert math.isfinite(self.upright_reward_offset) and 0 <= self.upright_reward_offset <= 1
+    if self.contact_speed_weight:
+      assert self.tag_mode == "contact" and self.post_tag_s == 0, "Test contact cost separately from recovery"
+      assert self.contact_speed_max_penalty < self.win_reward, "Contact cost must remain smaller than TAG payoff"
     object.__setattr__(self, "tag_bodies", tuple(self.tag_bodies))
 
 
@@ -115,6 +127,8 @@ class RoleCommand(CommandTerm):
     self.tag_step = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
     self.tag_pulse = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
     self.game_result = torch.zeros(self.num_envs, device=self.device)
+    self.inward_speed = torch.zeros(self.num_envs, 2, device=self.device)
+    self.forced = torch.zeros(self.num_envs, device=self.device)  # Per-world role override (0: rules).
     if cfg.colors:  # Per-world mat_rgba (the Warp renderer reads it per world).
       env.sim.expand_model_fields(("mat_rgba",))
       self.mat = [env.sim.mj_model.material(f"{k}/silver").id for k in ("robot", "opponent")]
@@ -129,14 +143,20 @@ class RoleCommand(CommandTerm):
     # Keep game_result until the next termination computation: the league reads
     # the completed outcome after mjlab has already auto-reset these worlds.
     forced = {"pursuer": 1.0, "evader": -1.0}.get(self.cfg.rules.learner_role)
-    self.role[env_ids] = torch.randint_like(self.role[env_ids], 2) * 2 - 1 if forced is None else forced
+    roles = torch.randint_like(self.role[env_ids], 2) * 2 - 1 if forced is None else torch.full_like(self.role[env_ids], forced)
+    world = self.forced[env_ids, None]
+    self.role[env_ids] = torch.where(world != 0, world, roles)
     if self.cfg.colors:
       pursuer = self.role[env_ids, 0] > 0
       for mat, chaser in zip(self.mat, (pursuer, ~pursuer)):
         self._env.sim.model.mat_rgba[env_ids, mat] = torch.where(chaser[:, None], self.rgba[0], self.rgba[1])
 
   def _update_command(self, env_ids: torch.Tensor | None) -> None:
-    pass
+    # Called after physics/forward/reset. Cache these velocities for the NEXT
+    # control step's reward, so contact impulses cannot hide pre-contact speed.
+    ids = slice(None) if env_ids is None else env_ids
+    for i, name in enumerate(("robot", "opponent")):
+      self.inward_speed[ids, i] = own_inward_speed(self._env, name)[ids]
 
   def _update_metrics(self) -> None:
     pass
@@ -154,6 +174,10 @@ def tag_rules(env: ManagerBasedRlEnv) -> TagRules:
   return env.command_manager.get_term("role").cfg.rules
 
 
+def tag_observation_dim(env: ManagerBasedRlEnv) -> int:
+  return TAG_DIM + (4 if tag_rules(env).arena_observation else 0)
+
+
 def distance(env: ManagerBasedRlEnv) -> torch.Tensor:
   a, b = env.scene["robot"].data, env.scene["opponent"].data
   return (a.root_link_pos_w[:, :2] - b.root_link_pos_w[:, :2]).norm(dim=-1)
@@ -165,13 +189,23 @@ def wall_distance(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
 
 
 def tag_features(env: ManagerBasedRlEnv, me: str, other: str, role_sign: float):
-  """Opponent pos/vel in my yaw frame, my role, my distance to the arena wall."""
+  """Legacy opponent/role/wall prefix; optional arena geometry in my yaw frame."""
   a, b = env.scene[me].data, env.scene[other].data
   q = yaw_quat(a.root_link_quat_w)
   rel_p = quat_apply_inverse(q, b.root_link_pos_w - a.root_link_pos_w)[:, :2]
   rel_v = quat_apply_inverse(q, b.root_link_lin_vel_w - a.root_link_lin_vel_w)[:, :2]
   r = role_sign * role(env)
-  return torch.cat([rel_p, rel_v, r[:, None], wall_distance(env, me)[:, None]], -1)
+  features = [rel_p, rel_v, r[:, None], wall_distance(env, me)[:, None]]
+  if tag_rules(env).arena_observation:
+    home = env.scene.env_origins - a.root_link_pos_w
+    home[:, 2] = 0
+    axis = torch.zeros_like(home)
+    axis[:, 0] = 1
+    # Center direction alone omits the square arena's orientation. Together these
+    # four values locate all walls, without changing the six legacy features.
+    features += [quat_apply_inverse(q, home)[:, :2] / tag_rules(env).arena_half_extent,
+                 quat_apply_inverse(q, axis)[:, :2]]
+  return torch.cat(features, -1)
 
 
 def episode_progress(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -254,6 +288,28 @@ def own_failure(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tens
   return -((t(fall) & rules.fall_loses) | (t(out) & rules.out_loses)).float()
 
 
+def own_inward_speed(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
+  """Own planar velocity projected toward the other robot, not relative closing speed."""
+  other = "opponent" if name == "robot" else "robot"
+  a, b = env.scene[name].data, env.scene[other].data
+  delta = b.root_link_pos_w[:, :2] - a.root_link_pos_w[:, :2]
+  return (a.root_link_lin_vel_w[:, :2] * delta).sum(-1) / delta.norm(dim=-1).clamp_min(1e-6)
+
+
+def contact_speed_penalty(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """Bounded, individual first-contact regularizer; TAG payoff itself is unchanged.
+
+  Same rule for either role: a stationary or fleeing agent is not charged for
+  the other robot's approach. Immediate TAG reset makes this a one-time cost.
+  """
+  rules = tag_rules(env)
+  index = 0 if asset_cfg.name == "robot" else 1
+  speed = env.command_manager.get_term("role").inward_speed[:, index]
+  cost = (rules.contact_speed_weight * (speed - rules.contact_speed_limit_mps).clamp_min(0).square()).clamp_max(rules.contact_speed_max_penalty)
+  valid_tag = env.termination_manager.get_term("tagged") & ~failed(env)
+  return -cost * valid_tag
+
+
 def motion_quality(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
   """Physical diagnostics only; these do not modify actions or rewards."""
   a, b = env.scene["robot"].data, env.scene["opponent"].data
@@ -292,6 +348,11 @@ def reward_component(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
     return torch.zeros(env.num_envs, device=env.device)
   scale = env.step_dt if env.cfg.scale_rewards_by_dt else 1.0
   return manager._step_reward[:, manager.active_terms.index(name)] * scale
+
+
+def upright_offset(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Constant per-second offset; paired with upright, never a change to TAG payoff."""
+  return torch.ones(env.num_envs, device=env.device)
 
 
 def qpos_distance(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -474,9 +535,16 @@ def tag_env_cfg(
   cfg.rewards["action_rate_l2"] = replace(
     cfg.rewards["action_rate_l2"], func=action_rate_l2, params={"action_name": ACTION["robot"]}
   )
+  if rules.upright_reward_offset:
+    cfg.rewards["upright_offset"] = RewardTermCfg(
+      func=upright_offset, weight=-rules.upright_reward_offset * cfg.rewards["upright"].weight
+    )
   cfg.rewards["tag"] = RewardTermCfg(func=tag_result, weight=rules.win_reward / dt)
   cfg.rewards["failure"] = RewardTermCfg(func=own_failure, weight=rules.win_reward / dt,
                                        params={"asset_cfg": SceneEntityCfg("robot")})
+  if rules.tag_mode == "contact":
+    cfg.rewards["contact_speed"] = RewardTermCfg(func=contact_speed_penalty, weight=1.0 / dt,
+                                                params={"asset_cfg": SceneEntityCfg("robot")})
   if shaping_cfg.enabled:
     cfg.commands["potential"] = PotentialCfg(potential=shaping_cfg.potential)  # After role.
     cfg.rewards["shaping"] = RewardTermCfg(
@@ -484,7 +552,8 @@ def tag_env_cfg(
       params={"gamma": shaping_cfg.gamma, "name": shaping_cfg.potential},
     )
   cfg.metrics.update({f"reward_{name}_episode_sum": MetricsTermCfg(
-    func=reward_component, params={"name": name}, reduce="sum") for name in ("tag", "shaping", "failure")})
+    func=reward_component, params={"name": name}, reduce="sum")
+    for name in ("tag", "shaping", "failure", "contact_speed", "opp_contact_speed", "upright", "upright_offset")})
   if rules.tag_mode == "contact":  # Pursuer's tag_bodies subtrees vs. the other's whole body.
     cfg.scene.sensors += tuple(
       ContactSensorCfg(
