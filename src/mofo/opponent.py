@@ -1,5 +1,7 @@
 """Host-side opponent: rsl-rl sees only the learner; the league drives the opponent."""
 
+from pathlib import PurePath
+
 import torch
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
@@ -67,6 +69,23 @@ class ScriptedPolicy:
     r = unitree_g1_flat_env_cfg().commands["twist"].ranges
     lo_hi = list(zip(r.lin_vel_x, r.lin_vel_y, r.ang_vel_z))
     self.lo, self.hi = (torch.tensor(v, device=env.device) for v in lo_hi)
+    # rules.scripted_evader=random: per-world world-frame direction and speed fraction, redrawn
+    # with probability step_dt / mean_hold_s per step (exponential hold times, mean 2 s).
+    n = env.num_envs
+    self.rand_dir = torch.zeros(n, 3, device=env.device)
+    self.rand_speed = torch.zeros(n, 1, device=env.device)
+    self.redraw(torch.ones(n, dtype=torch.bool, device=env.device))
+
+  def redraw(self, mask: torch.Tensor, mean_hold_s: float = 2.0):
+    step = getattr(self.env, "common_step_counter", None)
+    if step is not None and step == getattr(self, "_drawn_at", None):  # Once per env step across groups.
+      return
+    self._drawn_at = step
+    mask = mask | (torch.rand_like(self.rand_speed[:, 0]) < self.env.step_dt / mean_hold_s)
+    theta = torch.rand_like(self.rand_speed[:, 0]) * 2 * torch.pi
+    d = torch.stack([theta.cos(), theta.sin(), torch.zeros_like(theta)], -1)
+    self.rand_dir = torch.where(mask[:, None], d, self.rand_dir)
+    self.rand_speed = torch.where(mask[:, None], torch.rand_like(self.rand_speed), self.rand_speed)
 
   def command(self) -> torch.Tensor:
     env = self.env
@@ -79,6 +98,10 @@ class ScriptedPolicy:
     edge = ((xy[:, :2].abs().max(-1).values - tag_rules(env).arena_half_extent + self.margin) / self.margin).clamp(0, 1)
     home = -xy / xy.norm(dim=-1, keepdim=True).clamp_min(1e-6)
     flee = -to + 2 * edge[:, None] * home
+    rand = tag_rules(env).scripted_evader == "random"
+    if rand:  # Ignores the pursuer (and walls; pair with rules.unbounded).
+      self.redraw(env.episode_length_buf <= 1)
+      flee = self.rand_dir
     pursue = (self.role_sign * role(env) > 0)[:, None]
     v = quat_apply_inverse(yaw_quat(a.root_link_quat_w), torch.where(pursue, to, flee))
     heading = torch.atan2(v[:, 1], v[:, 0])
@@ -86,6 +109,8 @@ class ScriptedPolicy:
     cmd = torch.cat([v * self.hi[:2], 2.0 * heading[:, None]], -1)
     cmd = torch.maximum(torch.minimum(cmd, self.hi), self.lo)
     cmd[:, :2] *= self.speed_scale
+    if rand:
+      cmd[:, :2] = torch.where(pursue, cmd[:, :2], cmd[:, :2] * self.rand_speed)
     return cmd
 
   def __call__(self, obs: torch.Tensor, ids: slice = slice(None)) -> torch.Tensor:
@@ -96,10 +121,18 @@ class ScriptedPolicy:
 
 
 def _league_log(stats: dict[str, float], top: int = 3) -> dict[str, float]:
-  """League stats minus the per-member long tail: keep the scripted member and the ``top`` likeliest."""
+  """League stats: the win EMA vs every member (one plot: W&B regex panel on league/win/), but sampling
+  probabilities only for the scripted member and the ``top`` likeliest. Checkpoint paths are shortened
+  to <run dir>/<file stem> so keys stay readable."""
+  def short(key: str) -> str:
+    if "//" not in key:
+      return key
+    prefix, path = key.split("//", 1)
+    run = PurePath(path).parent
+    return f"{prefix}/{(run.parent if run.name == 'league' else run).name}/{PurePath(path).stem}"
   members = sorted((k for k in stats if k.startswith("league/p/") and k != f"league/p/{SCRIPTED_ID}"), key=stats.get, reverse=True)
-  keep = {f"league/p/{SCRIPTED_ID}", f"league/win/{SCRIPTED_ID}", *members[:top], *(k.replace("/p/", "/win/") for k in members[:top])}
-  return {k: v for k, v in stats.items() if k in keep or not k.startswith(("league/p/", "league/win/"))}
+  keep = {f"league/p/{SCRIPTED_ID}", *members[:top]}
+  return {short(k): v for k, v in stats.items() if k in keep or not k.startswith("league/p/")}
 
 
 class OpponentEnv(RslRlVecEnvWrapper):
@@ -132,6 +165,7 @@ class OpponentEnv(RslRlVecEnvWrapper):
       self.part, self.resample_every = Partition(slice(0, n), (slice(n, N),) if n < N else ()), resample_every
     super().__init__(env)
     self.n_sp = self.part.selfplay.stop
+    env.command_manager.get_term("role").frozen[:self.n_sp] = False  # The learner plays both seats.
     self.num_envs += self.n_sp
     self.num_actions = env.action_manager.get_term(ACTION["robot"]).action_dim
     self.seats = SeatRewards(env) if self.n_sp else None
@@ -159,6 +193,9 @@ class OpponentEnv(RslRlVecEnvWrapper):
       for o in self.league.members:
         if isinstance(o.policy, ScriptedPolicy):
           o.policy.speed_scale = self.league.scripted_speed(it)
+    if self.pool and boundary and c.ladder:
+      for change in self.league.update_ladder():
+        print(f"[ladder] iteration {it}: {change}")
     if self.pool and boundary and c.snapshot_every and it and it % c.snapshot_every == 0 and self.learner is not None:
       self.league.snapshot(self.learner, it)
     # Resumed physics starts fresh, potentially between opponent resampling boundaries.
@@ -166,6 +203,11 @@ class OpponentEnv(RslRlVecEnvWrapper):
       self.opponents = (
         self.league.resample_groups(it) if self.pool else [self.league.sample(seed=self.steps // self.resample_every)] * len(self.part.groups)
       )
+      sign = {"pursuer": 1.0, "evader": -1.0}.get(c.league_role) if self.pool else None
+      if sign is not None and c.scripted_role == "random":  # Takes effect at each world's next reset.
+        forced = self.unwrapped.command_manager.get_term("role").forced
+        for o, s in zip(self.opponents, self.part.groups):
+          forced[s] = 0.0 if isinstance(o.policy, ScriptedPolicy) else sign
     if self.pool and boundary:
       N, envs = self.unwrapped.num_envs, {"selfplay": self.n_sp}
       for o, s in zip(self.opponents, self.part.groups):
@@ -203,8 +245,11 @@ class OpponentEnv(RslRlVecEnvWrapper):
                              ('own_fall_rate', fall), ('own_oob_rate', oob)):
             log[f'Role/{name}/{key}'] = value[mask].float()
       wins: dict[str, list] = {}
+      # A world takes a group's forced role only at its next reset: skip episodes still played in the
+      # previous role (e.g. learner-pursuer games vs a new ladder rung), which would inflate its win EMA.
+      forced = env.command_manager.get_term("role").forced
       for o, s in zip(self.opponents, self.part.groups):
-        valid = done[s] & (out[s] != 0)
+        valid = done[s] & (out[s] != 0) & ((forced[s] == 0) | (learner_role[s] == forced[s]))
         if valid.any():
           self.league.record(o.opponent_id, out[s][valid])
           wins.setdefault(o.category, []).append((out[s][valid] > 0).float())

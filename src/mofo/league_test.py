@@ -197,6 +197,44 @@ def test_balanced_anchors():
   print("11 balanced", [round(x, 4) for x in p], "; anchors kept:", ids)
 
 
+def test_ladder():
+  load = lambda path: zero
+  lg = League(replace(CFG, ladder=["a", "b", "c"], ladder_active=1, ladder_min_games=10, max_size=4), seed=0, load=load)
+  lg.add(Opponent(SCRIPTED_ID, zero, "scripted"))
+  rung = lambda: [o.opponent_id for o in lg.members if o.opponent_id.startswith("ladder/")]
+  assert rung() == ["ladder/0/a"] and lg.update_ladder() == []  # Unplayed: no promotion.
+  lg.record("ladder/0/a", [1.0] * 5 + [-1.0] * 5)  # 10 games, EMA ~.43 >= .3: admit b.
+  assert lg.update_ladder() == ["admit ladder/1/b"] and rung() == ["ladder/0/a", "ladder/1/b"]
+  for i in range(3):  # Snapshots are evicted; rungs (anchors) are not.
+    lg.snapshot(torch.nn.Linear(3, 2), i + 1)
+  assert rung() == ["ladder/0/a", "ladder/1/b"] and [o.opponent_id for o in lg.members][-1] == "learner/3" and len(lg.members) == 4
+  lg.record("ladder/0/a", [1.0] * 100)  # Mastered: retired, though b is not yet beaten.
+  assert lg.update_ladder() == ["retire ladder/0/a"] and rung() == ["ladder/1/b"]
+  lg.record("ladder/1/b", [1.0] * 100)  # The newest rung is never retired, only succeeded.
+  assert lg.update_ladder() == ["admit ladder/2/c"] and rung() == ["ladder/1/b", "ladder/2/c"]
+  lg.record("ladder/2/c", [1.0] * 100)
+  assert lg.update_ladder() == ["retire ladder/1/b"] and rung() == ["ladder/2/c"]  # Exhausted: c stays.
+  sd = lg.state_dict()
+  fresh = League(replace(CFG, ladder=["a", "b", "c"], ladder_min_games=10, max_size=2), seed=0, load=load)
+  fresh.load_state_dict(sd)  # Retired initial rung a is not resurrected.
+  assert [o.opponent_id for o in fresh.members if o.opponent_id.startswith("ladder/")] == ["ladder/2/c"]
+  assert fresh.ladder_next == 3
+  # A lost rung keeps its reserved share under balanced sampling without a floor (no absorbing 0).
+  sh = League(replace(CFG, sampling="balanced", min_weight=0.0, scripted_share=0.25, ladder_share=0.3,
+                      ladder=["a", "b"], ladder_active=2), seed=0, load=load)
+  sh.add(Opponent(SCRIPTED_ID, zero, "scripted"))
+  sh.record("ladder/1/b", [-1.0] * 100)
+  p = sh.probs(0)
+  assert 0.3 <= p["ladder/1/b"] < 0.31 and abs(p[SCRIPTED_ID] - 0.7 * (0.25 + 0.75 * 0.5)) < 0.01
+  for bad in (dict(ladder_active=0), dict(ladder_promote=0.95), dict(ladder_min_games=0), dict(ladder_share=0.8, scripted_share=0.3)):
+    try:
+      LeagueCfg(ladder=["a"], **bad)
+      raise AssertionError(bad)
+    except ValueError:
+      pass
+  print("12 ladder", rung())
+
+
 if __name__ == "__main__":
   test_pfsp()
   test_floor()
@@ -209,4 +247,5 @@ if __name__ == "__main__":
   test_snapshot_frozen()
   test_state_dict()
   test_balanced_anchors()
+  test_ladder()
   print("league OK")

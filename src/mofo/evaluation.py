@@ -71,9 +71,17 @@ class TagTrials:
         ]
         row["terminal_failure_causes"] = causes({k: self.at_end[k] for k in flags})
         row["post_tag_failure_causes"] = causes(self.post_flags) if why == 1 else None
+        out_win = row["terminal_failure_causes"] == ["pursuer_oob"]  # The pursuer alone left the arena.
+        row["success_pursuer_out_wins"] = row["success"] or (why == 3 and out_win and row["role"] < 0)
+        mine = "pursuer" if row["role"] > 0 else "evader"  # rules.failure_loses_game: only the other side failed.
+        lone = {c.split("_")[0] for c in row["terminal_failure_causes"]} == {"evader" if mine == "pursuer" else "pursuer"}
+        row["success_failure_loses_game"] = row["success"] or (why == 3 and lone)
       self.records.append(row)
     self.finished |= ready
     return ready
+
+
+CLEAN_PELVIS_M, CLEAN_ARM_ERROR = 0.65, 2.0  # clean_tag_rate_pursuer thresholds.
 
 
 def summarize_trials(rows):
@@ -85,6 +93,9 @@ def summarize_trials(rows):
     result[f"episodes_{name}"] = len(part)
     result[f"win_rate_{name}"] = mean("success")
     result[f"tag_rate_{name}"] = mean("tag")
+    if part and "terminal_failure_causes" in part[0]:  # rules.pursuer_out_wins scoring, reported for any rules.
+      result[f"win_rate_{name}_pursuer_out_wins"] = mean("success_pursuer_out_wins")
+      result[f"win_rate_{name}_failure_loses_game"] = mean("success_failure_loses_game")
     if part:
       p, n, z = mean("success"), len(part), 1.959963984540054
       center = (p + z * z / (2 * n)) / (1 + z * z / n)
@@ -111,8 +122,15 @@ def summarize_trials(rows):
   result["controlled_tag_rate_pursuer"] = (
     sum(r["tag"] and r["post_tag_survived"] for r in pursuers) / len(pursuers) if pursuers else None
   )
-  for key in ("closing_speed_mps", "pursuer_root_tilt_deg", "pursuer_angular_speed_radps", "interagent_peak_force_N"):
-    result[f"tag_mean_{key}"] = sum(r[key] for r in tags) / len(tags) if tags else None
+  if pursuers and "pursuer_pelvis_height_m" in pursuers[0]:
+    # Controlled TAG with an upright, normal-armed pursuer at contact. Standing pelvis is ~0.74 m; arm error
+    # is the mean squared arm deviation in ARM_POSE_STD units (stage-1-like policies ~0.1-1.7; E028 lunges ~24).
+    result["clean_tag_rate_pursuer"] = sum(
+      r["tag"] and r["post_tag_survived"] and r["pursuer_pelvis_height_m"] >= CLEAN_PELVIS_M
+      and r["pursuer_arm_pose_error"] <= CLEAN_ARM_ERROR for r in pursuers) / len(pursuers)
+  for key in ("closing_speed_mps", "pursuer_root_tilt_deg", "pursuer_angular_speed_radps", "interagent_peak_force_N",
+              "pursuer_pelvis_height_m", "evader_pelvis_height_m", "pursuer_arm_pose_error", "evader_arm_pose_error"):
+    result[f"tag_mean_{key}"] = sum(r[key] for r in tags if key in r) / len(tags) if tags and key in tags[0] else None
   result["win_rate"] = sum(r["success"] for r in rows) / len(rows)
   result["fall_rate"] = sum(r["fall"] for r in rows) / len(rows)
   result["mean_episode_length_s"] = sum(r["game_duration_s"] for r in rows) / len(rows)

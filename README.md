@@ -26,7 +26,10 @@ a unique log directory. Full resolved task/PPO config, reward components, TAG an
 failure diagnostics, league metrics and losses are logged. The x-axis is PPO
 iteration, not physical-world steps (self-play adds learner seats). Local
 TensorBoard events and checkpoints remain available; checkpoint upload is opt-in
-with `cmd.wandb.upload_model=true`. Evaluation JSON/videos are not automatically
+with `cmd.wandb.upload_model=true`. The learner's win EMA vs every league member is logged as
+`league/win/<member>` (checkpoint paths shortened to `<run>/<stem>`); for one plot of all members,
+add a line panel with the y-axis regex `league/win/.*`. Sampling probabilities `league/p/` are
+logged for the scripted member and the three likeliest only. Evaluation JSON/videos are not automatically
 uploaded by this training logger unless checkpoint rendering is enabled (below).
 Existing running jobs are not modified.
 
@@ -43,7 +46,9 @@ The default is deterministic same-checkpoint self-play, fixed seed 30000, one
 first episode, red pursuer/blue evader, and one second of post-TAG recovery.
 These clips are diagnostics, not success-rate estimates or success-selected
 examples. Use `cmd.render.matchup=scripted` for a fixed stage-1 opponent or
-`cmd.render.enabled=false` to disable. Training pauses during rendering in a
+`cmd.render.enabled=false` to disable. `cmd.render.min_interval_s` (default 900) renders and
+uploads at most once per 15 wall-clock minutes; skipped checkpoints still get their evaluation YAML.
+Only checkpoint renders are uploaded, never W&B's own media copies under `<logdir>/wandb`. Training pauses during rendering in a
 separate process on the allocated GPU; this adds time and some GPU memory, but
 does not step/reset the training worlds or consume the training RNG. Render
 failures log `Render/success=0` and a warning; use
@@ -128,3 +133,33 @@ learner's win EMA, favoring opponents it beats about half the time; with an evad
 league that EMA is the evader's. `league.anchor_init_pool=true` keeps `init_pool`
 checkpoints (e.g. a pursuer difficulty ladder of earlier snapshots) from eviction.
 `agent.max_learning_rate` caps the KL-adaptive learning rate (rsl-rl allows up to 1e-2).
+
+Online ladder: `league.ladder=[easy.pt,...,hard.pt]` admits rungs (never evicted) during
+training. It starts with `league.ladder_active` rungs; once the learner's win EMA against the
+newest rung reaches `league.ladder_promote` (after `league.ladder_min_games` games), the next
+rung is admitted, and older rungs at `league.ladder_retire` or above are dropped. Ladder
+progress is saved with the league state and logged as `league/ladder_next`. With
+`league.sampling=balanced`, `league.min_weight=0` stops unbeatable members (e.g. the
+learner's own recent snapshots) from taking floor share.
+
+`rules.tag_posture_weight` charges the pursuer, at the first valid TAG only, for root spin
+above `rules.tag_spin_limit_radps` and tilt above `rules.tag_tilt_limit_deg` (squared
+relative excess, capped by `rules.tag_posture_max_penalty`). The evader is never charged.
+`rules.post_tag_worlds=learner_pursuer` limits a `rules.post_tag_s` recovery window to
+worlds where the learner pursues a frozen opponent; worlds with a learning evader still
+reset at TAG.
+
+Pursuer post-TAG recovery training: `rules.post_tag_s=1.0 rules.post_tag_failure=pursuer`
+keeps the episode running for 1 s after the one-time TAG payoff, and a pursuer fall/OOB
+in that window costs its usual failure penalty. The tagged evader is exempt (its
+recovery failures still end the episode, unpenalized), avoiding a second -10 exposure
+that made pre-TAG self-falls cheaper. The default `both` penalizes either seat.
+
+Clean-tag options: `rules.tag_match=body rules.tag_bodies=[pelvis,torso_link]` counts only the pursuer's
+pelvis/torso/head geoms as tagging (the default `subtree` mode makes `pelvis` the whole body, so arms extend
+reach). `rules.arm_pose_weight` charges both seats up to w per second for arm joints far from the default pose
+(locomotion running stds; the TAG task otherwise drops the command-gated locomotion pose term).
+`rules.pursuer_out_wins=true` makes a pre-TAG pursuer arena exit an evader game win (reward and league outcome)
+unless the evader also failed. Evaluation always reports `win_rate_evader_pursuer_out_wins`, pursuer/evader
+pelvis height and arm pose error at TAG, and `clean_tag_rate_pursuer`: controlled TAGs with pursuer pelvis
+>= 0.65 m and arm error <= 2 (squared, in pose-std units).

@@ -22,6 +22,14 @@ scripted_share: 0.0      # Probability reserved for scripted members before matc
 init_pool: []            # Checkpoints preloaded as historical members.
 anchor_init_pool: false  # Never evict init_pool members (a fixed opponent ladder).
 league_role: random      # Learner role in league-group worlds: random (rules.learner_role) | pursuer | evader.
+scripted_role: league    # Learner role vs the scripted member: league (as league_role) | random (rules.learner_role).
+ladder: []               # Checkpoints ordered easy -> hard, admitted online as never-evicted rungs.
+ladder_active: 1         # Rungs admitted at the start.
+ladder_promote: 0.3      # Admit the next rung once the learner's win EMA vs the newest rung reaches this.
+ladder_retire: 0.9       # Drop an older rung once its win EMA reaches this (1: never retire).
+ladder_min_games: 200    # Recorded games vs a rung before it can trigger promotion or retirement.
+ladder_share: 0.0        # Probability reserved for the newest admitted rung, whatever its win rate (0: off).
 scripted_speed_start: 1.0 # Training scripted opponent linear command scale; yaw and learned opponents unchanged.
 scripted_speed_end: 1.0
 scripted_speed_ramp_iters: 1
+scripted_speed_ramp_from: 0  # Iteration where the ramp starts (resumed runs continue numbering).

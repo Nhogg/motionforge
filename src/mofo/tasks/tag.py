@@ -13,6 +13,8 @@ import torch
 from mjlab.asset_zoo.robots import get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.events import resolve_env_ids
+from mjlab.envs.mdp.rewards import posture as mdp_posture
+from mjlab.utils.lab_api.string import resolve_matching_names_values
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.metrics_manager import MetricsTermCfg
@@ -38,32 +40,58 @@ class TagRules:
   """Game rules."""
 
   arena_half_extent: float = 4.0  # Square arena half-extent (m).
+  unbounded: bool = False  # No walls: never out of arena; the wall-distance input reads as if at the center.
+  scripted_evader: str = "flee"  # flee (away from the pursuer) | random (random direction and speed, redrawn at random times).
   episode_s: float = 20.0
   tag_mode: str = "distance"  # distance | contact.
   tag_radius: float = 0.5  # distance: base xy distance below this tags.
   tag_bodies: tuple[str, ...] = ("pelvis",)  # contact: pursuer subtrees (regex) that tag.
+  tag_match: str = "subtree"  # subtree: tag_bodies and their descendants | body: only those bodies' own geoms.
   win_reward: float = 10.0
   fall_loses: bool = True  # Apply own failure penalty; never award an opponent win.
   out_loses: bool = True  # Apply own failure penalty; never award an opponent win.
+  pursuer_out_wins: bool = False  # A pre-TAG pursuer arena exit is an evader game win (unless the evader also failed).
+  failure_loses_game: bool = False  # Any pre-TAG own fall/arena exit is a game loss (opponent win) unless both failed.
+  failure_time_penalty: float = 0.0  # Extra own-failure cost per remaining game second (pre-TAG only).
   learner_role: str = "random"  # random (50/50 per episode) | pursuer | evader.
   arena_observation: bool = False # Append body-frame center xy and arena +X axis xy (four inputs).
   post_tag_s: float = 0.0  # Training recovery after the one-time TAG payoff; 0 = immediate reset.
+  post_tag_failure: str = "both"  # Seats penalized for failing during recovery: both | pursuer.
+  post_tag_worlds: str = "all"  # all | learner_pursuer: recover only where the learner pursues a frozen opponent.
   contact_speed_weight: float = 0.0 # Own inward-speed cost at valid first TAG (not zero-sum).
   contact_speed_limit_mps: float = 1.0
   contact_speed_max_penalty: float = 2.0
+  tag_posture_weight: float = 0.0 # Pursuer's own spin/tilt cost at valid first TAG (not zero-sum).
+  tag_spin_limit_radps: float = 1.5
+  tag_tilt_limit_deg: float = 20.0
+  tag_posture_max_penalty: float = 5.0
   upright_reward_offset: float = 0.0 # TAG-only ablation: 1 makes perfect upright worth zero, not a living bonus.
+  upright_offset_roles: str = "both" # Seats charged the offset: both | pursuer (the evader keeps the living bonus).
+  arm_pose_weight: float = 0.0 # Per-second cost (both seats) for arm joints far from the default pose, in [0, w].
+  body_pose_weight: float = 0.0 # Same cost over all joints (locomotion running stds): crouches and lunges, not just arms.
 
   def __post_init__(self):
     assert self.tag_mode in ("distance", "contact"), self.tag_mode
+    assert self.scripted_evader in ("flee", "random"), self.scripted_evader
     assert self.learner_role in ("random", "pursuer", "evader"), self.learner_role
+    assert self.post_tag_failure in ("both", "pursuer"), self.post_tag_failure
+    assert self.post_tag_worlds in ("all", "learner_pursuer"), self.post_tag_worlds
+    assert self.upright_offset_roles in ("both", "pursuer"), self.upright_offset_roles
+    assert self.tag_match in ("subtree", "body"), self.tag_match
+    assert math.isfinite(self.arm_pose_weight) and self.arm_pose_weight >= 0
+    assert math.isfinite(self.body_pose_weight) and self.body_pose_weight >= 0
+    assert math.isfinite(self.failure_time_penalty) and self.failure_time_penalty >= 0
     assert self.win_reward > 0 and self.episode_s > 0
     assert math.isfinite(self.post_tag_s) and self.post_tag_s >= 0
     assert math.isfinite(self.contact_speed_weight) and self.contact_speed_weight >= 0
     assert math.isfinite(self.contact_speed_limit_mps) and self.contact_speed_limit_mps >= 0
     assert math.isfinite(self.contact_speed_max_penalty) and self.contact_speed_max_penalty > 0
     assert math.isfinite(self.upright_reward_offset) and 0 <= self.upright_reward_offset <= 1
+    assert math.isfinite(self.tag_posture_weight) and self.tag_posture_weight >= 0
+    assert self.tag_spin_limit_radps > 0 and self.tag_tilt_limit_deg > 0
+    assert 0 < self.tag_posture_max_penalty < self.win_reward, "Posture cost must remain smaller than TAG payoff"
     if self.contact_speed_weight:
-      assert self.tag_mode == "contact" and self.post_tag_s == 0, "Test contact cost separately from recovery"
+      assert self.tag_mode == "contact", self.tag_mode
       assert self.contact_speed_max_penalty < self.win_reward, "Contact cost must remain smaller than TAG payoff"
     object.__setattr__(self, "tag_bodies", tuple(self.tag_bodies))
 
@@ -129,6 +157,7 @@ class RoleCommand(CommandTerm):
     self.game_result = torch.zeros(self.num_envs, device=self.device)
     self.inward_speed = torch.zeros(self.num_envs, 2, device=self.device)
     self.forced = torch.zeros(self.num_envs, device=self.device)  # Per-world role override (0: rules).
+    self.frozen = torch.ones(self.num_envs, device=self.device, dtype=torch.bool)  # Opponent seat not learning.
     if cfg.colors:  # Per-world mat_rgba (the Warp renderer reads it per world).
       env.sim.expand_model_fields(("mat_rgba",))
       self.mat = [env.sim.mj_model.material(f"{k}/silver").id for k in ("robot", "opponent")]
@@ -185,6 +214,8 @@ def distance(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 def wall_distance(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
   xy = env.scene[name].data.root_link_pos_w[:, :2] - env.scene.env_origins[:, :2]
+  if tag_rules(env).unbounded:
+    return torch.full_like(xy[:, 0], tag_rules(env).arena_half_extent)
   return tag_rules(env).arena_half_extent - xy.abs().max(dim=-1).values
 
 
@@ -254,30 +285,56 @@ def tag_termination(env: ManagerBasedRlEnv) -> torch.Tensor:
   state.tag_step[state.tag_pulse] = env.episode_length_buf[state.tag_pulse]
   latched = state.tag_step >= 0
   state.game_result[:] = game_outcome(latched, env.termination_manager.get_term("time_out"),
-                                      failed(env) & ~latched, role(env))
-  return latched & ((env.episode_length_buf - state.tag_step) * env.step_dt >= rules.post_tag_s - 1e-8)
+                                      failed(env) & ~latched, role(env), forfeit(env) * ~latched)
+  return latched & ((env.episode_length_buf - state.tag_step) * env.step_dt >= recovery_s(env) - 1e-8)
+
+
+def recovery_s(env: ManagerBasedRlEnv) -> torch.Tensor | float:
+  """Per-world post-TAG window. learner_pursuer: no learning evader ever sees recovery,
+  so it cannot learn to fall there and carry that into pre-TAG play (no phase input)."""
+  rules, state = tag_rules(env), env.command_manager.get_term("role")
+  if rules.post_tag_worlds == "all":
+    return rules.post_tag_s
+  return torch.where(state.frozen & (role(env) > 0), rules.post_tag_s, 0.0)
 
 
 def game_outcome(tag: torch.Tensor, timeout: torch.Tensor, failure: torch.Tensor,
-                 learner_role: torch.Tensor) -> torch.Tensor:
-  """Only healthy TAG/timeout are game outcomes. Physical failures are censored."""
+                 learner_role: torch.Tensor, winner: torch.Tensor | None = None) -> torch.Tensor:
+  """Healthy TAG/timeout are game outcomes; failures are censored unless ``winner`` (forfeit) names a role."""
   result = torch.where(tag, learner_role, torch.where(timeout, -learner_role, 0.0))
-  return torch.where(failure, 0.0, result)
+  result = torch.where(failure, 0.0, result)
+  return result if winner is None else torch.where(winner != 0, winner * learner_role, result)
+
+
+def forfeit(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Winning role (+1 pursuer, -1 evader, 0 none) when a failure decides the game: with
+  rules.failure_loses_game the side that alone failed loses; with rules.pursuer_out_wins only a lone
+  pursuer arena exit does (an evader win)."""
+  t, rules = env.termination_manager.get_term, tag_rules(env)
+  robot_fail, opp_fail = t("fell_over") | t("robot_out"), t("opponent_fell_over") | t("opponent_out")
+  pursuer = role(env) > 0
+  p_fail, e_fail = torch.where(pursuer, robot_fail, opp_fail), torch.where(pursuer, opp_fail, robot_fail)
+  p_out = torch.where(pursuer, t("robot_out"), t("opponent_out"))
+  lone_p, lone_e = p_fail & ~e_fail, e_fail & ~p_fail
+  if rules.failure_loses_game:
+    return lone_e.float() - lone_p.float()
+  return -(lone_p & p_out & rules.pursuer_out_wins).float()
 
 
 def outcome(env: ManagerBasedRlEnv, learner_role: torch.Tensor) -> torch.Tensor:
   if tag_rules(env).post_tag_s > 0:
     return env.command_manager.get_term("role").game_result
   t = env.termination_manager.get_term
-  return game_outcome(t("tagged"), t("time_out"), failed(env), learner_role)
+  return game_outcome(t("tagged"), t("time_out"), failed(env), learner_role, forfeit(env))
 
 
 def tag_result(env: ManagerBasedRlEnv) -> torch.Tensor:
   if tag_rules(env).post_tag_s > 0:
     state = env.command_manager.get_term("role")
     # The +/-10 payoff is paid at first contact, NOT again at recovery completion.
+    pre_tag = state.tag_step < 0
     return game_outcome(state.tag_pulse, env.termination_manager.get_term("time_out"),
-                        failed(env) & (state.tag_step < 0), role(env))
+                        failed(env) & pre_tag, role(env), forfeit(env) * pre_tag)
   return outcome(env, role(env))
 
 
@@ -285,7 +342,18 @@ def own_failure(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tens
   """Individual penalty, mirrored per seat (NOT a zero-sum game reward)."""
   t, rules = env.termination_manager.get_term, tag_rules(env)
   fall, out = ("fell_over", "robot_out") if asset_cfg.name == "robot" else ("opponent_fell_over", "opponent_out")
-  return -((t(fall) & rules.fall_loses) | (t(out) & rules.out_loses)).float()
+  penalty = (t(fall) & rules.fall_loses) | (t(out) & rules.out_loses)
+  if rules.post_tag_s > 0 and rules.post_tag_failure == "pursuer":
+    # The tagged evader already lost 10; a second exposure makes pre-TAG self-falls relatively cheap.
+    pursuer = role(env) > 0 if asset_cfg.name == "robot" else role(env) < 0
+    penalty &= pursuer | (env.command_manager.get_term("role").tag_step < 0)
+  if not rules.failure_time_penalty:
+    return -penalty.float()
+  # Pre-TAG failures also forfeit the remaining game time, so falling early never undercuts playing
+  # on while every upright step costs something (E032: an -18 timeout loss vs -20 for falling at once).
+  pre_tag = env.command_manager.get_term("role").tag_step < 0
+  left = (rules.episode_s - env.episode_length_buf * env.step_dt).clamp_min(0)
+  return -penalty.float() * (1 + pre_tag * rules.failure_time_penalty * left / rules.win_reward)
 
 
 def own_inward_speed(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
@@ -300,32 +368,67 @@ def contact_speed_penalty(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> 
   """Bounded, individual first-contact regularizer; TAG payoff itself is unchanged.
 
   Same rule for either role: a stationary or fleeing agent is not charged for
-  the other robot's approach. Immediate TAG reset makes this a one-time cost.
+  the other robot's approach. Charged once, on the step of the first valid TAG.
+  """
+  rules, state = tag_rules(env), env.command_manager.get_term("role")
+  index = 0 if asset_cfg.name == "robot" else 1
+  speed = state.inward_speed[:, index]
+  cost = (rules.contact_speed_weight * (speed - rules.contact_speed_limit_mps).clamp_min(0).square()).clamp_max(rules.contact_speed_max_penalty)
+  valid_tag = state.tag_pulse if rules.post_tag_s > 0 else env.termination_manager.get_term("tagged") & ~failed(env)
+  return -cost * valid_tag
+
+
+def tilt_spin(env: ManagerBasedRlEnv, name: str) -> tuple[torch.Tensor, torch.Tensor]:
+  """Root tilt from vertical (rad) and root angular speed (rad/s)."""
+  d = env.scene[name].data
+  q = d.root_link_quat_w
+  return torch.acos((1 - 2 * (q[:, 1].square() + q[:, 2].square())).clamp(-1, 1)), d.root_link_ang_vel_w.norm(dim=-1)
+
+
+def tag_posture_penalty(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """Bounded, individual cost of the pursuer's own spin/tilt at the first valid TAG.
+
+  Spin at TAG best predicts a fall in the following second; the evader is never charged.
   """
   rules = tag_rules(env)
-  index = 0 if asset_cfg.name == "robot" else 1
-  speed = env.command_manager.get_term("role").inward_speed[:, index]
-  cost = (rules.contact_speed_weight * (speed - rules.contact_speed_limit_mps).clamp_min(0).square()).clamp_max(rules.contact_speed_max_penalty)
-  valid_tag = env.termination_manager.get_term("tagged") & ~failed(env)
-  return -cost * valid_tag
+  tilt, spin = tilt_spin(env, asset_cfg.name)
+  excess = ((spin / rules.tag_spin_limit_radps - 1).clamp_min(0).square()
+            + (torch.rad2deg(tilt) / rules.tag_tilt_limit_deg - 1).clamp_min(0).square())
+  cost = (rules.tag_posture_weight * excess).clamp_max(rules.tag_posture_max_penalty)
+  pursuer = role(env) > 0 if asset_cfg.name == "robot" else role(env) < 0
+  valid_tag = (env.command_manager.get_term("role").tag_pulse if rules.post_tag_s > 0
+               else env.termination_manager.get_term("tagged") & ~failed(env))
+  return -cost * (valid_tag & pursuer)
 
 
 def motion_quality(env: ManagerBasedRlEnv) -> dict[str, torch.Tensor]:
   """Physical diagnostics only; these do not modify actions or rewards."""
   a, b = env.scene["robot"].data, env.scene["opponent"].data
   p = role(env) > 0
-  q = torch.where(p[:, None], a.root_link_quat_w, b.root_link_quat_w)
-  tilt = torch.acos((1 - 2 * (q[:, 1].square() + q[:, 2].square())).clamp(-1, 1))
-  angular = torch.where(p[:, None], a.root_link_ang_vel_w, b.root_link_ang_vel_w).norm(dim=-1)
+  (tilt_a, spin_a), (tilt_b, spin_b) = tilt_spin(env, "robot"), tilt_spin(env, "opponent")
+  tilt, angular = torch.where(p, tilt_a, tilt_b), torch.where(p, spin_a, spin_b)
   delta, velocity = b.root_link_pos_w[:, :2] - a.root_link_pos_w[:, :2], b.root_link_lin_vel_w[:, :2] - a.root_link_lin_vel_w[:, :2]
   closing = -(delta * velocity).sum(-1) / delta.norm(dim=-1).clamp_min(1e-6)
   force = torch.zeros_like(closing)
   if tag_rules(env).tag_mode == "contact":
     force = torch.stack([env.scene[name].data.force_history.norm(dim=-1).flatten(1).max(-1).values
                          for name in ("tag_robot", "tag_opponent")]).max(0).values
+  height = [env.scene[n].data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2] for n in ("robot", "opponent")]
+  arms = [arm_pose_error(env, n) for n in ("robot", "opponent")]
   return {"distance_m": delta.norm(dim=-1), "closing_speed_mps": closing,
           "pursuer_root_tilt_deg": torch.rad2deg(tilt), "pursuer_angular_speed_radps": angular,
-          "interagent_peak_force_N": force}
+          "interagent_peak_force_N": force,
+          "pursuer_pelvis_height_m": torch.where(p, *height), "evader_pelvis_height_m": torch.where(p, height[1], height[0]),
+          "pursuer_arm_pose_error": torch.where(p, *arms), "evader_arm_pose_error": torch.where(p, arms[1], arms[0])}
+
+
+def arm_pose_error(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
+  """Mean squared arm-joint deviation from the default pose, in units of ARM_POSE_STD (1 = one std)."""
+  asset = env.scene[name]
+  ids, names = asset.find_joints(tuple(ARM_POSE_STD))
+  _, _, std = resolve_matching_names_values(ARM_POSE_STD, names)
+  err = asset.data.joint_pos[:, ids] - asset.data.default_joint_pos[:, ids]
+  return (err / torch.tensor(std, device=env.device)).square().mean(-1)
 
 
 def quality_metric(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
@@ -338,6 +441,10 @@ def ending_metric(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
   flags = {"valid_tag": hit,
            "healthy_timeout": t("time_out") & ~hit & ~failed(env), "physical_failure": failed(env),
            "post_tag_failure": hit & failed(env), "post_tag_survived": hit & t("tagged") & ~failed(env)}
+  if tag_rules(env).post_tag_s > 0:  # Only worlds that actually ran a recovery window.
+    window = torch.as_tensor(recovery_s(env), device=env.device) > 0
+    flags["post_tag_failure"] &= window
+    flags["post_tag_survived"] &= window
   return flags[name].float()
 
 
@@ -350,9 +457,31 @@ def reward_component(env: ManagerBasedRlEnv, name: str) -> torch.Tensor:
   return manager._step_reward[:, manager.active_terms.index(name)] * scale
 
 
-def upright_offset(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """Constant per-second offset; paired with upright, never a change to TAG payoff."""
-  return torch.ones(env.num_envs, device=env.device)
+def upright_offset(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+  """Constant per-second offset; paired with upright, never a change to TAG payoff. With
+  upright_offset_roles=pursuer only the pursuer seat pays it: a charged evader that cannot escape
+  scores higher by being tagged early (every step <= 0), so it stops fleeing even when it could."""
+  if tag_rules(env).upright_offset_roles == "both":
+    return torch.ones(env.num_envs, device=env.device)
+  return (role(env) > 0 if asset_cfg.name == "robot" else role(env) < 0).float()
+
+
+# Locomotion running arm stds (mjlab G1 velocity task): room for arm swing while running.
+ARM_POSE_STD = {r".*shoulder_pitch.*": 0.5, r".*shoulder_roll.*": 0.2, r".*shoulder_yaw.*": 0.15,
+                r".*elbow.*": 0.35, r".*wrist.*": 0.3}
+
+
+BODY_POSE_STD = {r".*hip_pitch.*": 0.5, r".*hip_roll.*": 0.2, r".*hip_yaw.*": 0.2, r".*knee.*": 0.6,
+                 r".*ankle_pitch.*": 0.35, r".*ankle_roll.*": 0.15, r".*waist_yaw.*": 0.3, r".*waist_roll.*": 0.08,
+                 r".*waist_pitch.*": 0.2, **ARM_POSE_STD}
+
+
+class arm_pose_cost(mdp_posture):
+  """1 - posture kernel over the arm joints: 0 at the default pose, 1 far from it. The TAG task
+  drops the command-gated locomotion pose term, which otherwise leaves the arms unregularized."""
+
+  def __call__(self, env: ManagerBasedRlEnv, std, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    return 1 - super().__call__(env, std, asset_cfg)
 
 
 def qpos_distance(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -539,12 +668,23 @@ def tag_env_cfg(
     cfg.rewards["upright_offset"] = RewardTermCfg(
       func=upright_offset, weight=-rules.upright_reward_offset * cfg.rewards["upright"].weight
     )
+  if rules.arm_pose_weight:
+    arms = SceneEntityCfg("robot", joint_names=tuple(ARM_POSE_STD))
+    cfg.rewards["arm_pose"] = RewardTermCfg(func=arm_pose_cost, weight=-rules.arm_pose_weight,
+                                            params={"asset_cfg": arms, "std": ARM_POSE_STD})
+  if rules.body_pose_weight:  # Same kernel, every joint.
+    body = SceneEntityCfg("robot", joint_names=tuple(BODY_POSE_STD))
+    cfg.rewards["body_pose"] = RewardTermCfg(func=arm_pose_cost, weight=-rules.body_pose_weight,
+                                             params={"asset_cfg": body, "std": BODY_POSE_STD})
   cfg.rewards["tag"] = RewardTermCfg(func=tag_result, weight=rules.win_reward / dt)
   cfg.rewards["failure"] = RewardTermCfg(func=own_failure, weight=rules.win_reward / dt,
                                        params={"asset_cfg": SceneEntityCfg("robot")})
   if rules.tag_mode == "contact":
     cfg.rewards["contact_speed"] = RewardTermCfg(func=contact_speed_penalty, weight=1.0 / dt,
                                                 params={"asset_cfg": SceneEntityCfg("robot")})
+  if rules.tag_posture_weight:
+    cfg.rewards["tag_posture"] = RewardTermCfg(func=tag_posture_penalty, weight=1.0 / dt,
+                                              params={"asset_cfg": SceneEntityCfg("robot")})
   if shaping_cfg.enabled:
     cfg.commands["potential"] = PotentialCfg(potential=shaping_cfg.potential)  # After role.
     cfg.rewards["shaping"] = RewardTermCfg(
@@ -553,12 +693,13 @@ def tag_env_cfg(
     )
   cfg.metrics.update({f"reward_{name}_episode_sum": MetricsTermCfg(
     func=reward_component, params={"name": name}, reduce="sum")
-    for name in ("tag", "shaping", "failure", "contact_speed", "opp_contact_speed", "upright", "upright_offset")})
+    for name in ("tag", "shaping", "failure", "contact_speed", "opp_contact_speed", "tag_posture", "opp_tag_posture",
+                 "upright", "upright_offset")})
   if rules.tag_mode == "contact":  # Pursuer's tag_bodies subtrees vs. the other's whole body.
     cfg.scene.sensors += tuple(
       ContactSensorCfg(
         name=f"tag_{me}",
-        primary=ContactMatch(mode="subtree", pattern=rules.tag_bodies, entity=me),
+        primary=ContactMatch(mode=rules.tag_match, pattern=rules.tag_bodies, entity=me),
         secondary=ContactMatch(mode="subtree", pattern="pelvis", entity=other),
         fields=("found", "force"),
         reduce="none",

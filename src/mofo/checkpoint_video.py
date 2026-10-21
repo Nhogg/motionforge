@@ -5,17 +5,32 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import warnings
 
 import torch
 
 from mjlab.rl import MjlabOnPolicyRunner
 from omegaconf import OmegaConf
+from rsl_rl.utils.wandb_log_writer import WandbLogWriter
 
 from mofo.league import League, Opponent
 from mofo.role_model import RoleModel
 
 ROOT = Path(__file__).resolve().parents[2]
+
+_save_video = WandbLogWriter.save_video
+
+
+def _save_render(self, video, it):
+  """rsl-rl uploads every *.mp4 under the log dir each iteration (deduplicated by name). W&B keeps
+  its own uniquely named copy of each upload under <logdir>/wandb, so without this filter every
+  copy is re-uploaded on the next iteration and storage grows without bound. Upload renders only."""
+  if "wandb" not in Path(video).parts:
+    _save_video(self, video, it)
+
+
+WandbLogWriter.save_video = _save_render
 
 
 def evaluation_config(training, checkpoint):
@@ -52,7 +67,7 @@ class CheckpointVideoRunner(MjlabOnPolicyRunner):
   """Pause training while a separate process renders, preserving training RNG/state."""
 
   def __init__(self, *args, **kwargs):
-    self._rendered = set()
+    self._rendered, self._last_render = set(), -float("inf")
     super().__init__(*args, **kwargs)
 
   def save(self, path, infos=None):
@@ -69,6 +84,9 @@ class CheckpointVideoRunner(MjlabOnPolicyRunner):
     video.parent.mkdir(parents=True, exist_ok=True)
     config_path = video.with_suffix(".yaml")
     OmegaConf.save(cfg, config_path)
+    if time.monotonic() - self._last_render < options.get("min_interval_s", 0):
+      return  # Throttled: the evaluation config above is still written for every checkpoint.
+    self._last_render = time.monotonic()
     command = [sys.executable, str(ROOT / "scripts/mofo_train.py"),
                f"--config-path={video.parent}", f"--config-name={config_path.stem}"]
     child_env = {**os.environ, "WANDB_MODE": "disabled"} # Only parent owns the W&B run.

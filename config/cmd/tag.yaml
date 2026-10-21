@@ -9,7 +9,8 @@ lr: null            # Deprecated alias of agent.learning_rate.
 save_interval: null # Deprecated alias of agent.save_interval.
 logger: tensorboard # tensorboard | wandb (W&B also writes local TensorBoard events).
 render:
-  enabled: true     # Render each saved model checkpoint, including the final one.
+  enabled: true     # Render saved model checkpoints (each one's evaluation YAML is always written).
+  min_interval_s: 900 # Wall-clock minimum between renders/uploads; checkpoints in between are skipped (0: all).
   seed: 30000       # Same reset at every checkpoint; not a selected successful trial.
   matchup: selfplay # selfplay | scripted (fixed stage-1 opponent).
   learner_role: pursuer # pursuer | evader; red remains pursuer, blue remains evader.

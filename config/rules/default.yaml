@@ -4,14 +4,30 @@ defaults:
   - _self_
 
 arena_half_extent: 4.0  # Square arena half-extent (m): 8 x 8 m.
+unbounded: false        # No walls: nobody goes out; the wall-distance input reads as if at the center.
+scripted_evader: flee   # Scripted evader: flee | random (random direction and speed, redrawn ~every 2 s).
 episode_s: 20.0         # Episode length (s); the timeout is an evader win.
 tag_mode: distance      # distance | contact (pursuer's tag_bodies physically touch the evader).
 tag_radius: 0.5         # distance mode: base xy distance (m) below which the pursuer tags.
 tag_bodies: [pelvis]    # contact mode: pursuer body subtrees (regex) that tag; pelvis = whole
                         # body, '.*_wrist_yaw_link' = hands only. The evader is hit anywhere.
+tag_match: subtree      # subtree: tag_bodies plus descendants | body: those bodies only ([pelvis, torso_link] = torso, no limbs).
 win_reward: 10.0        # Sparse +-reward per episode outcome.
 fall_loses: true        # Own fall penalty; physical failures never award opponent game wins.
 out_loses: true         # Own OOB penalty; not a TAG or a healthy evader timeout.
+pursuer_out_wins: false # A pre-TAG pursuer arena exit is an evader game win (unless the evader also failed).
+failure_loses_game: false # Any pre-TAG own fall/arena exit is a game loss (opponent win) unless both failed.
+failure_time_penalty: 0.0 # Extra own-failure cost per remaining game second (pre-TAG only).
 post_tag_s: 0.0         # Recovery-training ablation only; TAG payoff stays immediate and one-time.
+post_tag_failure: both  # Recovery seats penalized for own failures: both | pursuer (tagged evader exempt).
+post_tag_worlds: all     # all | learner_pursuer (recover only where the learner pursues a frozen opponent).
 arena_observation: false # Append center xy and arena +X axis in body yaw frame (four inputs).
 contact_speed_weight: 0.0 # Individual excess inward-speed cost at first TAG; disabled by default.
+tag_posture_weight: 0.0 # Pursuer-only cost at first TAG: w*((spin/limit-1)_+^2 + (tilt/limit-1)_+^2), capped.
+tag_spin_limit_radps: 1.5
+tag_tilt_limit_deg: 20.0
+tag_posture_max_penalty: 5.0
+upright_reward_offset: 0.0 # 1: perfect upright earns zero (no living bonus).
+upright_offset_roles: both # Seats charged the offset: both | pursuer (the evader keeps the living bonus).
+arm_pose_weight: 0.0 # Per-second arm cost (both seats), 0 at default pose up to w far from it.
+body_pose_weight: 0.0 # Same cost over all joints (locomotion running stds): penalizes crouches and lunges too.

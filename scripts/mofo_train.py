@@ -257,10 +257,11 @@ def evaluate(cfg: DictConfig) -> None:
     raise ValueError('post_tag_seconds must be nonnegative')
   trials = TagTrials(env.num_envs, env.device, env.step_dt, g.rules.episode_s, cfg.cmd.post_tag_seconds, distance(env))
   speed, yaw_rate, frames = [], [], []
+  forward_v = {"pursuer": [], "evader": []}  # cos(heading, travel) per moving step, by learner role.
   # Own-seat motor costs only: evaluation suppresses TAG termination, so its
   # reward buffer is NOT a faithful total game return. Keep these separate.
   names = env.reward_manager.active_terms
-  motor_names = [k for k in names if k not in ('tag', 'shaping', 'failure', 'contact_speed') and not k.startswith('opp_')]
+  motor_names = [k for k in names if k not in ('tag', 'shaping', 'failure', 'contact_speed', 'tag_posture') and not k.startswith('opp_')]
   motor_columns = [names.index(k) for k in motor_names]
   motor_sums = torch.zeros((env.num_envs, len(motor_names)), device=env.device)
   motor_discounted = torch.zeros(env.num_envs, device=env.device)
@@ -283,6 +284,11 @@ def evaluate(cfg: DictConfig) -> None:
       speed.append(planar_speed[live].clone())
       path_length += planar_speed * env.step_dt * live
       yaw_rate.append(robot.root_link_ang_vel_w[:, 2].abs()[live].clone())
+      # Heading vs travel: body-frame forward velocity of the learner while it moves (> 0.3 m/s).
+      moving = live & (planar_speed > 0.3)
+      for k, sign in (("pursuer", 1.0), ("evader", -1.0)):
+        m = moving & (r == sign)
+        forward_v[k].append(robot.root_link_lin_vel_b[m, 0] / planar_speed[m])
       if cfg.cmd.post_tag_ignore_oob:
         env._post_tag_recovery.copy_(trials.cause == 1)
       obs, _, dones, _ = venv.step(learner(obs["actor"]))
@@ -326,6 +332,8 @@ def evaluate(cfg: DictConfig) -> None:
     "policy": cfg.cmd.policy, "baseline": cfg.cmd.baseline, "opponent": cfg.opponent, "opponent_policy": cfg.cmd.opponent_policy,
     "mean_planar_speed": speed.mean().item(), "p95_planar_speed": speed.quantile(0.95).item(),
     "mean_abs_yaw_rate": torch.cat(yaw_rate).mean().item(),
+    **{f"{k}_backward_frac": (torch.cat(v) < -0.5).float().mean().item() if sum(len(x) for x in v) else None
+       for k, v in forward_v.items()},  # Moving with travel > 120 deg from heading.
     "min_distance_pursuer": near(1), "min_distance_evader": near(-1),
     "distance_by_second_pursuer": by_second[1.0], "distance_by_second_evader": by_second[-1.0],
     "rules": asdict(g.rules), "reset": asdict(g.reset), "env_spacing": cfg.env_spacing,
