@@ -21,7 +21,7 @@ import torch
 import wandb
 from hydra.core.hydra_config import HydraConfig
 from mjlab.envs import ManagerBasedRlEnv
-from mjlab.rl import MjlabOnPolicyRunner
+from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
 from mjlab.tasks.velocity.config.g1.rl_cfg import unitree_g1_ppo_runner_cfg
 from mjlab.utils.lab_api.math import quat_from_euler_xyz
@@ -36,6 +36,7 @@ from mofo.env import GAME_SCHEMAS, game, make_env
 from mofo.league import SCRIPTED, SCRIPTED_ID, FixedLeague, League, LeagueCfg, Opponent
 from mofo.opponent import OpponentEnv, ScriptedPolicy, load_policy
 from mofo.selfplay import PREFIX, ZERO_SUM
+from mofo.tasks.goal import GoalCfg
 from mofo.tasks.tag import POTENTIALS, TAG_DIM, distance, outcome, role
 
 _STOCK = unitree_g1_ppo_runner_cfg()
@@ -100,7 +101,7 @@ class WandbCfg:
   tags: tuple[str, ...] = ()
 
 
-SCHEMAS = {**GAME_SCHEMAS, "agent": AgentCfg, "league": LeagueCfg, "wandb": WandbCfg}
+SCHEMAS = {**GAME_SCHEMAS, "goal": GoalCfg, "agent": AgentCfg, "league": LeagueCfg, "wandb": WandbCfg}
 
 
 def make_league(cfg, env, lc: LeagueCfg, ckpt) -> League:
@@ -154,6 +155,35 @@ def warm_start(runner, ckpt: str, env: ManagerBasedRlEnv) -> None:
   print(f"[warm start] loaded {ckpt}; dropped '{dropped}' columns, zero-init new tag columns")
 
 
+def log_norms(alg) -> None:
+  """Add to PPO's per-iteration loss dict (logged as Loss/*): the pre-clip gradient norm of the actor
+  and critic, averaged over the update's minibatches, and the L2 norm of their parameters after it.
+  Wraps torch's clip_grad_norm_, which returns the pre-clip norm; training is unchanged."""
+  clip, grads = torch.nn.utils.clip_grad_norm_, {"actor": [], "critic": []}
+  first = {next(alg.actor.parameters()): "actor", next(alg.critic.parameters()): "critic"}
+
+  def recording_clip(parameters, *args, **kwargs):
+    parameters = list(parameters)
+    norm = clip(parameters, *args, **kwargs)
+    if (k := first.get(parameters[0])) is not None:
+      grads[k].append(norm)
+    return norm
+
+  torch.nn.utils.clip_grad_norm_ = recording_clip
+  update = alg.update
+
+  def update_with_norms() -> dict[str, float]:
+    losses = update()
+    for k, model in (("actor", alg.actor), ("critic", alg.critic)):
+      losses[f"{k}_grad_norm"] = torch.stack(grads[k]).mean().item()
+      losses[f"{k}_grad_norm_max"] = torch.stack(grads[k]).max().item()
+      losses[f"{k}_weight_norm"] = torch.cat([p.detach().flatten() for p in model.parameters()]).norm().item()
+      grads[k].clear()
+    return losses
+
+  alg.update = update_with_norms
+
+
 def train(cfg: DictConfig) -> None:
   """Runs in its logdir (the Hydra run dir), so <logdir>/.hydra/ records the full config."""
   g, agent = game(cfg), OmegaConf.to_object(cfg.agent)
@@ -161,13 +191,21 @@ def train(cfg: DictConfig) -> None:
   rl = unitree_g1_ppo_runner_cfg()
   for k, v in asdict(agent).items():
     setattr(rl.algorithm if hasattr(rl.algorithm, k) else rl, k, v)
-  assert g.shaping.gamma == rl.algorithm.gamma, f"shaping.gamma {g.shaping.gamma} != PPO gamma {rl.algorithm.gamma}"
+  assert not g.shaping.pbrs or g.shaping.gamma == rl.algorithm.gamma, f"shaping.gamma {g.shaping.gamma} != PPO gamma {rl.algorithm.gamma}"
   lc: LeagueCfg = OmegaConf.to_object(cfg.league)
+  goal = cfg.task == "goal"  # Single-G1 goal reaching: no opponent, league or warm start.
+  assert not (goal and cfg.cmd.init), "task=goal trains from scratch"
   env = make_env(cfg, cfg.num_envs, g, selfplay=lc.selfplay_frac > 0)
-  league = make_league(cfg, env, lc, cfg.opponent or cfg.cmd.init)
-  venv = OpponentEnv(env, league, steps_per_iter=rl.num_steps_per_env)
+  if goal:
+    venv = RslRlVecEnvWrapper(env)
+  else:
+    league = make_league(cfg, env, lc, cfg.opponent or cfg.cmd.init)
+    venv = OpponentEnv(env, league, steps_per_iter=rl.num_steps_per_env)
   rl.seed, rl.max_iterations, rl.logger, rl.upload_model = cfg.seed, cfg.cmd.iterations, "tensorboard", False
-  rl.experiment_name = ("tag_shaping" if g.shaping.enabled else "tag") + ("_selfplay" if venv.n_sp else "") + ("_league" if lc.snapshot_every or lc.init_pool else "")
+  if goal:
+    rl.experiment_name = "goal"
+  else:
+    rl.experiment_name = ("tag_shaping" if g.shaping.enabled else "tag") + ("_selfplay" if venv.n_sp else "") + ("_league" if lc.snapshot_every or lc.init_pool else "")
   train_cfg = asdict(rl)
   if (w := OmegaConf.to_object(cfg.wandb)).mode != "disabled":
     logdir = os.path.abspath(cfg.cmd.logdir)
@@ -181,7 +219,10 @@ def train(cfg: DictConfig) -> None:
     run.define_metric("*", step_metric="iteration")
     train_cfg["logger"] = {"class_name": SharedRunWriter, "project_name": w.project}
   runner = MjlabOnPolicyRunner(venv, train_cfg, cfg.cmd.logdir, cfg.device)
-  venv.learner = runner.alg.actor  # Frozen into the league every league.snapshot_every iterations.
+  if cfg.cmd.get("log_norms"):
+    log_norms(runner.alg)
+  if not goal:
+    venv.learner = runner.alg.actor  # Frozen into the league every league.snapshot_every iterations.
   if cfg.cmd.init:
     warm_start(runner, cfg.cmd.init, env)
     obs = venv.get_observations().to(cfg.device)  # Must match stage 1 under a zero command.

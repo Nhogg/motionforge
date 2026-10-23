@@ -42,6 +42,13 @@ class LeagueCfg:
   scripted_weight_end: float = 1.0  # over scripted_decay_iters iterations (1 -> 1: no effect).
   scripted_decay_iters: int = 1
   init_pool: list[str] = field(default_factory=list)  # Checkpoints preloaded as historical members.
+  log_all_members: bool = False  # Log every member's league/p and league/win (else scripted + top 3).
+  # Adaptive role sampling: once per iteration, the probability that a league env's learner plays the
+  # evader moves by evader_rate_step toward balance: up if the learner-evader win rate (league and
+  # self-play games finished that iteration) is below 50%, down if above. 0: off (50/50).
+  evader_rate_step: float = 0.0
+  evader_rate_min: float = 0.05
+  evader_rate_max: float = 0.95
 
 
 @dataclass(frozen=True)

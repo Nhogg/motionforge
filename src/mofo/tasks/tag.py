@@ -7,14 +7,18 @@ role (+1 pursuer, -1 evader) is a per-env command resampled at reset.
 
 import inspect
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 
+import mujoco
 import torch
+from mjlab.actuator import BuiltinPositionActuator, BuiltinPositionActuatorCfg
+from mjlab.actuator.actuator import TransmissionType
+from mjlab.actuator.builtin_group import _TARGET_TENSOR_MAP
 from mjlab.asset_zoo.robots import get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.envs import mdp
 from mjlab.envs.mdp.events import resolve_env_ids
-from mjlab.envs.mdp.terminations import nan_detection
+from mjlab.envs.mdp.terminations import bad_orientation, nan_detection
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
@@ -52,6 +56,17 @@ class TagRules:
   out_reward: float | None = None  # A seat's reward when it leaves the arena (null: -win_reward).
   tag_confirm_s: float = 0.0  # A tag counts once the pursuer stays up this long after contact.
   alive_reward: float = 0.0  # Per-step reward per seat while upright.
+  clock_reward: float = 0.0  # Zero-sum, per second of game: the evader gets +clock_reward, the pursuer -clock_reward.
+  timeout_wins: bool = True  # The timeout is an evader win; false: a draw (no reward).
+  regularizers: bool = True  # Stock mjlab regularizers (upright, action rate, ...); false: none.
+  reward_weights: dict[str, float] = field(default_factory=dict)  # Per-term weight overrides (stock regularizers); 0 drops the term.
+  joint_limit_weight: float | None = None  # Stock dof_pos_limits weight (null: stock); kept even without regularizers.
+  limit_targets: bool = False  # Clamp actuator position targets to the joint ranges (ctrllimited).
+  fall_height: float | None = None  # A base (pelvis) at or below this height (m) also counts as a fall.
+  stance_slip_weight: float = 0.0  # Per second x mean over the feet of contact x |foot v_xy|^2 (stance feet only).
+  tilt_weight: float = 0.0  # Per second x max(torso tilt - tilt_free, 0)^2 (rad^2).
+  tilt_free: float = 0.35  # Tilt (rad) that costs nothing, room for a running lean.
+  decimation: int | None = None  # Physics steps per policy step (null: stock 4, i.e. 50 Hz at the 5 ms timestep).
 
   def __post_init__(self):
     assert self.tag_mode in ("distance", "contact"), self.tag_mode
@@ -89,8 +104,10 @@ class ShapingCfg:
 
   enabled: bool = False
   weight: float = 1.0
-  gamma: float = 0.99  # Must equal the PPO discount.
+  gamma: float = 0.99  # Must equal the PPO discount when pbrs.
   potential: str = "distance"  # Key of POTENTIALS.
+  pbrs: bool = True  # False: phi(s') is not zeroed at terminal states, so F is the plain
+  # per-step change in phi (biased: an episode sums to phi(s_T) - phi(s0) at gamma=1).
 
   def __post_init__(self):
     assert self.potential in POTENTIALS, self.potential
@@ -103,6 +120,7 @@ class GaitWeights:  # Not frozen: a frozen nested node would be read-only to Hyd
   pose: float | None = None
   foot_slip: float | None = None
   foot_swing_height: float | None = None
+  air_time: float | None = None  # Stock weight 0 (off), so it needs an explicit weight here.
 
 
 @dataclass(frozen=True)
@@ -115,7 +133,7 @@ class GaitCfg:
   weights: GaitWeights = field(default_factory=GaitWeights)
 
 
-GAIT_TERMS = ("pose", "foot_slip", "foot_swing_height")
+GAIT_TERMS = ("pose", "foot_slip", "foot_swing_height", "air_time")
 
 
 @dataclass(kw_only=True)
@@ -164,11 +182,13 @@ class RoleCommandCfg(CommandTermCfg):
 
 
 class RoleCommand(CommandTerm):
-  """Learner role per env: +1 pursuer, -1 evader, 50/50 at reset unless rules force it."""
+  """Learner role per env: +1 pursuer, -1 evader, drawn at reset (evader with probability
+  ``p_evader``, 0.5 unless the trainer adapts it) unless rules force it."""
 
   def __init__(self, cfg: RoleCommandCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg, env)
     self.role = torch.ones(self.num_envs, 1, device=self.device)
+    self.p_evader = 0.5
     if cfg.colors:  # Per-world mat_rgba (the Warp renderer reads it per world).
       env.sim.expand_model_fields(("mat_rgba",))
       self.mat = [env.sim.mj_model.material(f"{k}/silver").id for k in ("robot", "opponent")]
@@ -180,7 +200,10 @@ class RoleCommand(CommandTerm):
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
     forced = {"pursuer": 1.0, "evader": -1.0}.get(self.cfg.rules.learner_role)
-    self.role[env_ids] = torch.randint_like(self.role[env_ids], 2) * 2 - 1 if forced is None else forced
+    if forced is None:
+      self.role[env_ids] = torch.where(torch.rand_like(self.role[env_ids]) < self.p_evader, -1.0, 1.0)
+    else:
+      self.role[env_ids] = forced
     if self.cfg.colors:
       pursuer = self.role[env_ids, 0] > 0
       for mat, chaser in zip(self.mat, (pursuer, ~pursuer)):
@@ -293,6 +316,19 @@ def foot_slip_speed(env: ManagerBasedRlEnv, sensor_name: str, asset_cfg: SceneEn
   return (v * c).sum(-1) / c.sum(-1).clamp_min(1)
 
 
+def stance_slip(env: ManagerBasedRlEnv, sensor_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """Mean over the feet of contact x |foot xy velocity|^2: swing feet cost nothing. Not gated on a command."""
+  c = (env.scene[sensor_name].data.found > 0).float()
+  v = env.scene[asset_cfg.name].data.site_lin_vel_w[:, asset_cfg.site_ids, :2]
+  return (c * v.square().sum(-1)).mean(-1)
+
+
+def tilt_excess(env: ManagerBasedRlEnv, free: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """max(tilt - free, 0)^2, tilt from the base's projected gravity (rad)."""
+  g = env.scene[asset_cfg.name].data.projected_gravity_b
+  return (torch.acos((-g[:, 2]).clamp(-1, 1)) - free).clamp_min(0).square()
+
+
 def base_height(env: ManagerBasedRlEnv) -> torch.Tensor:
   return env.scene["robot"].data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
 
@@ -340,8 +376,19 @@ def seat_end(env: ManagerBasedRlEnv, kind: str, asset_cfg: SceneEntityCfg = Scen
   return env.termination_manager.get_term(name if asset_cfg.name == "robot" else f"opponent_{name.removeprefix('robot_')}").float()
 
 
+def clock(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """+1 for the evader seat, -1 for the pursuer (robot seat; zero-sum, so negated for the opponent)."""
+  return -role(env)
+
+
 def alive(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
   return 1.0 - seat_end(env, "fell", asset_cfg)
+
+
+def fell_over(env: ManagerBasedRlEnv, limit_angle: float, min_height: float, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """The stock tilt check (bad_orientation), or the base at or below ``min_height``."""
+  z = env.scene[asset_cfg.name].data.root_link_pos_w[:, 2] - env.scene.env_origins[:, 2]
+  return bad_orientation(env, limit_angle, asset_cfg) | (z <= min_height)
 
 
 def out_of_arena(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
@@ -354,7 +401,7 @@ def outcome(env: ManagerBasedRlEnv, learner_role: torch.Tensor) -> torch.Tensor:
   lose = (t("fell_over") & rules.fall_loses) | (t("robot_out") & rules.out_loses)
   win = (t("opponent_fell_over") & rules.fall_loses) | (t("opponent_out") & rules.out_loses)
   r = learner_role
-  end = torch.where(t("tagged"), r, torch.where(t("time_out"), -r, torch.zeros_like(r)))
+  end = torch.where(t("tagged"), r, torch.where(t("time_out") & rules.timeout_wins, -r, torch.zeros_like(r)))
   return torch.where(lose, -1.0, torch.where(win, 1.0, end))
 
 
@@ -405,10 +452,11 @@ class Potential(CommandTerm):
     pass
 
 
-def shaping(env: ManagerBasedRlEnv, gamma: float, name: str) -> torch.Tensor:
+def shaping(env: ManagerBasedRlEnv, gamma: float, name: str, pbrs: bool = True) -> torch.Tensor:
   """gamma*phi(s') - phi(s) with phi(s') = 0 on terminations and timeouts, so each episode's
-  discounted shaping sums to -phi(s0): no bias, and nothing carries across an auto-reset."""
-  live = ~env.termination_manager.dones
+  discounted shaping sums to -phi(s0): no bias, and nothing carries across an auto-reset.
+  ``pbrs=False`` keeps phi(s') at terminal steps too (the plain change in phi)."""
+  live = ~env.termination_manager.dones | (not pbrs)
   return torch.where(live, gamma * POTENTIALS[name](env), 0.0) - potential(env)  # NaN-safe at nan_reset.
 
 
@@ -478,6 +526,34 @@ def _retarget(term: ObservationTermCfg) -> ObservationTermCfg:
   return replace(term, params=p)
 
 
+@dataclass(kw_only=True)
+class LimitedPositionActuatorCfg(BuiltinPositionActuatorCfg):
+  def build(self, entity, target_ids: list[int], target_names: list[str]) -> "LimitedPositionActuator":
+    return LimitedPositionActuator(self, entity, target_ids, target_names)
+
+
+class LimitedPositionActuator(BuiltinPositionActuator):
+  """MuJoCo position actuator with ctrlrange = the joint range and ctrllimited on: targets
+  past a joint stop are clamped to it (mjlab leaves them free so the PD can press on the stop)."""
+
+  def edit_spec(self, spec: mujoco.MjSpec, target_names: list[str]) -> None:
+    super().edit_spec(spec, target_names)
+    for a, name in zip(self._mjs_actuators, target_names):
+      a.ctrllimited = True
+      a.ctrlrange[:] = spec.joint(name).range
+
+
+# mjlab looks up a builtin actuator's target tensor by its exact type: same as the base class.
+_TARGET_TENSOR_MAP[(LimitedPositionActuator, TransmissionType.JOINT)] = _TARGET_TENSOR_MAP[(BuiltinPositionActuator, TransmissionType.JOINT)]
+
+
+def limit_targets(entity):
+  """The entity cfg with its builtin position actuators as LimitedPositionActuatorCfg."""
+  lim = lambda a: LimitedPositionActuatorCfg(**{f.name: getattr(a, f.name) for f in fields(a) if f.init})
+  acts = tuple(lim(a) if type(a) is BuiltinPositionActuatorCfg else a for a in entity.articulation.actuators)
+  return replace(entity, articulation=replace(entity.articulation, actuators=acts))
+
+
 def tag_env_cfg(
   rules: TagRules = TagRules(), reset: ResetCfg = ResetCfg(), shaping_cfg: ShapingCfg = ShapingCfg(),
   gait: GaitCfg = GaitCfg(),
@@ -488,8 +564,13 @@ def tag_env_cfg(
   assert rules.tag_mode != "contact" or reset.d_min >= G1_CLEARANCE, "spawn bodies may touch"
   assert reset.d_max <= (2 * room if reset.placement == "centered" else 2 * math.sqrt(2) * room)
   cfg = unitree_g1_flat_env_cfg()
+  if rules.decimation is not None:  # Control rate; per-second weights below follow dt.
+    cfg.decimation = rules.decimation
   dt = cfg.sim.mujoco.timestep * cfg.decimation
   cfg.scene.entities["opponent"] = get_g1_robot_cfg()
+  if rules.limit_targets:
+    for k in ("robot", "opponent"):
+      cfg.scene.entities[k] = limit_targets(cfg.scene.entities[k])
   cfg.sim.njmax = 600  # Two robots.
   cfg.episode_length_s = rules.episode_s
   cfg.is_finite_horizon = True  # Timeout is an evader win, not a truncation.
@@ -528,13 +609,32 @@ def tag_env_cfg(
     cfg.commands["twist"] = MeasuredVelocityCfg()
     for k in GAIT_TERMS:
       w = getattr(gait.weights, k)
-      cfg.rewards[k] = replace(stock[k], weight=stock[k].weight * gait.scale if w is None else w)
+      w = stock[k].weight * gait.scale if w is None else w
+      if w:
+        cfg.rewards[k] = replace(stock[k], weight=w)
   for k in ("foot_clearance", "soft_landing"):
     cfg.rewards[k].params["command_name"] = None
   cfg.rewards["action_rate_l2"] = replace(
     cfg.rewards["action_rate_l2"], func=action_rate_l2, params={"action_name": ACTION["robot"]}
   )
+  if rules.joint_limit_weight is not None:
+    cfg.rewards["dof_pos_limits"] = replace(cfg.rewards["dof_pos_limits"], weight=rules.joint_limit_weight)
+  if not rules.regularizers:  # Game rewards only (gait terms, and dof_pos_limits if weighted, stay).
+    for k in set(cfg.rewards) - set(GAIT_TERMS) - ({"dof_pos_limits"} if rules.joint_limit_weight is not None else set()):
+      cfg.rewards.pop(k)
+  for k, w in rules.reward_weights.items():
+    assert k in cfg.rewards, f"rules.reward_weights: no reward term {k!r} (have {sorted(cfg.rewards)})"
+    if w:
+      cfg.rewards[k] = replace(cfg.rewards[k], weight=w)
+    else:
+      cfg.rewards.pop(k)
   cfg.rewards["tag"] = RewardTermCfg(func=tag_result, weight=rules.win_reward / dt)
+  if rules.stance_slip_weight:  # Per second (mjlab scales by dt); mirrored onto the opponent seat in self-play.
+    cfg.rewards["stance_slip"] = RewardTermCfg(func=stance_slip, weight=rules.stance_slip_weight, params={
+      **FEET, "asset_cfg": SceneEntityCfg("robot", site_names=("left_foot", "right_foot"))})
+  if rules.tilt_weight:
+    cfg.rewards["tilt_excess"] = RewardTermCfg(func=tilt_excess, weight=rules.tilt_weight, params={
+      "free": rules.tilt_free, "asset_cfg": SceneEntityCfg("robot")})
   # Own fall/exit on top of the tag term's -win_reward (0 if it is a draw): totals fall/out_reward.
   for kind, total, loses in (("fell", rules.fall_reward, rules.fall_loses), ("out", rules.out_reward, rules.out_loses)):
     if total is not None:
@@ -542,11 +642,13 @@ def tag_env_cfg(
       cfg.rewards[f"{kind}_extra"] = RewardTermCfg(func=seat_end, weight=extra / dt, params={"kind": kind})
   if rules.alive_reward:
     cfg.rewards["alive"] = RewardTermCfg(func=alive, weight=rules.alive_reward / dt)
+  if rules.clock_reward:  # Per second: mjlab scales by dt.
+    cfg.rewards["clock"] = RewardTermCfg(func=clock, weight=rules.clock_reward)
   if shaping_cfg.enabled:
     cfg.commands["potential"] = PotentialCfg(potential=shaping_cfg.potential)  # After role.
     cfg.rewards["shaping"] = RewardTermCfg(
       func=shaping, weight=shaping_cfg.weight / dt,
-      params={"gamma": shaping_cfg.gamma, "name": shaping_cfg.potential},
+      params={"gamma": shaping_cfg.gamma, "name": shaping_cfg.potential, "pbrs": shaping_cfg.pbrs},
     )
   if rules.tag_mode == "contact":  # Pursuer's tag_bodies subtrees vs. the other's whole body.
     cfg.scene.sensors += tuple(
@@ -562,6 +664,10 @@ def tag_env_cfg(
     )
 
   fell = cfg.terminations["fell_over"]
+  if rules.fall_height is not None:
+    fell = cfg.terminations["fell_over"] = TerminationTermCfg(
+      func=fell_over, params={**fell.params, "min_height": rules.fall_height, "asset_cfg": SceneEntityCfg("robot")}
+    )
   cfg.terminations.update(
     opponent_fell_over=replace(fell, params={**fell.params, "asset_cfg": SceneEntityCfg("opponent")}),
     tagged=TerminationTermCfg(func=tag_confirmed if rules.tag_confirm_s > 0 else tagged),

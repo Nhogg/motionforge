@@ -3,7 +3,7 @@
 ``selfplay_env_cfg`` mirrors everything the learner seat has onto the opponent: the robot-only
 sensors, a critic group (``opponent_critic``), the locomotion regularizers (``opp_*`` reward
 terms) and the startup domain randomization. ``SeatRewards`` splits mjlab's per-term step
-rewards into one reward per seat; the zero-sum terms (tag, shaping) enter the opponent seat
+rewards into one reward per seat; the zero-sum terms (tag, shaping, clock) enter the opponent seat
 negated, so phi_opp = -phi_robot keeps the shaping potential-based for both seats.
 """
 
@@ -19,7 +19,7 @@ from mofo.tasks.tag import ACTION, tag_features
 
 PREFIX = "opp_"
 ROBOT_SENSORS = ("foot_height_scan", "feet_ground_contact", "self_collision")  # Not entity-prefixed.
-ZERO_SUM = ("tag", "shaping")  # Robot-seat terms whose opponent-seat value is the negative.
+ZERO_SUM = ("tag", "shaping", "clock")  # Robot-seat terms whose opponent-seat value is the negative.
 
 
 def _sensor(name: str) -> str:

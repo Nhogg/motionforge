@@ -117,6 +117,7 @@ class OpponentEnv(RslRlVecEnvWrapper):
     self.num_envs += self.n_sp
     self.num_actions = env.action_manager.get_term(ACTION["robot"]).action_dim
     self.seats = SeatRewards(env) if self.n_sp else None
+    self.evader_games = torch.zeros(2, 2, device=env.device)  # [league, self-play] x [games, evader wins], this iteration.
 
   def _learner(self, obs: dict) -> TensorDict:
     """Learner seats' obs: every robot seat, then the self-play opponent seats."""
@@ -147,8 +148,29 @@ class OpponentEnv(RslRlVecEnvWrapper):
       N, envs = self.unwrapped.num_envs, {"selfplay": self.n_sp}
       for o, s in zip(self.opponents, self.part.groups):
         envs[o.category] = envs.get(o.category, 0) + s.stop - s.start
-      log = {**_league_log(self.league.stats(it)), **{f"league/envs/{k}": v / N for k, v in envs.items()}}
+      stats = self.league.stats(it)
+      log = {**(stats if c.log_all_members else _league_log(stats)), **{f"league/envs/{k}": v / N for k, v in envs.items()},
+             **self._adapt_evader_rate(c)}
     self.steps += 1
+    return log
+
+  def _adapt_evader_rate(self, c) -> dict:
+    """Once per iteration: the learner-evader win rate over the games finished since the last call
+    and, if c.evader_rate_step, nudge the role term's p_evader toward a 50% evader win rate."""
+    g = self.evader_games.tolist()
+    self.evader_games.zero_()
+    term, log = self.unwrapped.command_manager.get_term("role"), {}
+    for (games, wins), k in zip(g, ("league", "selfplay")):
+      if games:
+        log[f"league/evader_win_rate/{k}"] = wins / games
+    games, wins = g[0][0] + g[1][0], g[0][1] + g[1][1]
+    if games:
+      rate = wins / games
+      log["league/evader_win_rate"] = rate
+      if c.evader_rate_step and rate != 0.5:
+        step = c.evader_rate_step if rate < 0.5 else -c.evader_rate_step
+        term.p_evader = min(max(term.p_evader + step, c.evader_rate_min), c.evader_rate_max)
+    log["league/p_evader"] = term.p_evader
     return log
 
   def step(self, actions: torch.Tensor):
@@ -172,6 +194,13 @@ class OpponentEnv(RslRlVecEnvWrapper):
       sp = done[:n]
       if sp.any():  # Self-play: how often the pursuer seat wins.
         wins["selfplay_pursuer"] = [(out[:n][sp] * learner_role[:n][sp] > 0).float()]
+      # Learner-evader games: league envs where the learner was the evader (its win: out > 0), and
+      # every self-play game (one learner seat is the evader; it won if the pursuer seat lost).
+      ev = done[n:] & (learner_role[n:] < 0)
+      self.evader_games[0, 0] += ev.sum()
+      self.evader_games[0, 1] += (ev & (out[n:] > 0)).sum()
+      self.evader_games[1, 0] += sp.sum()
+      self.evader_games[1, 1] += (sp & (out[:n] * learner_role[:n] < 0)).sum()
       log.update({f"league/win_rate/{k}": torch.cat(v) for k, v in wins.items()})
     if n:
       robot, other = self.seats(env)
@@ -179,6 +208,29 @@ class OpponentEnv(RslRlVecEnvWrapper):
       terminated, truncated = (torch.cat([x, x[:n]]) for x in (terminated, truncated))
       log["Seat/robot_step_reward"], log["Seat/opponent_step_reward"] = robot[:n].mean(), other[:n].mean()
     extras["log"].update(log)
+    obs = self._reset_nonfinite(obs, rew, terminated, extras)
     if not self.cfg.is_finite_horizon:
       extras["time_outs"] = truncated
     return self._learner(obs), rew, (terminated | truncated).to(dtype=torch.long), extras
+
+  def _reset_nonfinite(self, obs: dict, rew: torch.Tensor, terminated: torch.Tensor, extras: dict) -> dict:
+    """Reset worlds whose observations went NaN/Inf (a physics blow-up that the nan_reset
+    termination, which checks only the raw sim state before observations are computed, can miss):
+    their seats end the episode with zero reward. In place on ``rew`` / ``terminated`` (seat order);
+    returns the observations. A no-op unless something is non-finite."""
+    env, N = self.unwrapped, self.unwrapped.num_envs
+    bad = torch.zeros(N, dtype=torch.bool, device=env.device)
+    for v in obs.values():
+      bad |= ~torch.isfinite(v).flatten(1).all(-1)
+    seats = torch.cat([bad, bad[: self.n_sp]])
+    bad_rew = ~torch.isfinite(rew)
+    if not bad.any() and not bad_rew.any():
+      return obs
+    rew[seats | bad_rew] = 0.0
+    if bad.any():
+      log = extras["log"]
+      obs, _ = env.reset(env_ids=bad.nonzero()[:, 0])  # Replaces extras["log"]; this step's entries win.
+      extras["log"] = {**extras["log"], **log, "Episode_Termination/nonfinite_obs_reset": bad.sum().item()}
+      obs = {k: torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0) for k, v in obs.items()}  # If a reset itself is bad.
+      terminated[seats] = True
+    return obs

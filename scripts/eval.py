@@ -24,19 +24,24 @@ from mofo.env import GAME_SCHEMAS, game, make_env
 from mofo.opponent import load_policy
 from mofo.tasks.tag import outcome, role
 
-def arena_outline(cam, half: float, n: int = 400) -> torch.Tensor:
-  """Pixel (row, col) of the arena border on the floor, projected through the world camera."""
+def project(cam, pts: torch.Tensor) -> torch.Tensor:
+  """Pixel (row, col) of world points [n, 3] (env 0's frame) through the world camera, off-image ones dropped."""
   c = torch.tensor([0.0, -cam.back, cam.up])
   fwd = -c / c.norm()
   right = torch.tensor([1.0, 0.0, 0.0])
   up = torch.linalg.cross(right, fwd)
   f = cam.height / 2 / math.tan(math.radians(cam.fovy or 45.0) / 2)
-  s = torch.linspace(-half, half, n)
-  edge = [torch.stack([s, torch.full_like(s, k), torch.zeros_like(s)], -1) for k in (-half, half)]
-  p = torch.cat(edge + [e[:, [1, 0, 2]] for e in edge]) - c
+  p = pts.cpu().float() - c
   z = p @ fwd
   rc = torch.stack([cam.height / 2 - f * (p @ up) / z, cam.width / 2 + f * (p @ right) / z], -1).round().long()
   return rc[((rc >= 0) & (rc < torch.tensor([cam.height, cam.width]))).all(-1)]
+
+
+def arena_outline(cam, half: float, n: int = 400) -> torch.Tensor:
+  """Pixel (row, col) of the arena border on the floor, projected through the world camera."""
+  s = torch.linspace(-half, half, n)
+  edge = [torch.stack([s, torch.full_like(s, k), torch.zeros_like(s)], -1) for k in (-half, half)]
+  return project(cam, torch.cat(edge + [e[:, [1, 0, 2]] for e in edge]))
 
 
 def composite(rgb, mask, alpha) -> torch.Tensor:

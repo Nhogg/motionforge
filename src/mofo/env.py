@@ -22,18 +22,25 @@ def game(cfg: DictConfig, **overrides) -> SimpleNamespace:
 
 
 def make_env(cfg, num_envs, g: SimpleNamespace, eval=False, video=False, selfplay=False) -> ManagerBasedRlEnv:
-  """``video``: robots tinted by role (cfg.video.*_rgba) and a world camera (cfg.video.camera)
+  """``video``: robots tinted by role (cfg.video.*_rgba; tag only) and a world camera (cfg.video.camera)
   looking at env 0's arena center from ``back`` m behind (-y) and ``up`` m high."""
-  env_cfg = tag_env_cfg(g.rules, g.reset, g.shaping, g.gait)
-  if selfplay:
-    selfplay_env_cfg(env_cfg)
+  goal = cfg.get("task", "tag") == "goal"  # One G1, no opponent.
+  if goal:
+    from mofo.tasks.goal import GoalCfg, goal_env_cfg
+
+    env_cfg = goal_env_cfg(g.rules, g.reset, GoalCfg(**OmegaConf.to_container(cfg.goal)) if "goal" in cfg else GoalCfg())
+  else:
+    env_cfg = tag_env_cfg(g.rules, g.reset, g.shaping, g.gait)
+    if selfplay:
+      selfplay_env_cfg(env_cfg)
   env_cfg.scene.num_envs, env_cfg.seed, env_cfg.scene.env_spacing = num_envs, cfg.seed, cfg.env_spacing
   if eval:
-    for grp in ("actor", "opponent"):
+    for grp in ("actor",) if goal else ("actor", "opponent"):
       env_cfg.observations[grp].enable_corruption = False
   if video:
     v, c = cfg.video, cfg.video.camera
-    env_cfg.commands["role"] = replace(env_cfg.commands["role"], colors=(tuple(v.pursuer_rgba), tuple(v.evader_rgba)))
+    if not goal:
+      env_cfg.commands["role"] = replace(env_cfg.commands["role"], colors=(tuple(v.pursuer_rgba), tuple(v.evader_rgba)))
     o = TerrainEntity._compute_env_origins_grid(SimpleNamespace(_device="cpu"), num_envs, env_cfg.scene.env_spacing)[0]
     a = math.atan2(c.back, c.up)
     env_cfg.scene.sensors += (CameraSensorCfg(
