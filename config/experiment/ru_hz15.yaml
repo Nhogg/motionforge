@@ -1,0 +1,22 @@
+# @package _global_
+# The RU000 control (tag_chase_adapt, fixed 50/50 roles) with the policy acting at 15.38 Hz instead of 50 Hz
+# (2026-10-23): 13 physics steps of 5 ms per policy step instead of 4. Per-second reward weights, the
+# 10 s episode and the tag rules follow dt automatically. gamma and lambda are matched in time
+# (0.99^(13/4), 0.95^(13/4)), so the return horizon in seconds is unchanged; everything else, including
+# 24 policy steps per env per iteration, is per step as in RU000.
+defaults:
+  - tag_chase_adapt
+  - _self_
+
+league:
+  evader_rate_step: 0.0
+
+rules:
+  decimation: 13
+
+agent:
+  gamma: 0.9679
+  lam: 0.8465
+
+wandb:
+  tags: [tag_chase, control_rate, hz15]

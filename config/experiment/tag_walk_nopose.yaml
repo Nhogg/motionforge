@@ -1,0 +1,18 @@
+# @package _global_
+# tag_walk with fixed roles and without the positive pose reward (2026-10-23): 4 of 7 overnight tag_walk
+# seeds collapsed to standing still within 2500 iterations, with pose (+0.49 per episode, paid most for
+# standing at the default pose) outweighing the game reward. The remaining gait terms pay or cost only
+# while moving (air time +, foot slip and swing height -), plus the anti-flailing terms.
+defaults:
+  - tag_walk
+  - _self_
+
+league:
+  evader_rate_step: 0.0
+
+gait:
+  weights:
+    pose: 0.0
+
+wandb:
+  tags: [tag_chase, tag_walk, nopose]

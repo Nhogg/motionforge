@@ -1,0 +1,16 @@
+# @package _global_
+# tag_chase with adaptive role sampling (2026-10-23): each iteration P(learner plays the evader)
+# in league envs moves by league.evader_rate_step toward a 50% learner-evader win rate, and
+# self-play drops to 20% of envs so league envs (where the role draw matters) are 80%: the
+# evader's share of learner data then ranges 20-80% ((0.2 + 0.8 p) / 1.2). Runs set
+# league.evader_rate_step on the command line (0.05 / 0.03 / 0.025; 0 = control).
+defaults:
+  - tag_chase
+  - _self_
+
+league:
+  selfplay_frac: 0.2
+  evader_rate_step: 0.05
+
+wandb:
+  tags: [tag_chase, tag_chase_adapt]

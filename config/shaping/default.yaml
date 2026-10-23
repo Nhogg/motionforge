@@ -9,3 +9,4 @@ enabled: false
 weight: 1.0             # Per-episode scale (phi in metres).
 gamma: ${agent.gamma}   # The PPO discount; cmd=tag asserts they match.
 potential: distance     # phi = -role * base xy distance (pursuer wants it small).
+pbrs: true              # false: phi(s') kept at terminal steps (the plain change in phi; biased).

@@ -1,0 +1,15 @@
+# @package _global_
+# 17 h sprint, arm A (baseline): the RU000 control exactly (tag_chase_adapt with fixed 50/50 roles), 20k
+# iterations. Seeds 0-1 are the existing RU000_s0/s1 runs (same config; their model_20000.pt); seed 2 is new.
+defaults:
+  - tag_chase_adapt
+  - _self_
+
+cmd:
+  iterations: 20000
+
+league:
+  evader_rate_step: 0.0
+
+wandb:
+  tags: [s17, s17_base]

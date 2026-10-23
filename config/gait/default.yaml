@@ -10,3 +10,4 @@ weights:            # Per-term overrides; null: stock x scale.
   pose: null
   foot_slip: null
   foot_swing_height: null
+  air_time: null    # Stock weight 0: off unless set.

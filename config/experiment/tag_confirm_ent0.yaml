@@ -1,0 +1,13 @@
+# @package _global_
+# tag_confirm with no entropy bonus (2026-10-23): without gait shaping the action std grew to 1.4-1.8 rad
+# over the overnight RU runs (noise past the clamped targets is free), and the gait was a wide sliding
+# shuffle with 17-37 deg torso tilt, plausibly a way to stay up under that noise.
+defaults:
+  - tag_confirm
+  - _self_
+
+agent:
+  entropy_coef: 0.0
+
+wandb:
+  tags: [tag_chase, tag_confirm, ent0]

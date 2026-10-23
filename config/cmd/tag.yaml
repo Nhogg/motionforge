@@ -3,3 +3,4 @@ iterations: 500
 logdir: logs/mofo/tag
 lr: null            # Deprecated alias of agent.learning_rate.
 save_interval: null # Deprecated alias of agent.save_interval.
+log_norms: false    # Log PPO grad norms (pre-clip) and weight norms as Loss/{actor,critic}_{grad,weight}_norm.

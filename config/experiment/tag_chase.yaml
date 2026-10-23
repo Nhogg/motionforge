@@ -1,0 +1,28 @@
+# @package _global_
+# tag_scratch_lim with a game the evader can win (2026-10-23; see docs in the session notes):
+# 16 x 16 m arena, spawns 2-8 m apart, a 10 s timeout that the evader wins, a zero-sum clock
+# (evader +0.5/s, pursuer -0.5/s), falls and exits lose the game (-win_reward), and entropy 0.001
+# so the action std stops growing. Everything else as tag_scratch_lim.
+defaults:
+  - tag_scratch_lim
+  - _self_
+
+agent:
+  entropy_coef: 0.001
+
+rules:
+  arena_half_extent: 8.0
+  episode_s: 10.0
+  timeout_wins: true
+  clock_reward: 0.5
+  fall_loses: true
+  out_loses: true
+  fall_reward: null
+  out_reward: null
+
+reset:
+  d_min: 2.0
+  d_max: 8.0
+
+wandb:
+  tags: [tag_chase]

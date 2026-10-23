@@ -1,0 +1,38 @@
+# @package _global_
+# From-scratch tag (no stage-1 warm start, zero-action scripted opponent) with actuator targets
+# clamped to the joint ranges. Reconstructed from the resolved config of W&B run
+# luc-ssl/mofo/tag_scratch_lim-L_s1 (the original file was never committed):
+#   mofo_train.py cmd=tag +experiment=tag_scratch_lim seed=1 cmd.logdir=logs/mofo/tag/tag_scratch_lim/L_s1
+
+agent:
+  learning_rate: 1.0e-3   # Stage-1 lr: nothing to fine-tune from.
+  save_interval: 500
+
+cmd:
+  iterations: 20000
+
+league:
+  selfplay_frac: 0.5
+  snapshot_every: 250
+  groups: 8
+
+rules:
+  win_reward: 5.0
+  fall_loses: false       # Falls and exits are draws, priced by fall/out_reward instead.
+  out_loses: false
+  fall_reward: -10.0
+  out_reward: -10.0
+  timeout_wins: false     # Timeout is a draw.
+  regularizers: false     # Game rewards only, plus dof_pos_limits below.
+  joint_limit_weight: -0.1
+  limit_targets: true
+  fall_height: 0.5
+
+shaping:
+  enabled: true
+  weight: 0.001
+  gamma: 1.0
+  pbrs: false             # Plain change in distance (phi(s') kept at terminal steps).
+
+wandb:
+  tags: [tag_scratch, tag_scratch_lim]

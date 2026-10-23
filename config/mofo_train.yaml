@@ -8,11 +8,13 @@ defaults:
   - reset: default
   - shaping: default
   - gait: default
+  - goal: default
   - agent: default
   - league: default
   - wandb: default
   - _self_
 
+task: tag        # tag (two G1s) | goal (one G1, dense goal-reaching reward; mofo.tasks.goal).
 seed: 0
 env_spacing: 0.0  # Env origin grid spacing (m). 0: every env at the world origin (worlds never
                   # interact). Results depend on absolute position (float32), so keep it fixed.

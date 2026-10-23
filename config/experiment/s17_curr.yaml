@@ -1,0 +1,18 @@
+# @package _global_
+# 17 h sprint, arm C (opponent curriculum): A with the league's scripted member driven by the stage-1 velocity
+# policy (scripted chase/flee, opponent.ScriptedPolicy) instead of zero actions (which fall at once: free
+# wins), weighted x4 at the start, decaying linearly to x1 by iteration 10000 (existing league options). The
+# learner still starts from scratch; the stage-1 policy is only an opponent. Evaluation is unchanged.
+defaults:
+  - s17_base
+  - _self_
+
+opponent: /home/nhogg/motionforge/logs/mofo/stage1_snapshot/model_17800.pt
+
+league:
+  scripted_weight_start: 4.0
+  scripted_weight_end: 1.0
+  scripted_decay_iters: 10000
+
+wandb:
+  tags: [s17, s17_curr]

@@ -1,0 +1,11 @@
+# @package _global_
+# tag_walk_nopose plus tag_confirm's 1 s tag confirmation window (2026-10-23).
+defaults:
+  - tag_walk_nopose
+  - _self_
+
+rules:
+  tag_confirm_s: 1.0
+
+wandb:
+  tags: [tag_chase, tag_walk, nopose, tag_confirm]

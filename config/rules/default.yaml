@@ -18,3 +18,14 @@ out_reward: null        # Same for leaving the arena; null: -win_reward.
 tag_confirm_s: 0.0      # A tag counts only once the pursuer stays up this long after contact (the
                         # episode runs on; a pursuer fall in the window is its loss). 0: immediate.
 alive_reward: 0.0       # Per-step reward per seat while upright.
+clock_reward: 0.0       # Zero-sum, per second of game: evader +clock_reward, pursuer -clock_reward.
+timeout_wins: true      # The timeout is an evader win; false: a draw (no reward).
+regularizers: true      # Stock mjlab regularizers (upright, action rate, ...); false: game rewards only.
+reward_weights: {}      # Per-term weight overrides for the stock regularizers, e.g. {upright: 0, action_rate_l2: -0.005}; 0 drops a term.
+joint_limit_weight: null  # Stock dof_pos_limits weight (null: stock -1.0); kept even without regularizers.
+limit_targets: false    # Clamp actuator position targets to the joint ranges (ctrllimited).
+fall_height: null       # Base (pelvis) at or below this height (m) also counts as a fall; null: tilt only.
+stance_slip_weight: 0.0 # Per second x mean over the feet of contact x |foot v_xy|^2 (stance feet only; a penalty when < 0).
+tilt_weight: 0.0        # Per second x max(torso tilt - tilt_free, 0)^2 (a penalty when < 0).
+tilt_free: 0.35         # Torso tilt (rad) that costs nothing: room for a running lean.
+decimation: null        # Physics steps per policy step; null: stock 4 (50 Hz at the 5 ms timestep).

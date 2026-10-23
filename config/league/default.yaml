@@ -19,3 +19,7 @@ scripted_weight_start: 1.0  # Scripted weight multiplier, linear from start to e
 scripted_weight_end: 1.0    # scripted_decay_iters iterations (1 -> 1: no effect).
 scripted_decay_iters: 1
 init_pool: []            # Checkpoints preloaded as historical members.
+log_all_members: false     # Log every member's league/p and league/win each iteration (else scripted + top 3).
+evader_rate_step: 0.0      # Adaptive roles: each iteration, P(learner is the evader) in league envs moves by
+evader_rate_min: 0.05      # this toward a 50% learner-evader win rate (up below 50%, down above); 0: off.
+evader_rate_max: 0.95

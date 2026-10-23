@@ -1,0 +1,18 @@
+# @package _global_
+# tag_chase_adapt with fixed 50/50 roles (the RU000 control) plus a tag confirmation window (2026-10-23):
+# a tag counts only once the pursuer has stayed up 1 s after contact, and a pursuer fall/exit inside the
+# window loses. The overnight runs' pursuers sprinted and dived (pursuer falls + exits up to 31% of
+# evaluation games; tag policies fell in 95-98% of goal-task episodes), since an immediate tag made the
+# dive free.
+defaults:
+  - tag_chase_adapt
+  - _self_
+
+league:
+  evader_rate_step: 0.0
+
+rules:
+  tag_confirm_s: 1.0
+
+wandb:
+  tags: [tag_chase, tag_confirm]

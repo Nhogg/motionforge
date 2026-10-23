@@ -1,0 +1,8 @@
+# Goal-reaching baseline (task=goal): mofo.tasks.goal.GoalCfg (typed; unknown keys fail).
+defaults:
+  - schema
+  - _self_
+
+radius: 0.5            # Goal reached when the base xy is within this (m); a new goal is drawn.
+timeout_s: 8.0         # A goal not reached within this (s) is redrawn.
+progress_weight: 1.0   # Reward per metre closed toward the goal (dense).

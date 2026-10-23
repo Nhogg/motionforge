@@ -1,0 +1,20 @@
+# @package _global_
+# tag_walk with the gait and anti-flailing weights doubled (action_rate_l2 unchanged).
+defaults:
+  - tag_walk
+  - _self_
+
+rules:
+  reward_weights:
+    body_ang_vel: -0.1
+    angular_momentum: -0.04
+
+gait:
+  weights:
+    pose: 1.0
+    foot_slip: -0.5
+    foot_swing_height: -0.5
+    air_time: 0.5
+
+wandb:
+  tags: [tag_chase, tag_chase_adapt, tag_walk, tag_walk_x2]

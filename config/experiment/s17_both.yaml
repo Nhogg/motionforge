@@ -1,0 +1,15 @@
+# @package _global_
+# 17 h sprint, arm D (combined): s17_loco's penalties + s17_curr's opponent curriculum.
+defaults:
+  - s17_loco
+  - _self_
+
+opponent: /home/nhogg/motionforge/logs/mofo/stage1_snapshot/model_17800.pt
+
+league:
+  scripted_weight_start: 4.0
+  scripted_weight_end: 1.0
+  scripted_decay_iters: 10000
+
+wandb:
+  tags: [s17, s17_both]
